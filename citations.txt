@@ -1,0 +1,5 @@
+Cavallo, Alberto, and Roberto Rigobon. 2016. "The Billion Prices Project: Using Online Prices for Measurement and Research." Journal of Economic Perspectives 30 (2): 151–78.
+
+UncleCode. (2024). Crawl4AI: Open-source LLM Friendly Web Crawler & Scraper [Computer software]. 
+GitHub. https://github.com/unclecode/crawl4ai
+
