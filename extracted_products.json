@@ -1,0 +1,36 @@
+{
+  "total_products": 2,
+  "urls_processed": 1,
+  "results_by_url": {
+    "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p": [
+      {
+        "category_info": "Insira seu CEPe veja produtos na sua região",
+        "url": "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p"
+      },
+      {
+        "product_id": "Marca:Kicaldo-Código:2967",
+        "product_name": "Feijão Carioca Tipo 1 Kicaldo 1Kg",
+        "product_description": "O Feijão Carioca da marca Kicaldo é a melhor opção para acompanhar o seu arroz, tornando a refeição do brasileiro mais saborosa e saudável. Ele recebeu este nome por causa das suas listras, que lembram o calçadão de Copacabana. O feijão carioca é rico em ferro e proteína vegetal. As proteínas auxiliam na manutenção e no ganho de músculos. E, para completar, o feijão carioca é fonte de fibras que contribuem para a saciedade e auxiliam no controle da liberação do açúcar no sangue e no funcionamento intestinal. Compre o seu Feijão Carioca Kicaldo aqui no Carrefour e tenha uma alimento saudável e nutritivo em casa.",
+        "brand_name": "Kicaldo",
+        "package_size": "Feijão Carioca Tipo 1 Kicaldo 1Kg",
+        "current_price": "R$ 5,99",
+        "url": "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p"
+      }
+    ]
+  },
+  "all_products": [
+    {
+      "category_info": "Insira seu CEPe veja produtos na sua região",
+      "url": "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p"
+    },
+    {
+      "product_id": "Marca:Kicaldo-Código:2967",
+      "product_name": "Feijão Carioca Tipo 1 Kicaldo 1Kg",
+      "product_description": "O Feijão Carioca da marca Kicaldo é a melhor opção para acompanhar o seu arroz, tornando a refeição do brasileiro mais saborosa e saudável. Ele recebeu este nome por causa das suas listras, que lembram o calçadão de Copacabana. O feijão carioca é rico em ferro e proteína vegetal. As proteínas auxiliam na manutenção e no ganho de músculos. E, para completar, o feijão carioca é fonte de fibras que contribuem para a saciedade e auxiliam no controle da liberação do açúcar no sangue e no funcionamento intestinal. Compre o seu Feijão Carioca Kicaldo aqui no Carrefour e tenha uma alimento saudável e nutritivo em casa.",
+      "brand_name": "Kicaldo",
+      "package_size": "Feijão Carioca Tipo 1 Kicaldo 1Kg",
+      "current_price": "R$ 5,99",
+      "url": "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p"
+    }
+  ]
+}
