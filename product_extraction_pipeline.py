@@ -86,24 +86,24 @@ class ProductExtractionPipeline:
         # Create a hash of the domain key for filename safety
         hash_key = hashlib.md5(domain_key.encode()).hexdigest()
         return self.cache_dir / f"pattern_{hash_key}.json"
-    
+
     def _validate_and_clean_schema(self, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and clean CSS selectors in schema"""
         if not isinstance(schema, dict):
             return schema
-            
+
         def clean_selector(selector: str) -> str:
             """Clean a CSS selector of problematic characters"""
             if not isinstance(selector, str):
                 return selector
-                
+
             # Remove or replace problematic patterns
             cleaned = selector
-            
+
             # Remove escaped characters that cause parsing issues
             cleaned = cleaned.replace('\\:', ':')
             cleaned = cleaned.replace('\\', '')
-            
+
             # Remove pseudo-classes that commonly cause issues
             problematic_patterns = [
                 ':hover', ':focus', ':active', ':visited', ':link',
@@ -111,12 +111,12 @@ class ProductExtractionPipeline:
             ]
             for pattern in problematic_patterns:
                 cleaned = cleaned.replace(pattern, '')
-            
+
             # Clean up any double spaces or trailing/leading spaces
             cleaned = ' '.join(cleaned.split())
-            
+
             return cleaned
-        
+
         def clean_schema_recursive(obj):
             """Recursively clean all CSS selectors in schema"""
             if isinstance(obj, dict):
@@ -134,7 +134,7 @@ class ProductExtractionPipeline:
                 return clean_selector(obj)
             else:
                 return obj
-        
+
         return clean_schema_recursive(schema)
 
     async def generate_schema_for_url(self, url: str) -> Dict[str, Any]:
@@ -244,11 +244,11 @@ class ProductExtractionPipeline:
                 query=comprehensive_query,
                 llm_config=llm_config,
             )
-            
+
             # Validate and clean CSS selectors
             if schema:
                 schema = self._validate_and_clean_schema(schema)
-            
+
             patterns = schema
 
         except Exception as e:
@@ -376,7 +376,7 @@ async def main():
 
     # Example URLs (replace with actual product URLs)
     urls = [
-        "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p",
+        "https://www.tendaatacado.com.br/produto/leite-integral-piracanjuba-1l-27748?region_id=000010",
     ]
 
     # Process URLs

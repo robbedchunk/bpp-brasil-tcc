@@ -3,5 +3,10 @@
     "pattern_file": "schema_cache/pattern_fbe5bb7e032292c349bd6d0f01381576.json",
     "generated_from": "https://mercado.carrefour.com.br/feijao-carioca-tipo-1-kicaldo-1kg-466506/p",
     "schema_hash": "4b5ba2cfb97b79293dc918c531fb797c"
+  },
+  "www.tendaatacado.com.br": {
+    "pattern_file": "schema_cache/pattern_e356c73c623f2222d9ea0db203222829.json",
+    "generated_from": "https://www.tendaatacado.com.br/produto/leite-integral-piracanjuba-1l-27748?region_id=000010",
+    "schema_hash": "00cdc0dea7f6de5346763eef400c8aa1"
   }
 }
