@@ -1,0 +1,154 @@
+services:
+  api:
+    container_name: ttinflation_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    env_file:
+      - .env
+    command: pnpm --filter api run start:dev
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+      NODE_ENV: development
+    networks:
+      - backend
+
+
+  bun_worker:
+    build:
+      context: ./apps/bun-worker
+      dockerfile: Dockerfile
+    container_name: ttinflation_bunworker
+    working_dir: /app
+    command: bun run start
+    volumes:
+      - ./apps/bun-worker:/app
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+
+  scraper:
+    build: ./apps/scraper
+    container_name: ttinflation_fastapiscraper
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./apps/scraper:/app
+    depends_on:
+      - db
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env   
+    networks:
+      - backend
+
+  scraper_scheduler:
+    image: curlimages/curl:latest
+    container_name: scraper_scheduler
+    command: >
+      /bin/sh -c "while true; do
+        echo 'Running scraper at $(date)';
+        curl -X POST http://scraper:8000/scrape;
+        sleep ${SCRAPE_INTERVAL:-21600};  # default every 6hrs
+      done"
+    depends_on:
+      - scraper    
+
+  db:
+    container_name: ttinflation_db
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - backend
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+
+  adminer:
+    image: adminer
+    container_name: adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    volumes:
+      - adminer_data:/var/lib/adminer
+    depends_on:
+      - db
+    networks:
+      - backend
+
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      # PGADMIN_CONFIG_CHECK_FOR_UPDATES=False
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+    networks:
+      - backend
+
+volumes:
+  pgdata:
+  redis_data:
+  pgadmin_data:
+  adminer_data:
+
+networks:
+  backend:
+    external: true
+    name: inflation_net

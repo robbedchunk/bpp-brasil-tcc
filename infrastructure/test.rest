@@ -1,0 +1,17 @@
+POST  http://localhost:3000/auth/login
+{
+  "username": "admin",
+  "password": "admin"
+}
+
+# response: {  "access_token": "<JWT_TOKEN>" }
+# { "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwic3ViIjoxLCJpYXQiOjE3NjIyOTUzODIsImV4cCI6MTc2MjM4MTc4Mn0.HpRH1a-00bd4fKQr_HGo3zK0yHEQ5uJ4xpXL7HUAdRI" }
+
+POST http://localhost:3000/product-links 
+Authorization: Bearer <JWT_TOKEN>
+{
+  "sourceProductId": 1,
+  "canonicalProductId": 2,
+  "algorithm": "title-match",
+  "score": 0.95
+}

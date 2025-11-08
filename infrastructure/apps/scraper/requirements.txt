@@ -1,0 +1,20 @@
+# FastAPI web framework
+fastapi[standard]>=0.115.0
+
+# ASGI server for local + production use
+uvicorn[standard]>=0.30.0
+
+# Async HTTP client
+aiohttp>=3.9.5
+
+# HTML parsing
+beautifulsoup4>=4.12.3
+
+# Async PostgreSQL driver
+asyncpg>=0.29.0
+
+# Environment variable loader
+python-dotenv>=1.0.1
+
+# Optional: if you want colored logs & easier debugging
+rich>=13.7.1

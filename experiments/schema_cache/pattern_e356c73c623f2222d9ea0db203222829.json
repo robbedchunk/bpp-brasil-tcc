@@ -1,0 +1,41 @@
+{
+  "name": "E-commerce Product Details",
+  "baseSelector": ".box-product",
+  "fields": [
+    {
+      "name": "sku",
+      "selector": "#id-sku",
+      "type": "text"
+    },
+    {
+      "name": "product_name",
+      "selector": ".TitleComponent h1",
+      "type": "text"
+    },
+    {
+      "name": "description",
+      "selector": ".text-more-info",
+      "type": "text"
+    },
+    {
+      "name": "brand_name",
+      "selector": ".manufacture",
+      "type": "text"
+    },
+    {
+      "name": "package_size",
+      "selector": ".SimplePriceComponent",
+      "type": "text"
+    },
+    {
+      "name": "category",
+      "selector": ".manufacture + .manufacture",
+      "type": "text"
+    },
+    {
+      "name": "current_price",
+      "selector": ".SimplePriceComponent",
+      "type": "text"
+    }
+  ]
+}
