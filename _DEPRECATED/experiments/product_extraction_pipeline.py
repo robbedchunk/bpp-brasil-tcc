@@ -217,25 +217,25 @@ class ProductExtractionPipeline:
         try:
             print("  Generating CSS schema for all product fields...")
 
-            comprehensive_query = """
+            comprehensive_query = r"""
             Analyze this e-commerce product page and create CSS selectors for extracting:
             1. Product ID/SKU (unique identifier)
-            2. Product name/title 
+            2. Product name/title
             3. Product description
             4. Brand name
             5. Package size/quantity
             6. Category information
             7. Current price
-            
+
             IMPORTANT: Create SIMPLE CSS selectors only. Avoid:
             - Escaped characters like backslashes (\)
             - Complex pseudo-selectors with colons
             - Tailwind CSS classes with escape sequences
             - Use basic class names, IDs, and element selectors
-            
+
             Examples of GOOD selectors: .product-name, #price, .description, [data-product-id]
             Examples of BAD selectors: .lg\:grid-cols-1, .sm\:text-lg, .hover\:bg-blue
-            
+
             Focus on the MAIN product being displayed using simple, reliable selectors.
             """
 
