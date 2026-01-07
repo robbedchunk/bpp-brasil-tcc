@@ -1,0 +1,341 @@
+generator client {
+  provider = "prisma-client"
+  output   = "./generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// 1) Merchants and contexts
+// =============================================================================
+
+model Merchant {
+  merchantId      BigInt   @id @default(autoincrement()) @map("merchant_id")
+  name            String
+  websiteBaseUrl  String?  @map("website_base_url")
+  countryCode     String?  @db.Char(2) @map("country_code")
+  defaultCurrency String?  @db.Char(3) @map("default_currency")
+  timezone        String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  contexts MerchantContext[]
+
+  @@map("merchant")
+}
+
+// A "context" is the price-view configuration:
+// e.g. (merchant=FooMart, postal_code=94107, fulfillment=delivery)
+model MerchantContext {
+  contextId       BigInt   @id @default(autoincrement()) @map("context_id")
+  merchantId      BigInt   @map("merchant_id")
+  label           String   // human readable, unique per merchant
+  pricingScope    String   @map("pricing_scope") // CHECK: national, postal_code, store, other
+  postalCode      String?  @map("postal_code")
+  storeCode       String?  @map("store_code")
+  fulfillmentType String   @default("delivery") @map("fulfillment_type") // CHECK: delivery, pickup, in_store, unknown
+  currency        String?  @db.Char(3)
+  locale          String?  // e.g. en-GB
+  contextParams   Json     @default("{}") @map("context_params") // cookies/profile knobs (non-secret)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  merchant         Merchant            @relation(fields: [merchantId], references: [merchantId])
+  crawlRuns        CrawlRun[]
+  products         MerchantProduct[]
+  categories       MerchantCategory[]
+  catalogDiscovery CatalogDiscovery[]
+
+  @@unique([merchantId, label])
+  @@map("merchant_context")
+}
+
+// =============================================================================
+// 2) Runs (weekly catalog runs + daily price runs)
+// =============================================================================
+
+model CrawlRun {
+  runId          BigInt    @id @default(autoincrement()) @map("run_id")
+  contextId      BigInt    @map("context_id")
+  runType        String    @map("run_type") // CHECK: catalog, price
+  startedAt      DateTime  @map("started_at") @db.Timestamptz
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz
+  status         String    // CHECK: running, succeeded, failed, partial
+  parameters     Json      @default("{}") // seeds, limits, etc.
+  scraperVersion String?   @map("scraper_version")
+  parserVersion  String?   @map("parser_version")
+  notes          String?
+
+  context              MerchantContext     @relation(fields: [contextId], references: [contextId])
+  httpFetches          HttpFetch[]
+  productSnapshots     ProductSnapshot[]
+  priceObservations    PriceObservation[]
+  productUrls          MerchantProductUrl[]
+  categories           MerchantCategory[]
+  catalogDiscovery     CatalogDiscovery[]
+
+  @@index([contextId, startedAt(sort: Desc)], map: "crawl_run_context_started_idx")
+  @@map("crawl_run")
+}
+
+// =============================================================================
+// 3) Raw fetch logging (keep the "truth")
+// Store raw bodies in S3/GCS/minio/etc., and keep only a pointer + hash in DB.
+// =============================================================================
+
+model HttpFetch {
+  fetchId         BigInt    @id @default(autoincrement()) @map("fetch_id")
+  runId           BigInt    @map("run_id")
+  fetchedAt       DateTime  @default(now()) @map("fetched_at") @db.Timestamptz
+
+  url             String
+  finalUrl        String?   @map("final_url")
+  httpStatus      Int?      @map("http_status")
+  contentType     String?   @map("content_type")
+
+  durationMs      Int?      @map("duration_ms")
+  responseHeaders Json?     @map("response_headers")
+
+  bodyStorageKey  String?   @map("body_storage_key") // pointer to object storage (compressed html/json)
+  bodySha256      Bytes?    @map("body_sha256")      // hash of body for dedup/change detection
+  bodyBytes       BigInt?   @map("body_bytes")
+
+  errorClass      String?   @map("error_class")      // timeout, blocked, parse_error, etc.
+  errorMessage    String?   @map("error_message")
+  isBlocked       Boolean?  @map("is_blocked")
+
+  robotsHint      String?   @map("robots_hint")      // Useful to debug bot defenses
+
+  run               CrawlRun           @relation(fields: [runId], references: [runId])
+  productSnapshots  ProductSnapshot[]
+  priceObservations PriceObservation[]
+
+  @@index([runId], map: "http_fetch_run_idx")
+  @@index([url], map: "http_fetch_url_idx")
+  @@map("http_fetch")
+}
+
+// =============================================================================
+// 4) Product identity + lifecycle (first_seen/last_seen)
+// This is where you support "uncensored spells" later (i.e., you know when a
+// product first appeared and when it disappeared).
+// =============================================================================
+
+model MerchantProduct {
+  productId       BigInt   @id @default(autoincrement()) @map("product_id")
+  contextId       BigInt   @map("context_id")
+
+  // Best-case: retailer exposes a stable internal product id / sku.
+  sourceProductId String?  @map("source_product_id")
+
+  // Often available for groceries; great for cross-merchant matching later.
+  gtin            String?  // EAN/UPC/GTIN
+
+  // Current canonical URL (don't assume stable forever)
+  canonicalUrl    String   @map("canonical_url")
+
+  firstSeenAt     DateTime @map("first_seen_at") @db.Timestamptz
+  lastSeenAt      DateTime @map("last_seen_at") @db.Timestamptz
+  isActive        Boolean  @default(true) @map("is_active")
+
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  context           MerchantContext      @relation(fields: [contextId], references: [contextId])
+  urls              MerchantProductUrl[]
+  snapshots         ProductSnapshot[]
+  priceObservations PriceObservation[]
+
+  // Uniqueness rules:
+  // If source_product_id exists, it should be unique within a context.
+  // Note: Prisma doesn't support conditional unique indexes directly.
+  // These should be created via raw SQL migration:
+  // CREATE UNIQUE INDEX merchant_product_context_source_pid_uq
+  //   ON merchant_product(context_id, source_product_id)
+  //   WHERE source_product_id IS NOT NULL;
+
+  @@unique([contextId, canonicalUrl], map: "merchant_product_context_url_uq")
+  @@index([contextId, isActive, lastSeenAt(sort: Desc)], map: "merchant_product_active_idx")
+  @@map("merchant_product")
+}
+
+// =============================================================================
+// 5) URL history (because URLs change)
+// =============================================================================
+
+model MerchantProductUrl {
+  productUrlId   BigInt   @id @default(autoincrement()) @map("product_url_id")
+  productId      BigInt   @map("product_id")
+
+  url            String
+  isPrimary      Boolean  @default(false) @map("is_primary")
+
+  firstSeenAt    DateTime @map("first_seen_at") @db.Timestamptz
+  lastSeenAt     DateTime @map("last_seen_at") @db.Timestamptz
+  lastSeenRunId  BigInt?  @map("last_seen_run_id")
+
+  product        MerchantProduct @relation(fields: [productId], references: [productId])
+  lastSeenRun    CrawlRun?       @relation(fields: [lastSeenRunId], references: [runId])
+
+  @@unique([productId, url])
+  @@index([url], map: "merchant_product_url_url_idx")
+  @@map("merchant_product_url")
+}
+
+// =============================================================================
+// 6) Product snapshots (attributes over time)
+// This table is where you keep the "raw but structured" product fields:
+// name, brand, package size text, category breadcrumb, etc.
+// =============================================================================
+
+model ProductSnapshot {
+  snapshotId        BigInt   @id @default(autoincrement()) @map("snapshot_id")
+  productId         BigInt   @map("product_id")
+
+  runId             BigInt   @map("run_id")
+  fetchId           BigInt?  @map("fetch_id")
+
+  capturedAt        DateTime @map("captured_at") @db.Timestamptz
+
+  // Keep both raw text and parsed fields when possible:
+  name              String?
+  brand             String?
+  description       String?
+
+  categoryBreadcrumb String[] @map("category_breadcrumb") // e.g. {"Food","Dairy","Milk"}
+  packageSizeText    String?  @map("package_size_text")   // e.g. "6 x 330ml", "500g", "1.5L"
+
+  // Optional parsed normalization (don't stress if imperfect; keep raw too):
+  packCount         Decimal? @map("pack_count")    // e.g. 6
+  sizeValue         Decimal? @map("size_value")    // 330 or 500 or 1.5
+  sizeUnit          String?  @map("size_unit")     // ml / g / l / kg / each
+
+  imageUrls         String[] @map("image_urls")
+
+  // All extra scraped fields (ingredients, allergens, nutrition, badges, etc.)
+  attributes        Json     @default("{}") @db.JsonB
+
+  // Raw embedded product JSON if present (JSON-LD, app state, etc.)
+  rawProductJson    Json?    @map("raw_product_json") @db.JsonB
+
+  parseOk           Boolean  @default(true) @map("parse_ok")
+  parseWarnings     String[] @map("parse_warnings")
+
+  product           MerchantProduct    @relation(fields: [productId], references: [productId])
+  run               CrawlRun           @relation(fields: [runId], references: [runId])
+  fetch             HttpFetch?         @relation(fields: [fetchId], references: [fetchId])
+  priceObservations PriceObservation[]
+
+  @@index([productId, capturedAt(sort: Desc)], map: "product_snapshot_product_time_idx")
+  @@index([runId], map: "product_snapshot_run_idx")
+  @@map("product_snapshot")
+}
+
+// =============================================================================
+// 7) Price observations (daily, huge)
+// This is your main time-series table.
+// Key points:
+// - store regular vs sale vs was-price
+// - store unit price (super important for groceries)
+// - store promo text / multibuy / loyalty (raw)
+// - store availability/stock (raw + normalized)
+// - link to fetch_id for full raw page recovery
+//
+// Partitioning recommendation: Partition by month on observed_at
+// =============================================================================
+
+model PriceObservation {
+  priceObsId      BigInt   @id @default(autoincrement()) @map("price_obs_id")
+  productId       BigInt   @map("product_id")
+
+  runId           BigInt   @map("run_id")
+  fetchId         BigInt?  @map("fetch_id")
+  snapshotId      BigInt?  @map("snapshot_id")
+
+  observedAt      DateTime @map("observed_at") @db.Timestamptz
+  currency        String   @db.Char(3)
+
+  // Store what you can: regular/list, sale, was, unit price.
+  regularPrice    Decimal? @map("regular_price") @db.Decimal(18, 6)
+  salePrice       Decimal? @map("sale_price") @db.Decimal(18, 6)
+  wasPrice        Decimal? @map("was_price") @db.Decimal(18, 6)
+
+  unitPrice       Decimal? @map("unit_price") @db.Decimal(18, 6)
+  unitPriceUnit   String?  @map("unit_price_unit")  // e.g. "100g", "kg", "each", "L"
+  unitPriceText   String?  @map("unit_price_text")  // raw string as displayed
+
+  priceText       String?  @map("price_text")       // raw displayed price string
+  promotionText   String?  @map("promotion_text")   // raw promo/multibuy/loyalty text
+
+  availability    String?                           // raw availability label
+  inStock         Boolean? @map("in_stock")         // normalized when possible
+
+  // Any extra offer data (e.g., loyalty_price, limits, delivery fees, etc.)
+  rawOfferJson    Json     @default("{}") @map("raw_offer_json") @db.JsonB
+
+  product         MerchantProduct  @relation(fields: [productId], references: [productId])
+  run             CrawlRun         @relation(fields: [runId], references: [runId])
+  fetch           HttpFetch?       @relation(fields: [fetchId], references: [fetchId])
+  snapshot        ProductSnapshot? @relation(fields: [snapshotId], references: [snapshotId])
+
+  @@index([productId, observedAt(sort: Desc)], map: "price_obs_product_time_idx")
+  @@index([runId], map: "price_obs_run_idx")
+  // For time-range scans across many products, consider adding BRIN index via raw SQL:
+  // CREATE INDEX price_obs_time_brin ON price_observation USING BRIN (observed_at);
+  @@map("price_observation")
+}
+
+// =============================================================================
+// Optional but very useful: categories + catalog discovery
+// If your weekly catalog crawl is category-driven (most supermarkets are),
+// store the merchant's category tree and also store "this URL was discovered
+// in this run".
+// =============================================================================
+
+model MerchantCategory {
+  categoryId       BigInt   @id @default(autoincrement()) @map("category_id")
+  contextId        BigInt   @map("context_id")
+
+  categoryUrl      String   @map("category_url")
+  name             String?
+  breadcrumb       String[]
+  parentCategoryId BigInt?  @map("parent_category_id")
+
+  firstSeenAt      DateTime @map("first_seen_at") @db.Timestamptz
+  lastSeenAt       DateTime @map("last_seen_at") @db.Timestamptz
+  lastSeenRunId    BigInt?  @map("last_seen_run_id")
+
+  context          MerchantContext   @relation(fields: [contextId], references: [contextId])
+  parentCategory   MerchantCategory? @relation("CategoryHierarchy", fields: [parentCategoryId], references: [categoryId])
+  childCategories  MerchantCategory[] @relation("CategoryHierarchy")
+  lastSeenRun      CrawlRun?         @relation(fields: [lastSeenRunId], references: [runId])
+  catalogDiscovery CatalogDiscovery[]
+
+  @@unique([contextId, categoryUrl])
+  @@map("merchant_category")
+}
+
+// This table is "raw evidence" of the catalog state each week
+// (great for debugging "why did this product disappear?").
+model CatalogDiscovery {
+  runId         BigInt   @map("run_id")
+  contextId     BigInt   @map("context_id")
+
+  categoryId    BigInt?  @map("category_id")
+
+  productUrl    String   @map("product_url")
+  discoveredAt  DateTime @default(now()) @map("discovered_at") @db.Timestamptz
+
+  run           CrawlRun          @relation(fields: [runId], references: [runId])
+  context       MerchantContext   @relation(fields: [contextId], references: [contextId])
+  category      MerchantCategory? @relation(fields: [categoryId], references: [categoryId])
+
+  @@id([runId, productUrl])
+  @@index([contextId, runId], map: "catalog_discovery_context_idx")
+  @@map("catalog_discovery")
+}
+
+  // Notes:
+  // - The conditional unique index on (context_id, source_product_id) WHERE source_product_id IS NOT NULL needs to be added via raw SQL migration (Prisma doesn't support conditional indexes)
+  // - BRIN index on price_observation.observed_at should be added via raw SQL for efficient time-range scans
+  // - Partitioning for price_observation and http_fetch should be configured at the database level

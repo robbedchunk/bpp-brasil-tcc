@@ -1,0 +1,143 @@
+[
+  {
+    "category": "functional",
+    "description": "Category Discovery via Sitemap",
+    "steps": [
+      "Fetch sitemap index from https://www.carrefour.com.br/sitemap.xml",
+      "Find category sitemaps matching pattern /sitemap/category-N.xml",
+      "Parse each category sitemap XML to extract <loc> URLs",
+      "Category URLs follow patterns: /categoria/{slug} or just /{slug}",
+      "Example categories found: /eletroportateis, /eletrodomesticos, /suplementos-alimentares",
+      "Extract category name from URL slug (convert hyphens to spaces, capitalize)",
+      "Build breadcrumb from URL path segments (e.g., /a/b/c -> ['a', 'b', 'c'])"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Category Discovery via Navigation Menu (Alternative)",
+    "steps": [
+      "Fetch homepage https://www.carrefour.com.br",
+      "Parse HTML for Departamentos menu links",
+      "Main categories found in nav list with hrefs like /categoria/{slug}",
+      "Top-level categories discovered: Celulares e Smartphones, Eletrodomésticos, Tvs e Vídeo, Áudio, Informática, Automotivo, Eletroportáteis, Mundo Casa, Mundo Gamer, Mundo Bebê, Mercearia",
+      "Subcategories visible in sidebar when visiting a category page",
+      "This method is backup - sitemap is preferred for completeness"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Product Listing Extraction from Category Pages",
+    "steps": [
+      "Navigate to category URL: https://www.carrefour.com.br/categoria/{slug}",
+      "Parse HTML for product links matching pattern href=\"/{product-slug}/p\"",
+      "Product URLs have format: https://www.carrefour.com.br/{product-slug}/p",
+      "Product slug typically ends with SKU number (e.g., lavalouca-electrolux-...-3651428/p)",
+      "Extract all <a> tags where href contains '/p' at the end",
+      "Filter out non-product URLs (categoria, colecao, wl, cupons, etc.)",
+      "Return list of DiscoveredProduct with url field populated"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Pagination Handling",
+    "steps": [
+      "Default page shows 15 products per page",
+      "Pagination uses URL query parameter: ?page=N (1-indexed)",
+      "Example: /categoria/eletrodomesticos?page=2",
+      "Total pages visible in pagination UI (e.g., 1, 2, 3, 4, 5, ..., 50)",
+      "Check for 'next page' link or detect last page number from pagination",
+      "Return nextPageUrl when more pages exist",
+      "Stop pagination when page returns no products or exceeds known last page"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Product Detail Extraction via JSON-LD",
+    "steps": [
+      "Fetch product page URL: https://www.carrefour.com.br/{product-slug}/p",
+      "Parse HTML for <script type=\"application/ld+json\"> tag",
+      "JSON-LD contains schema.org Product data with fields:",
+      "- name: Product title (string)",
+      "- brand.name: Brand name (string)",
+      "- sku: Internal SKU code (string, e.g., '334798749')",
+      "- gtin: EAN/GTIN barcode (string, e.g., '7909569479902')",
+      "- description: HTML description (needs cleaning)",
+      "- image: Product image URL(s)",
+      "- category: Category path (string, e.g., '/Eletrodomésticos/Lavadora de Louça/')",
+      "- mpn: Manufacturer part number (string)",
+      "- offers.price: Price as number",
+      "- offers.priceCurrency: Currency code (BRL)",
+      "- offers.availability: Stock status URL (http://schema.org/InStock)",
+      "Map JSON-LD fields to ParsedProduct interface"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Error Handling and Bot Detection",
+    "steps": [
+      "Check response.isBlocked for Cloudflare/bot detection",
+      "Site uses Cloudflare (detected in network requests)",
+      "Handle HTTP errors gracefully with CrawlError",
+      "Retry with backoff for transient failures",
+      "Return partial results with errors array when some items fail"
+    ],
+    "passes": false
+  },
+  {
+    "category": "technical",
+    "description": "Crawler Implementation",
+    "steps": [
+      "Create carrefour.crawler.ts extending BaseCatalogCrawler",
+      "Set crawlerId = 'carrefour'",
+      "Set displayName = 'Carrefour Brasil'",
+      "Set supportedMerchantIds from database",
+      "Implement discoverCategories() using sitemap parsing",
+      "Implement crawlCategoryPage() with HTML link extraction",
+      "Implement fetchProduct() with JSON-LD parsing",
+      "Use normalizeUrl() for relative URLs",
+      "Use extractJsonLd() helper from base class"
+    ],
+    "passes": false
+  },
+  {
+    "category": "technical",
+    "description": "Register Crawler",
+    "steps": [
+      "Import CarrefourCrawler in registry/crawler.registry.ts",
+      "Add this.registerCrawler(new CarrefourCrawler()) in onModuleInit()",
+      "Verify crawler appears in registry"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing",
+    "description": "Unit Tests",
+    "steps": [
+      "Create carrefour.crawler.spec.ts",
+      "Test discoverCategories() returns valid category list",
+      "Test crawlCategoryPage() extracts product URLs correctly",
+      "Test fetchProduct() parses JSON-LD data correctly",
+      "Test pagination URL generation",
+      "Test error handling for blocked responses",
+      "Mock httpFetchService responses"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing",
+    "description": "Integration Test",
+    "steps": [
+      "Run crawler against live site with limited scope",
+      "Verify at least 1 category discovered",
+      "Verify at least 1 product URL extracted from category",
+      "Verify product details extracted with name, gtin, brand",
+      "Check no critical errors in results"
+    ],
+    "passes": false
+  }
+]
