@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -22,6 +22,10 @@ export const DEFAULT_EXPLORER_MODEL = "gpt-5.6-sol";
 
 const StrategyEnvelopeSchema = z.object({ strategy: StrategySchema }).strict();
 const STRATEGY_OUTPUT_SCHEMA = z.toJSONSchema(StrategyEnvelopeSchema);
+const MAX_ARTIFACT_BYTES = 1_000_000;
+const MAX_WORKSPACE_BYTES = 8_000_000;
+const MAX_WORKSPACE_ENTRIES = 128;
+const MAX_WORKSPACE_DEPTH = 8;
 
 interface CodexThreadLike {
   run(
@@ -139,21 +143,113 @@ function parseEnvelope(text: string, source: string) {
   return StrategyEnvelopeSchema.parse(parsed);
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalValue(child)]),
+  );
+}
+
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalValue(value));
+}
+
+async function auditWorkspaceTree(workspacePath: string): Promise<void> {
+  let entries = 0;
+  let totalBytes = 0;
+  const visit = async (directory: string, relativeDirectory: string, depth: number): Promise<void> => {
+    if (depth > MAX_WORKSPACE_DEPTH) {
+      throw new Error("Generated workspace exceeds the trusted host depth limit");
+    }
+    const children = await readdir(directory, { withFileTypes: true });
+    for (const child of children) {
+      entries += 1;
+      if (entries > MAX_WORKSPACE_ENTRIES) {
+        throw new Error("Generated workspace exceeds the trusted host entry limit");
+      }
+      const relative = relativeDirectory === "" ? child.name : `${relativeDirectory}/${child.name}`;
+      const path = join(directory, child.name);
+      const metadata = await lstat(path);
+      if (metadata.isSymbolicLink()) {
+        throw new Error(`Generated workspace contains a symbolic link: ${relative}`);
+      }
+      if (metadata.isDirectory()) {
+        await visit(path, relative, depth + 1);
+        continue;
+      }
+      if (!metadata.isFile() || metadata.nlink !== 1) {
+        throw new Error(`Generated workspace contains a non-regular file: ${relative}`);
+      }
+      if ((metadata.mode & 0o111) !== 0 && relative !== "validate-strategy") {
+        throw new Error(`Generated workspace contains an unexpected executable: ${relative}`);
+      }
+      if (metadata.size > MAX_ARTIFACT_BYTES) {
+        throw new Error(`Generated workspace file exceeds the trusted host size limit: ${relative}`);
+      }
+      totalBytes += metadata.size;
+      if (totalBytes > MAX_WORKSPACE_BYTES) {
+        throw new Error("Generated workspace exceeds the trusted host total size limit");
+      }
+    }
+  };
+  const root = await lstat(workspacePath);
+  if (!root.isDirectory() || root.isSymbolicLink()) {
+    throw new Error("Generated workspace root must remain a regular directory");
+  }
+  await visit(workspacePath, "", 0);
+}
+
+async function descriptorReadUtf8(
+  handle: Awaited<ReturnType<typeof open>>,
+  limit: number,
+): Promise<{ text: string; bytes: number }> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, limit + 1 - total));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+    if (total > limit) throw new Error("strategy.json exceeds the trusted host size limit");
+    chunks.push(chunk.subarray(0, bytesRead));
+  }
+  return { text: Buffer.concat(chunks, total).toString("utf8"), bytes: total };
+}
+
+function sameArtifactIdentity(
+  left: Awaited<ReturnType<typeof lstat>>,
+  right: Awaited<ReturnType<typeof lstat>>,
+): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.isFile() === right.isFile()
+    && left.nlink === right.nlink
+    && left.size === right.size;
+}
+
 async function readRegularArtifact(path: string): Promise<string> {
   const metadata = await lstat(path);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
     throw new Error("strategy.json must be one regular file, not a symbolic link");
   }
-  if (metadata.size > 1_000_000) {
+  if (metadata.size > MAX_ARTIFACT_BYTES) {
     throw new Error("strategy.json exceeds the trusted host size limit");
   }
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.nlink !== 1 || opened.size !== metadata.size) {
+    if (!opened.isFile() || !sameArtifactIdentity(metadata, opened)) {
       throw new Error("strategy.json changed before the trusted host could read it");
     }
-    return await handle.readFile("utf8");
+    const read = await descriptorReadUtf8(handle, MAX_ARTIFACT_BYTES);
+    const after = await handle.stat();
+    if (!after.isFile() || !sameArtifactIdentity(opened, after) || read.bytes !== after.size) {
+      throw new Error("strategy.json changed while the trusted host read it");
+    }
+    return read.text;
   } finally {
     await handle.close();
   }
@@ -223,26 +319,44 @@ export class CodexStrategyGenerator implements StrategyGenerator {
         outputSchema: STRATEGY_OUTPUT_SCHEMA,
         signal: controller.signal,
       });
-      const response = parseEnvelope(turn.finalResponse, "Codex final response");
-      const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
-      const artifact = parseEnvelope(artifactText, "strategy.json");
-      if (JSON.stringify(response) !== JSON.stringify(artifact)) {
-        throw new Error("Codex response and strategy.json artifact differ");
-      }
+      const usage = turn.usage === null
+        ? { inputTokens: 0, outputTokens: 0 }
+        : {
+            inputTokens: turn.usage.input_tokens,
+            outputTokens: turn.usage.output_tokens,
+            cachedInputTokens: turn.usage.cached_input_tokens,
+            reasoningOutputTokens: turn.usage.reasoning_output_tokens,
+          };
       if (turn.usage === null) {
-        throw new Error("Codex completed without auditable token usage");
+        return {
+          status: "failed",
+          model: this.#model,
+          usage,
+          error: "Codex completed without auditable token usage",
+        };
       }
-      return {
-        status: "candidate",
-        model: this.#model,
-        strategy: artifact.strategy,
-        usage: {
-          inputTokens: turn.usage.input_tokens,
-          outputTokens: turn.usage.output_tokens,
-          cachedInputTokens: turn.usage.cached_input_tokens,
-          reasoningOutputTokens: turn.usage.reasoning_output_tokens,
-        },
-      };
+      try {
+        await auditWorkspaceTree(workspacePath);
+        const response = parseEnvelope(turn.finalResponse, "Codex final response");
+        const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
+        const artifact = parseEnvelope(artifactText, "strategy.json");
+        if (canonicalJson(response) !== canonicalJson(artifact)) {
+          throw new Error("Codex response and strategy.json artifact differ");
+        }
+        return {
+          status: "candidate",
+          model: this.#model,
+          strategy: artifact.strategy,
+          usage,
+        };
+      } catch (error) {
+        return {
+          status: "failed",
+          model: this.#model,
+          usage,
+          error: error instanceof Error ? error.message : String(error) || "Invalid Codex artifact",
+        };
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       await rm(stateRoot, { recursive: true, force: true });

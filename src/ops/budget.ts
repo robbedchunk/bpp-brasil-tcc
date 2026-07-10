@@ -1,5 +1,6 @@
 import { Decimal } from "decimal.js";
 import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 
 export const RELEASED_CLASSIFICATION_BATCH_STATUSES = [
   "finalize_failed",
@@ -25,15 +26,134 @@ export function classificationMonthlyCommittedUsd(
            ELSE projected_cost_usd
          END
        ), 0)
-       FROM classification_batch_jobs
+      FROM classification_batch_jobs
        WHERE status NOT LIKE 'finalized%'
-         AND status NOT IN (${releasedPlaceholders})) AS committed
+         AND status NOT IN (${releasedPlaceholders}))
+      +
+      (SELECT COALESCE(SUM(amount_usd), 0)
+       FROM model_budget_reservations
+       WHERE status = 'reserved' AND month_start = ?) AS committed
   `).get(
     monthStart,
     nextMonth,
     ...RELEASED_CLASSIFICATION_BATCH_STATUSES,
+    monthStart,
   ) as { committed: number };
   return row.committed;
+}
+
+export interface ExplorationBudgetReservationDecision {
+  reserved: boolean;
+  explorationRunId: string;
+  amountUsd: number;
+  committedBeforeUsd: number;
+}
+
+function validUsd(name: string, value: number, allowZero = false): void {
+  if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
+    throw new RangeError(`${name} must be ${allowZero ? "a non-negative" : "a positive"} finite number`);
+  }
+}
+
+function monthStartIso(now: Date): string {
+  if (!Number.isFinite(now.getTime())) throw new RangeError("now must be a valid date");
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+}
+
+export function reserveExplorationBudget(
+  database: Database.Database,
+  input: {
+    explorationRunId: string;
+    retailerId: string;
+    eventAllowanceUsd: number;
+    monthlyLimitUsd: number;
+    now: Date;
+  },
+): ExplorationBudgetReservationDecision {
+  validUsd("eventAllowanceUsd", input.eventAllowanceUsd);
+  validUsd("monthlyLimitUsd", input.monthlyLimitUsd, true);
+  const reserve = database.transaction((): ExplorationBudgetReservationDecision => {
+    const existing = database.prepare(
+      `SELECT amount_usd, status FROM model_budget_reservations
+       WHERE exploration_run_id = ?`,
+    ).get(input.explorationRunId) as { amount_usd: number; status: string } | undefined;
+    if (existing !== undefined) {
+      return {
+        reserved: existing.status === "reserved",
+        explorationRunId: input.explorationRunId,
+        amountUsd: existing.amount_usd,
+        committedBeforeUsd: classificationMonthlyCommittedUsd(database, input.now)
+          - (existing.status === "reserved" ? existing.amount_usd : 0),
+      };
+    }
+    const committedBeforeUsd = classificationMonthlyCommittedUsd(database, input.now);
+    if (new Decimal(committedBeforeUsd).plus(input.eventAllowanceUsd)
+      .greaterThan(input.monthlyLimitUsd)) {
+      return {
+        reserved: false,
+        explorationRunId: input.explorationRunId,
+        amountUsd: input.eventAllowanceUsd,
+        committedBeforeUsd,
+      };
+    }
+    const reservedAt = input.now.toISOString();
+    database.prepare(
+      `INSERT INTO model_budget_reservations
+         (id, category, retailer_id, exploration_run_id, amount_usd,
+          status, month_start, reserved_at, details_json)
+       VALUES (?, 'strategy-exploration', ?, ?, ?, 'reserved', ?, ?, ?)`,
+    ).run(
+      randomUUID(),
+      input.retailerId,
+      input.explorationRunId,
+      input.eventAllowanceUsd,
+      monthStartIso(input.now),
+      reservedAt,
+      JSON.stringify({ monthlyLimitUsd: input.monthlyLimitUsd, committedBeforeUsd }),
+    );
+    return {
+      reserved: true,
+      explorationRunId: input.explorationRunId,
+      amountUsd: input.eventAllowanceUsd,
+      committedBeforeUsd,
+    };
+  });
+  return reserve.immediate();
+}
+
+export function settleExplorationBudget(
+  database: Database.Database,
+  input: {
+    explorationRunId: string;
+    actualCostUsd: number;
+    settledAt: string;
+    release?: boolean;
+  },
+): void {
+  validUsd("actualCostUsd", input.actualCostUsd, true);
+  if (!Number.isFinite(Date.parse(input.settledAt))) {
+    throw new RangeError("settledAt must be an ISO timestamp");
+  }
+  const result = database.prepare(
+    `UPDATE model_budget_reservations
+     SET status = ?, actual_cost_usd = ?, settled_at = ?,
+         details_json = json_set(details_json, '$.actualCostUsd', ?)
+     WHERE exploration_run_id = ? AND status = 'reserved'`,
+  ).run(
+    input.release === true ? "released" : "settled",
+    input.actualCostUsd,
+    input.settledAt,
+    input.actualCostUsd,
+    input.explorationRunId,
+  );
+  if (result.changes === 0) {
+    const existing = database.prepare(
+      "SELECT status FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(input.explorationRunId) as { status: string } | undefined;
+    if (existing === undefined) {
+      throw new Error(`Exploration budget reservation ${input.explorationRunId} was not found`);
+    }
+  }
 }
 
 export type BudgetDecision = "continue" | "pause";

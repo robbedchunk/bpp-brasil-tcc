@@ -14,6 +14,13 @@ export interface RunFailureEvidence {
   responded: boolean;
 }
 
+export interface RunHealthAssessment {
+  health: RunHealth;
+  driftRatio: number;
+  blockingRatio: number;
+  ambiguousRatio: number;
+}
+
 const EXTRACTION_FAILURES = new Set<FailureCategory>([
   "parse",
   "missing-fields",
@@ -32,10 +39,10 @@ const TRANSPORT_FAILURES = new Set<FailureCategory>([
   "network",
 ]);
 
-export function classifyRunHealth(
+export function assessRunHealth(
   run: RunHealthInput,
   failures: readonly RunFailureEvidence[],
-): RunHealth {
+): RunHealthAssessment {
   if (
     !Number.isSafeInteger(run.attempted)
     || !Number.isSafeInteger(run.ok)
@@ -47,7 +54,9 @@ export function classifyRunHealth(
   ) {
     throw new Error("Run counters must be non-negative and internally consistent");
   }
-  if (run.attempted > 0 && run.ok / run.attempted >= 0.7) return "healthy";
+  if (run.attempted > 0 && run.ok / run.attempted >= 0.7) {
+    return { health: "healthy", driftRatio: 0, blockingRatio: 0, ambiguousRatio: 0 };
+  }
 
   let drift = 0;
   let hardBlocking = 0;
@@ -67,11 +76,22 @@ export function classifyRunHealth(
 
   const repeatedTransport = transport >= 2;
   const blocking = hardBlocking + (repeatedTransport ? transport : 0);
-  if (blocking > 0 && (drift > 0 || ambiguous > 0)) return "mixed";
-  if (blocking > 0) return "blocking";
-  // A single timeout/network failure remains ambiguous and follows the
-  // no-model-spend path just like blocking evidence.
-  if (transport > 0) return "mixed";
-  if (drift > 0 && ambiguous === 0) return "drift";
-  return "mixed";
+  if (!repeatedTransport) ambiguous += transport;
+  const denominator = Math.max(1, run.failed);
+  const driftRatio = drift / denominator;
+  const blockingRatio = blocking / denominator;
+  const ambiguousRatio = ambiguous / denominator;
+  const health: RunHealth = blockingRatio >= 0.2
+    ? "blocking"
+    : driftRatio >= 0.8
+      ? "drift"
+      : "mixed";
+  return { health, driftRatio, blockingRatio, ambiguousRatio };
+}
+
+export function classifyRunHealth(
+  run: RunHealthInput,
+  failures: readonly RunFailureEvidence[],
+): RunHealth {
+  return assessRunHealth(run, failures).health;
 }

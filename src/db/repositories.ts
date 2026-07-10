@@ -96,9 +96,24 @@ export interface ActivatedStrategy {
   version: number;
 }
 
+export interface GeneratedStrategyActivationInput {
+  explorationRunId: string;
+  retailerId: string;
+  purpose: StrategyPurpose;
+  expectedPreviousStrategyId?: string;
+  strategy: Strategy;
+  model: string;
+  promptVersion: string;
+  validationSampleSize: number;
+  validationSuccesses: number;
+  validationScore: number;
+  activatedAt: string;
+}
+
 export interface StoredRunHealth {
   id: string;
   retailerId: string;
+  strategyId: string | null;
   status: string;
   attempted: number;
   ok: number;
@@ -514,19 +529,7 @@ export function recordExplorationAttempt(
 
 export function activateGeneratedStrategy(
   database: Database.Database,
-  input: {
-    explorationRunId: string;
-    retailerId: string;
-    purpose: StrategyPurpose;
-    expectedPreviousStrategyId?: string;
-    strategy: Strategy;
-    model: string;
-    promptVersion: string;
-    validationSampleSize: number;
-    validationSuccesses: number;
-    validationScore: number;
-    activatedAt: string;
-  },
+  input: GeneratedStrategyActivationInput,
 ): ActivatedStrategy {
   if (input.strategy.purpose !== input.purpose) {
     throw new Error("Generated strategy purpose does not match activation purpose");
@@ -648,12 +651,13 @@ export function findRunHealthEvidence(
   runId: string,
 ): { run: StoredRunHealth; failures: StoredRunFailureEvidence[] } {
   const row = database.prepare(
-    `SELECT id, retailer_id, status, attempted, ok, failed, started_at,
+    `SELECT id, retailer_id, strategy_id, status, attempted, ok, failed, started_at,
             finished_at, metadata_json
      FROM runs WHERE id = ? AND stage = 'collect'`,
   ).get(runId) as {
     id: string;
     retailer_id: string | null;
+    strategy_id: string | null;
     status: string;
     attempted: number;
     ok: number;
@@ -678,11 +682,12 @@ export function findRunHealthEvidence(
     // Immutable failure categories remain sufficient when old metadata has no hints.
   }
   const failureRows = database.prepare(
-    `SELECT category, canonical_url, message
+    `SELECT category, responded, canonical_url, message
      FROM run_failures WHERE run_id = ?
      ORDER BY occurred_at, id`,
   ).all(runId) as Array<{
     category: string;
+    responded: number | null;
     canonical_url: string | null;
     message: string | null;
   }>;
@@ -690,6 +695,7 @@ export function findRunHealthEvidence(
     run: {
       id: row.id,
       retailerId: row.retailer_id,
+      strategyId: row.strategy_id,
       status: row.status,
       attempted: row.attempted,
       ok: row.ok,
@@ -701,7 +707,9 @@ export function findRunHealthEvidence(
       const category = storedFailureCategory(failure.category);
       return {
         category,
-        responded: responseHints[index] ?? inferredResponded(category),
+        responded: failure.responded === null
+          ? responseHints[index] ?? inferredResponded(category)
+          : failure.responded === 1,
         canonicalUrl: failure.canonical_url,
         message: failure.message,
       };
@@ -778,6 +786,7 @@ export function beginHealingEvent(
     purpose: StrategyPurpose;
     onsetRunId: string;
     detectedAt: string;
+    queued?: boolean;
   },
 ): { event: HealingEventRecord; created: boolean } {
   const begin = database.transaction(() => {
@@ -796,15 +805,20 @@ export function beginHealingEvent(
     );
     if (open !== null) return { event: open, created: false };
     const run = database.prepare(
-      `SELECT started_at FROM runs WHERE id = ? AND retailer_id = ?`,
-    ).get(input.onsetRunId, input.retailerId) as { started_at: string } | undefined;
+      `SELECT runs.started_at, runs.strategy_id, strategies.tier,
+              strategies.purpose
+       FROM runs
+       LEFT JOIN strategies ON strategies.id = runs.strategy_id
+       WHERE runs.id = ? AND runs.retailer_id = ?`,
+    ).get(input.onsetRunId, input.retailerId) as {
+      started_at: string;
+      strategy_id: string | null;
+      tier: number | null;
+      purpose: StrategyPurpose | null;
+    } | undefined;
     if (run === undefined) throw new Error(`Onset run ${input.onsetRunId} was not found`);
-    const previous = database.prepare(
-      `SELECT id, tier FROM strategies
-       WHERE retailer_id = ? AND purpose = ? AND active = 1`,
-    ).get(input.retailerId, input.purpose) as { id: string; tier: number } | undefined;
-    if (previous === undefined) {
-      throw new Error(`No active ${input.purpose} strategy exists for ${input.retailerId}`);
+    if (run.strategy_id === null || run.tier === null || run.purpose !== input.purpose) {
+      throw new Error(`Onset run ${input.onsetRunId} has no matching strategy evidence`);
     }
     const id = randomUUID();
     database.prepare(
@@ -818,17 +832,36 @@ export function beginHealingEvent(
       input.retailerId,
       input.purpose,
       input.onsetRunId,
-      previous.id,
-      previous.tier,
+      run.strategy_id,
+      run.tier,
       run.started_at,
       input.detectedAt,
-      JSON.stringify({ leaseStartedAt: input.detectedAt }),
+      JSON.stringify({ leaseStartedAt: input.queued === true ? null : input.detectedAt }),
     );
     const event = findHealingEvent(database, "id = ?", id);
     if (event === null) throw new Error("Healing event insert was not visible");
     return { event, created: true };
   });
   return begin.immediate();
+}
+
+export function listOpenHealingEvents(
+  database: Database.Database,
+  retailerId?: string,
+): HealingEventRecord[] {
+  const predicate = retailerId === undefined
+    ? "status = 'open'"
+    : "status = 'open' AND retailer_id = ?";
+  const rows = database.prepare(
+    `SELECT id, retailer_id, purpose, onset_run_id, previous_strategy_id,
+            successor_strategy_id, status, attempts, tier_from, tier_to,
+            drift_started_at, detected_at, recovered_at
+     FROM healing_events WHERE ${predicate}
+     ORDER BY detected_at, id`,
+  ).all(...(retailerId === undefined ? [] : [retailerId])) as Array<
+    Parameters<typeof healingEventFromRow>[0]
+  >;
+  return rows.map(healingEventFromRow);
 }
 
 export function claimStaleHealingEvent(
@@ -841,10 +874,13 @@ export function claimStaleHealingEvent(
     `UPDATE healing_events
      SET details_json = json_set(details_json, '$.leaseStartedAt', ?)
      WHERE id = ? AND status = 'open'
-       AND COALESCE(
-         json_extract(details_json, '$.leaseStartedAt'),
-         detected_at
-       ) <= ?`,
+       AND (
+         json_type(details_json, '$.leaseStartedAt') = 'null'
+         OR COALESCE(
+           json_extract(details_json, '$.leaseStartedAt'),
+           detected_at
+         ) <= ?
+       )`,
   ).run(claimedAt, healingEventId, staleBefore);
   return result.changes === 1;
 }
@@ -853,7 +889,7 @@ export function finishHealingEvent(
   database: Database.Database,
   input: {
     healingEventId: string;
-    status: "recovered" | "failed" | "provider_unavailable" | "deferred";
+    status: "recovered" | "failed" | "provider_unavailable" | "deferred" | "superseded";
     attempts: number;
     finishedAt: string;
     successorStrategyId?: string;
@@ -895,6 +931,81 @@ export function finishHealingEvent(
     return completed;
   });
   return finish.immediate();
+}
+
+export function commitExplorationSuccess(
+  database: Database.Database,
+  input: {
+    attempt: ExplorationAttemptEvidence;
+    activation: GeneratedStrategyActivationInput;
+    exploration: {
+      outcome: string;
+      finishedAt: string;
+      artifact: unknown;
+    };
+    totalAttempts: number;
+    totalCostUsd: number;
+    healingEventId?: string;
+  },
+): ActivatedStrategy {
+  const commit = database.transaction(() => {
+    if (input.healingEventId !== undefined) {
+      const event = findHealingEvent(database, "id = ?", input.healingEventId);
+      if (
+        event === null
+        || event.status !== "open"
+        || event.previousStrategyId !== input.activation.expectedPreviousStrategyId
+      ) {
+        throw new Error("Healing event changed before trusted activation");
+      }
+    }
+    recordExplorationAttempt(database, input.attempt);
+    const activated = activateGeneratedStrategy(database, input.activation);
+    finishExplorationRun(database, {
+      explorationRunId: input.activation.explorationRunId,
+      outcome: input.exploration.outcome,
+      finishedAt: input.exploration.finishedAt,
+      artifact: input.exploration.artifact,
+    });
+    if (input.healingEventId !== undefined) {
+      finishHealingEvent(database, {
+        healingEventId: input.healingEventId,
+        status: "recovered",
+        attempts: input.totalAttempts,
+        finishedAt: input.exploration.finishedAt,
+        successorStrategyId: activated.id,
+        details: {
+          explorationRunId: input.activation.explorationRunId,
+          explorationOutcome: input.exploration.outcome,
+          externalScore: input.activation.validationScore,
+          costUsd: input.totalCostUsd,
+        },
+      });
+      setRetailerDegraded(
+        database,
+        input.activation.retailerId,
+        false,
+        undefined,
+        input.exploration.finishedAt,
+      );
+    }
+    const reservation = database.prepare(
+      `UPDATE model_budget_reservations
+       SET status = 'settled', actual_cost_usd = ?, settled_at = ?,
+           details_json = json_set(details_json, '$.actualCostUsd', ?)
+       WHERE exploration_run_id = ? AND status = 'reserved'`,
+    ).run(
+      input.totalCostUsd,
+      input.exploration.finishedAt,
+      input.totalCostUsd,
+      input.activation.explorationRunId,
+    );
+    if (reservation.changes !== 1) {
+      throw new Error("Exploration success requires an active budget reservation");
+    }
+    return activated;
+  });
+  return commit.immediate();
 }
 
 export function consecutiveFailedHealingEvents(
@@ -955,8 +1066,8 @@ export function insertRunFailure(
     `INSERT INTO run_failures
        (id, run_id, retailer_id, product_id, canonical_url, category, message,
         http_status, strategy_id, strategy_version, response_path,
-        response_sha256, occurred_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        response_sha256, occurred_at, responded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.runId,
@@ -971,6 +1082,7 @@ export function insertRunFailure(
     input.replay?.path ?? null,
     input.replay?.sha256 ?? null,
     input.occurredAt,
+    input.failure.responded ? 1 : 0,
   );
   return id;
 }

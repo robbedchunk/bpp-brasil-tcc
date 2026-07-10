@@ -67,6 +67,7 @@ describe("collection pipeline", () => {
     expect(summary).toMatchObject({ attempted: 3, ok: 2, failed: 1, successRate: 2 / 3 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations").get()).toEqual({ n: 2 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 1 });
+    expect(database.prepare("SELECT responded FROM run_failures").get()).toEqual({ responded: 1 });
     expect(summary.attempted).toBe(summary.ok + summary.failed);
   });
 

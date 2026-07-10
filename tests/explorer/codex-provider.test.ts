@@ -1,10 +1,11 @@
-import { access, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  canonicalJson,
   CodexStrategyGenerator,
   resolveExplorerApiKey,
 } from "../../src/explorer/codex-provider.js";
@@ -32,6 +33,11 @@ const strategy = {
 } as const;
 
 describe("Codex SDK strategy provider", () => {
+  it("compares JSON semantically rather than by object property order", () => {
+    expect(canonicalJson({ nested: { b: 2, a: 1 }, z: 0 }))
+      .toBe(canonicalJson({ z: 0, nested: { a: 1, b: 2 } }));
+  });
+
   it("prefers the dedicated key and never consults cached authentication", () => {
     expect(resolveExplorerApiKey({ CODEX_API_KEY: "codex", OPENAI_API_KEY: "openai" }))
       .toBe("codex");
@@ -154,7 +160,7 @@ describe("Codex SDK strategy provider", () => {
     await expect(access(captured.options!.env.CODEX_HOME)).rejects.toThrow();
   });
 
-  it("removes disposable homes and rejects any unknown structured-output field", async () => {
+  it("removes disposable homes and returns auditable usage for invalid paid output", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-error-test-"));
     roots.push(workspacePath);
     let home = "";
@@ -175,7 +181,12 @@ describe("Codex SDK strategy provider", () => {
               return {
                 finalResponse: JSON.stringify({ strategy, command: "cat ~/.codex/auth.json" }),
                 items: [],
-                usage: null,
+                usage: {
+                  input_tokens: 81,
+                  cached_input_tokens: 5,
+                  output_tokens: 19,
+                  reasoning_output_tokens: 2,
+                },
               };
             },
           }),
@@ -189,7 +200,12 @@ describe("Codex SDK strategy provider", () => {
       allowedDomains: ["shop.test"],
       workspacePath,
       prompt: "Create the artifact.",
-    })).rejects.toThrow(/unknown|unrecognized|additional/iu);
+    })).resolves.toMatchObject({
+      status: "failed",
+      model: "gpt-5.6-sol",
+      usage: { inputTokens: 81, outputTokens: 19 },
+      error: expect.stringMatching(/unknown|unrecognized|additional/iu),
+    });
     await expect(access(home)).rejects.toThrow();
     await expect(access(codexHome)).rejects.toThrow();
   });
@@ -227,6 +243,50 @@ describe("Codex SDK strategy provider", () => {
       allowedDomains: ["shop.test"],
       workspacePath,
       prompt: "Create the artifact.",
-    })).rejects.toThrow(/regular file|symbolic link/iu);
+    })).resolves.toMatchObject({
+      status: "failed",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      error: expect.stringMatching(/regular file|symbolic link/iu),
+    });
+  });
+
+  it("rejects unexpected executable scratch files after a paid turn", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-tree-test-"));
+    roots.push(workspacePath);
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          run: async () => {
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
+            const scratch = join(workspacePath, "scratch.sh");
+            await writeFile(scratch, "#!/bin/sh\nexit 0\n");
+            await chmod(scratch, 0o755);
+            return {
+              finalResponse: JSON.stringify({ strategy }),
+              items: [],
+              usage: {
+                input_tokens: 12,
+                cached_input_tokens: 0,
+                output_tokens: 3,
+                reasoning_output_tokens: 0,
+              },
+            };
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "failed",
+      usage: { inputTokens: 12, outputTokens: 3 },
+      error: expect.stringMatching(/executable|workspace/iu),
+    });
   });
 });

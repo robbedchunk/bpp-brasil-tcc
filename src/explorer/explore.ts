@@ -5,15 +5,20 @@ import { Decimal } from "decimal.js";
 
 import { executeExtraction } from "../collection/executor.js";
 import {
-  activateGeneratedStrategy,
   beginExplorationRun,
+  commitExplorationSuccess,
   findRetailerExplorationContext,
   finishExplorationRun,
   listStrategyValidationRefs,
   recordExplorationAttempt,
+  type ExplorationAttemptEvidence,
 } from "../db/repositories.js";
 import { executeDiscovery } from "../discovery/executor.js";
-import { classificationMonthlyCommittedUsd } from "../ops/budget.js";
+import type { AlertSink } from "../ops/alerts.js";
+import {
+  reserveExplorationBudget,
+  settleExplorationBudget,
+} from "../ops/budget.js";
 import {
   DiscoveryStrategySchema,
   ExtractionStrategySchema,
@@ -92,6 +97,8 @@ export interface ExploreRetailerDependencies {
   rate?: ExplorerRate;
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
+  healingEventId?: string;
+  alertSink?: AlertSink;
 }
 
 export type ExplorationOutcomeName =
@@ -297,8 +304,10 @@ export async function exploreRetailer(
   let outcome: ExplorationOutcomeName = "provider_failed";
   let activated: { id: string; version: number } | undefined;
   let finalError: string | undefined;
+  let reservationActive = false;
+  let explorationFinished = false;
 
-  const record = (
+  const attemptEvidence = (
     attemptNumber: number,
     prompt: string,
     result: Pick<GenerationResult, "model" | "usage">,
@@ -308,10 +317,10 @@ export async function exploreRetailer(
       artifact?: unknown;
       errorMessage?: string;
     } = {},
-  ): void => {
+  ): ExplorationAttemptEvidence => {
     const usage = result.usage;
     const costUsd = estimateExplorerCost(usage, rate);
-    recordExplorationAttempt(dependencies.database, {
+    return {
       explorationRunId,
       attemptNumber,
       model: result.model,
@@ -338,7 +347,23 @@ export async function exploreRetailer(
         ? {}
         : { errorMessage: options.errorMessage }),
       createdAt: now().toISOString(),
-    });
+    };
+  };
+  const record = (
+    attemptNumber: number,
+    prompt: string,
+    result: Pick<GenerationResult, "model" | "usage">,
+    attemptOutcome: ExplorationOutcomeName,
+    options: {
+      report?: CandidateValidationReport;
+      artifact?: unknown;
+      errorMessage?: string;
+    } = {},
+  ): void => {
+    recordExplorationAttempt(
+      dependencies.database,
+      attemptEvidence(attemptNumber, prompt, result, attemptOutcome, options),
+    );
   };
 
   try {
@@ -390,11 +415,14 @@ export async function exploreRetailer(
       };
     }
 
-    const monthlyCommittedBefore = classificationMonthlyCommittedUsd(
-      dependencies.database,
-      now(),
-    );
-    if (monthlyCommittedBefore + eventBudgetUsd > monthlyBudgetUsd) {
+    const reservation = reserveExplorationBudget(dependencies.database, {
+      explorationRunId,
+      retailerId,
+      eventAllowanceUsd: eventBudgetUsd,
+      monthlyLimitUsd: monthlyBudgetUsd,
+      now: now(),
+    });
+    if (!reservation.reserved) {
       attempts = 1;
       outcome = "budget_paused";
       finalError = "Monthly model budget cannot reserve this exploration event";
@@ -411,6 +439,7 @@ export async function exploreRetailer(
         costUsd: totalCostUsd,
       };
     }
+    reservationActive = true;
 
     const validateCandidate = dependencies.validateCandidate
       ?? defaultValidator(purpose, dependencies);
@@ -469,11 +498,26 @@ export async function exploreRetailer(
       totalCostUsd = new Decimal(totalCostUsd).plus(attemptCost).toNumber();
       if (
         totalCostUsd > eventBudgetUsd
-        || monthlyCommittedBefore + totalCostUsd > monthlyBudgetUsd
       ) {
         outcome = "budget_exhausted";
         finalError = "Model usage reached the configured budget cap";
         record(attempt, prompt, result, outcome, { errorMessage: finalError });
+        try {
+          await dependencies.alertSink?.send({
+            severity: "warning",
+            title: "Strategy exploration budget overrun",
+            message: "A completed model turn exceeded the reserved event allowance; evidence was retained and no candidate was activated",
+            details: {
+              retailerId,
+              purpose,
+              explorationRunId,
+              eventBudgetUsd,
+              actualCostUsd: totalCostUsd,
+            },
+          });
+        } catch {
+          // Budget evidence is authoritative even when the optional alert sink fails.
+        }
         break;
       }
 
@@ -526,24 +570,60 @@ export async function exploreRetailer(
         continue;
       }
 
-      activated = activateGeneratedStrategy(dependencies.database, {
-        explorationRunId,
-        retailerId,
-        purpose,
-        ...(context.previousStrategy === null
-          ? {}
-          : { expectedPreviousStrategyId: context.previousStrategy.id }),
-        strategy,
-        model: result.model,
-        promptVersion: EXPLORER_PROMPT_VERSION,
-        validationSampleSize: report.attempted,
-        validationSuccesses: report.valid,
-        validationScore: report.score,
-        activatedAt: now().toISOString(),
-      });
       outcome = "activated";
       finalError = undefined;
-      record(attempt, prompt, result, outcome, { report, artifact: { strategy } });
+      const finishedAt = now().toISOString();
+      try {
+        activated = commitExplorationSuccess(dependencies.database, {
+          attempt: attemptEvidence(attempt, prompt, result, outcome, {
+            report,
+            artifact: { strategy },
+          }),
+          activation: {
+            explorationRunId,
+            retailerId,
+            purpose,
+            ...(context.previousStrategy === null
+              ? {}
+              : { expectedPreviousStrategyId: context.previousStrategy.id }),
+            strategy,
+            model: result.model,
+            promptVersion: EXPLORER_PROMPT_VERSION,
+            validationSampleSize: report.attempted,
+            validationSuccesses: report.valid,
+            validationScore: report.score,
+            activatedAt: finishedAt,
+          },
+          exploration: {
+            outcome,
+            finishedAt,
+            artifact: {
+              activated: true,
+              attempts,
+              externalScore,
+              costEstimated: true,
+              estimateSource: rate.source,
+              rateVersion: rate.version,
+            },
+          },
+          totalAttempts: attempts,
+          totalCostUsd,
+          ...(dependencies.healingEventId === undefined
+            ? {}
+            : { healingEventId: dependencies.healingEventId }),
+        });
+        explorationFinished = true;
+        reservationActive = false;
+      } catch (error) {
+        outcome = "provider_failed";
+        finalError = safeError(error);
+        record(attempt, prompt, result, outcome, {
+          report,
+          artifact: { strategy },
+          errorMessage: finalError,
+        });
+        throw error;
+      }
       break;
     }
 
@@ -559,19 +639,33 @@ export async function exploreRetailer(
         : { strategyId: activated.id, strategyVersion: activated.version }),
     };
   } finally {
-    finishExplorationRun(dependencies.database, {
-      explorationRunId,
-      outcome,
-      finishedAt: now().toISOString(),
-      artifact: {
-        activated: activated !== undefined,
-        attempts,
-        externalScore,
-        costEstimated: true,
-        estimateSource: rate.source,
-        rateVersion: rate.version,
-      },
-      ...(finalError === undefined ? {} : { errorMessage: finalError }),
-    });
+    const finishedAt = now().toISOString();
+    try {
+      if (!explorationFinished) {
+        finishExplorationRun(dependencies.database, {
+          explorationRunId,
+          outcome,
+          finishedAt,
+          artifact: {
+            activated: activated !== undefined,
+            attempts,
+            externalScore,
+            costEstimated: true,
+            estimateSource: rate.source,
+            rateVersion: rate.version,
+          },
+          ...(finalError === undefined ? {} : { errorMessage: finalError }),
+        });
+      }
+    } finally {
+      if (reservationActive) {
+        settleExplorationBudget(dependencies.database, {
+          explorationRunId,
+          actualCostUsd: totalCostUsd,
+          settledAt: finishedAt,
+          release: totalCostUsd === 0,
+        });
+      }
+    }
   }
 }
