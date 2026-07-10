@@ -83,3 +83,60 @@ Collection evidence stayed at 8 runs, 62 observations, 60 failures, and 1 heartb
 ## Remaining gate / concerns
 
 The only acceptance gate is a real provider call after an operator supplies an API key and explicitly authorizes spend. Until then, all 60 current products correctly remain pending. No collection process was stopped or modified, and no secret value was printed or persisted.
+
+## Review-fix wave
+
+The required findings in `task-10-review-findings.md` were implemented in a forward-only wave after the initial Task 10 review.
+
+### Additional RED/GREEN evidence
+
+The first focused RED run had 14 expected failures and 27 passes. It demonstrated all reported gaps directly: no Batch module/tables, rounded higher-precision weights, no `weight_text`, no retry for real SDK connection/timeout classes, requested rather than actual model, no billed failed-attempt ledger, `provider_unavailable` for zero work, no shared model resolver, and two concurrent provider entries. Two later focused REDs covered the missing operator Batch command and billed usage for a custom provider result rejected by host validation.
+
+After implementation:
+
+- `npm test -- tests/classify`: 4 files, 47 tests passed.
+- `npm test`: 35 files, 247 tests passed.
+- Node 24 `npm run typecheck`: passed.
+- strict standalone typecheck of `scripts/load-ipca-items.ts`: passed.
+- Node 24 `npm run build`: passed.
+- `git diff --check`: passed.
+
+### Provider, cost, and concurrency corrections
+
+- Transient retry recognition now covers real `APIConnectionError`, `APIConnectionTimeoutError`, real rate-limit and 5xx SDK errors, plus bounded nested `cause.code` inspection. SDK auto-retries remain disabled. Authentication, refusal, schema, and host-validation failures are not retried.
+- `ClassificationProviderError` carries only sanitized attempt metadata: requested and actual model, nullable response ID, attempt number, exact usage, and failure kind. The actual response model/snapshot is stored for successful and failed response evidence.
+- Every billed incomplete, refusal, schema-invalid, host-invalid, retry, duplicate-conflict, and Batch residual/invalid response writes an append-only `classification_failure` cost-ledger row without inventing a classification. The monthly budget query already sums the full ledger, so retries/failures count toward the cap.
+- Production synchronous classification is held under the dedicated existing process-lock mechanism for the complete provider/billing/persistence interval. A deterministic two-invocation regression proves only one provider entry and one classification/cost row.
+- The model is normalized once from the injected CLI environment and the same alias is passed to provider construction and budget preflight. Zero eligible products return `completed` before provider/key checks.
+
+### Exact reference correction
+
+- Weights must now match `^(0|[1-9][0-9]*)\.[0-9]{4}$`; the original Decimal text is summed and the same four-decimal text is persisted in migration-4 `ipca_items.weight_text` alongside the numeric percent.
+- The adversarial addition of `0.000049` to all 84 rows is rejected rather than rounded away.
+- A regression reads the real committed CSV, verifies SHA-256 `61698e58615d5bb37790cc5e0a3e8206866eeeb9895a1a941588d92b6f1b54fd`, loads 84 official codes/provenance rows, confirms 84 distinct SIDRA members, and sums exactly `12.1181`.
+
+### Real asynchronous Batch workflow
+
+Migration 4 adds persisted `classification_batch_jobs`, immutable `classification_batch_items`, and append-only `classification_batch_events`. The operator path is deliberately outside daily collection:
+
+```text
+precos classify-batch submit --version N
+precos classify-batch poll --job LOCAL_JOB_ID
+precos classify-batch finalize --job LOCAL_JOB_ID
+```
+
+Submission creates one strict `/v1/responses` JSONL request per persisted `custom_id`, uploads with `purpose=batch`, creates the 24-hour provider batch, and records preparation/submission lifecycle events and the JSONL hash. Polling persists provider status, output/error file IDs, counts, and aggregate usage. Finalization downloads both files, strictly parses the envelope and root Zod classification object, reconciles unique `custom_id` values to persisted inputs, uses each response's actual model, accounts residual/partial/error usage, and atomically writes classifications, costs, current pointers, job terminal state, and a terminal event. Invalid schema/custom-ID output fails closed, persists aggregate billed cost, and creates no classification. Fake-client tests cover submission, polling, partial output plus error download, strict invalid output, atomic evidence, and missing-client pending behavior.
+
+### Forward production evidence
+
+Migration 4 was applied to the existing production database and the official loader was run twice again. Both runs reported 84 rows and `12.1181`. Post-checks show:
+
+- migrations `4/4`; IPCA rows/distinct codes `84/84`; null or non-four-decimal `weight_text` rows `0`; sum `12.1181`;
+- SNIPC, SIDRA category, and SIDRA area code SQLite storage classes all `text`;
+- integrity `ok` and no foreign-key violations;
+- classifications `0`, classification failure/success cost rows `0`, Batch jobs/items/events `0`, non-null product pointers `0`;
+- synchronous dry-run: 60 eligible/pending, 2 planned batches, zero writes;
+- synchronous no-key: `provider_unavailable`, 60 pending, zero evidence;
+- asynchronous no-key submit for version 2: `provider_unavailable`, 60 pending, zero jobs/evidence, with a sanitized local alert.
+
+Collection evidence remains exactly 8 runs, 62 observations, 60 failures, and 1 heartbeat. Daily, weekly discovery, heartbeat, and backup timers remain enabled and active. A real synchronous or Batch provider acceptance remains intentionally pending until a key and explicit spend authorization are supplied.
