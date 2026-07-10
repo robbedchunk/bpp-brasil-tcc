@@ -2,9 +2,16 @@ import { chmodSync, readFileSync } from "node:fs";
 
 import Database from "better-sqlite3";
 
-const MIGRATION_VERSION = 1;
-const MIGRATION_NAME = "m0_foundation";
 const SCHEMA_SQL = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
+const APPEND_ONLY_SQL = readFileSync(
+  new URL("./migrations/002_append_only.sql", import.meta.url),
+  "utf8",
+);
+
+const MIGRATIONS = [
+  { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
+  { version: 2, name: "append_only_evidence", sql: APPEND_ONLY_SQL },
+] as const;
 
 export function migrate(database: Database.Database): void {
   database.exec(`
@@ -15,22 +22,29 @@ export function migrate(database: Database.Database): void {
     ) STRICT
   `);
 
-  const applied = database
-    .prepare("SELECT 1 FROM schema_migrations WHERE version = ?")
-    .get(MIGRATION_VERSION);
-  if (applied !== undefined) {
-    return;
-  }
+  const findMigration = database.prepare(
+    "SELECT 1 FROM schema_migrations WHERE version = ?",
+  );
+  const recordMigration = database.prepare(
+    `INSERT INTO schema_migrations (version, name, applied_at)
+     VALUES (?, ?, ?)`,
+  );
+  const applyPendingMigrations = database.transaction(() => {
+    for (const migration of MIGRATIONS) {
+      if (findMigration.get(migration.version) !== undefined) {
+        continue;
+      }
 
-  database.transaction(() => {
-    database.exec(SCHEMA_SQL);
-    database
-      .prepare(
-        `INSERT INTO schema_migrations (version, name, applied_at)
-         VALUES (?, ?, ?)`,
-      )
-      .run(MIGRATION_VERSION, MIGRATION_NAME, new Date().toISOString());
-  })();
+      database.exec(migration.sql);
+      recordMigration.run(
+        migration.version,
+        migration.name,
+        new Date().toISOString(),
+      );
+    }
+  });
+
+  applyPendingMigrations.immediate();
 }
 
 export function openDatabase(path: string): Database.Database {

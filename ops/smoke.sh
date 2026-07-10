@@ -3,15 +3,9 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
+source "$PROJECT_ROOT/ops/lib.sh"
 
-if [[ -x "$HOME/.nvm/versions/node/v24.18.0/bin/node" ]]; then
-  export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
-fi
-
-if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(`.`)[0]')" != "24" ]]; then
-  printf 'smoke: Node >=24 <25 is required.\n' >&2
-  exit 1
-fi
+select_node_24 smoke
 
 npm run typecheck
 npm test

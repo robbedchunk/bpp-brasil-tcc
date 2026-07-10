@@ -1,0 +1,8 @@
+[Unit]
+Description=Report precos database status
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_ROOT@
+Environment=@RUNTIME_PATH@
+ExecStart=@NODE_PATH@ @NPM_PATH@ run --silent cli -- status --json

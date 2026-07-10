@@ -1,0 +1,10 @@
+[Unit]
+Description=Report precos database status hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=precos-status.service
+
+[Install]
+WantedBy=timers.target

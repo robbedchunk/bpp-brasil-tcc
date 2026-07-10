@@ -13,7 +13,7 @@
     "npm": ">=11 <12"
   },
   "scripts": {
-    "build": "tsc && mkdir -p dist/db && cp src/db/schema.sql dist/db/schema.sql && chmod 0755 dist/cli.js",
+    "build": "tsc && mkdir -p dist/db/migrations && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && chmod 0755 dist/cli.js",
     "cli": "tsx src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

@@ -1,14 +1,25 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadConfig } from "../../src/config.js";
 import { openDatabase } from "../../src/db/database.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
+const temporaryDirectories: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const database of databases.splice(0)) {
     database.close();
   }
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { force: true, recursive: true }),
+    ),
+  );
 });
 
 function openMemoryDatabase(): ReturnType<typeof openDatabase> {
@@ -30,6 +41,105 @@ function insertRetailer(database: ReturnType<typeof openDatabase>): void {
       "01310-100",
       '["mercado.example"]',
     );
+}
+
+function seedEvidenceGraph(database: ReturnType<typeof openDatabase>): void {
+  insertRetailer(database);
+  database.exec(`
+    INSERT INTO ipca_items
+      (id, code, name, weight, weight_period, source_url, citation)
+    VALUES
+      ('ipca-1', '1101002', 'Arroz', 1.5, '2026-01', 'https://sidra.ibge.gov.br', 'IBGE');
+
+    INSERT INTO strategies
+      (id, retailer_id, purpose, tier, version, strategy_json, provenance, active)
+    VALUES
+      ('strategy-1', 'retailer-1', 'extraction', 1, 1, '{}', 'hand-authored', 1),
+      ('strategy-2', 'retailer-1', 'extraction', 2, 2, '{}', 'generated', 0);
+
+    INSERT INTO products
+      (id, retailer_id, canonical_url, title, first_seen, last_seen)
+    VALUES
+      ('product-1', 'retailer-1', 'https://mercado.example/arroz', 'Arroz',
+       '2026-07-10T03:00:00.000Z', '2026-07-10T03:00:00.000Z');
+
+    INSERT INTO runs
+      (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+       status, attempted, ok, failed, started_at)
+    VALUES
+      ('run-1', 'retailer-1', 'collect', '2026-07-10', 'strategy-1', 1,
+       'running', 1, 1, 0, '2026-07-10T03:00:00.000Z');
+
+    INSERT INTO observations
+      (id, product_id, run_id, strategy_id, strategy_version, observed_at,
+       collection_day, price_cents, promo_price_cents)
+    VALUES
+      ('observation-1', 'product-1', 'run-1', 'strategy-1', 1,
+       '2026-07-10T03:00:30.000Z', '2026-07-10', 1000, 899);
+
+    INSERT INTO run_failures
+      (id, run_id, retailer_id, product_id, category, message, occurred_at)
+    VALUES
+      ('failure-1', 'run-1', 'retailer-1', 'product-1', 'parse', 'bad markup',
+       '2026-07-10T03:00:40.000Z');
+
+    INSERT INTO classifications
+      (id, product_id, ipca_item_id, version, decision, confidence, method)
+    VALUES
+      ('classification-1', 'product-1', 'ipca-1', 1, '1101002', 0.95, 'rule');
+
+    INSERT INTO exploration_runs
+      (id, retailer_id, purpose, trigger, previous_strategy_id, status,
+       event_budget, started_at)
+    VALUES
+      ('exploration-1', 'retailer-1', 'extraction', 'drift', 'strategy-1',
+       'running', 3, '2026-07-10T04:00:00.000Z');
+
+    INSERT INTO healing_events
+      (id, retailer_id, purpose, onset_run_id, previous_strategy_id, category,
+       status, tier_from, drift_started_at, detected_at)
+    VALUES
+      ('healing-1', 'retailer-1', 'extraction', 'run-1', 'strategy-1', 'drift',
+       'detected', 1, '2026-07-10T03:00:00.000Z', '2026-07-10T03:10:00.000Z');
+
+    INSERT INTO heartbeats
+      (id, pipeline, retailer_id, run_id, scheduled_for, completed_at, status)
+    VALUES
+      ('heartbeat-1', 'collect', 'retailer-1', 'run-1',
+       '2026-07-10T03:00:00.000Z', '2026-07-10T03:05:00.000Z', 'completed');
+
+    INSERT INTO cost_ledger
+      (id, category, retailer_id, exploration_run_id, classification_id,
+       provider, model, input_tokens, output_tokens, cost_usd, occurred_at)
+    VALUES
+      ('cost-1', 'model', 'retailer-1', 'exploration-1', 'classification-1',
+       'openai', 'test-model', 100, 20, 0.05, '2026-07-10T04:01:00.000Z');
+  `);
+}
+
+function initializeDatabaseInChild(
+  databasePath: string,
+): Promise<{ exitCode: number | null; stderr: string }> {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", resolve("src/cli.ts"), "db", "init"],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, DATABASE_PATH: databasePath },
+        stdio: ["ignore", "ignore", "pipe"],
+      },
+    );
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (exitCode) => {
+      resolveResult({ exitCode, stderr });
+    });
+  });
 }
 
 describe("database foundation", () => {
@@ -147,10 +257,137 @@ describe("database foundation", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 1 });
+    ).toEqual({ count: 2 });
 
     database.exec("SELECT 1");
     expect(() => openMemoryDatabase()).not.toThrow();
+  });
+
+  it("serializes concurrent first-time migrations", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-migration-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "precos.sqlite");
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => initializeDatabaseInChild(databasePath)),
+    );
+
+    expect(results).toEqual(
+      Array.from({ length: 8 }, () => ({ exitCode: 0, stderr: "" })),
+    );
+    const database = openDatabase(databasePath);
+    databases.push(database);
+    expect(
+      database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
+    ).toEqual({ count: 2 });
+  });
+
+  it("rejects deletion from every append-only evidence table", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    for (const table of [
+      "cost_ledger",
+      "heartbeats",
+      "healing_events",
+      "exploration_runs",
+      "classifications",
+      "run_failures",
+      "observations",
+      "runs",
+      "strategies",
+    ]) {
+      expect(() => database.prepare(`DELETE FROM ${table}`).run()).toThrow(
+        /append-only/,
+      );
+    }
+  });
+
+  it("rejects updates to immutable evidence facts", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    for (const statement of [
+      "UPDATE observations SET price_cents = 950 WHERE id = 'observation-1'",
+      "UPDATE run_failures SET message = 'rewritten' WHERE id = 'failure-1'",
+      "UPDATE classifications SET confidence = 0 WHERE id = 'classification-1'",
+      "UPDATE heartbeats SET status = 'failed' WHERE id = 'heartbeat-1'",
+      "UPDATE cost_ledger SET cost_usd = 0 WHERE id = 'cost-1'",
+    ]) {
+      expect(() => database.exec(statement)).toThrow(/immutable/);
+    }
+  });
+
+  it("allows documented lifecycle transitions", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    database.exec(`
+      UPDATE strategies
+      SET validation_sample_size = 30,
+          validation_successes = 27,
+          validation_rate = 0.9,
+          validated_at = '2026-07-10T04:05:00.000Z',
+          activated_at = '2026-07-10T04:06:00.000Z'
+      WHERE id = 'strategy-1';
+
+      UPDATE runs
+      SET status = 'completed',
+          attempted = 2,
+          ok = 1,
+          failed = 1,
+          finished_at = '2026-07-10T03:05:00.000Z',
+          metadata_json = '{"fixture":true}'
+      WHERE id = 'run-1';
+
+      UPDATE exploration_runs
+      SET candidate_strategy_id = 'strategy-2',
+          status = 'completed',
+          outcome = 'validated',
+          events_used = 2,
+          input_tokens = 100,
+          output_tokens = 20,
+          cost_usd = 0.05,
+          artifact_json = '{"strategy":{}}',
+          finished_at = '2026-07-10T04:10:00.000Z'
+      WHERE id = 'exploration-1';
+
+      UPDATE healing_events
+      SET successor_strategy_id = 'strategy-2',
+          status = 'recovered',
+          attempts = 1,
+          tier_to = 2,
+          recovered_at = '2026-07-10T04:10:00.000Z',
+          duration_seconds = 4200,
+          details_json = '{"validated":true}'
+      WHERE id = 'healing-1';
+    `);
+
+    expect(
+      database.prepare("SELECT status, attempted, ok, failed FROM runs").get(),
+    ).toEqual({ status: "completed", attempted: 2, ok: 1, failed: 1 });
+    expect(
+      database.prepare("SELECT status, candidate_strategy_id FROM exploration_runs").get(),
+    ).toEqual({ status: "completed", candidate_strategy_id: "strategy-2" });
+    expect(
+      database.prepare("SELECT status, successor_strategy_id FROM healing_events").get(),
+    ).toEqual({ status: "recovered", successor_strategy_id: "strategy-2" });
+  });
+
+  it("rejects lifecycle rewrites of identity and provenance", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    for (const statement of [
+      `UPDATE strategies SET strategy_json = '{"rewritten":true}'
+       WHERE id = 'strategy-1'`,
+      "UPDATE runs SET collection_day = '2026-07-09' WHERE id = 'run-1'",
+      "UPDATE exploration_runs SET trigger = 'manual' WHERE id = 'exploration-1'",
+      `UPDATE healing_events SET detected_at = '2026-07-10T04:00:00.000Z'
+       WHERE id = 'healing-1'`,
+    ]) {
+      expect(() => database.exec(statement)).toThrow(/immutable/);
+    }
   });
 });
 
