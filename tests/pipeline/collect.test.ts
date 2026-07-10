@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -127,6 +127,37 @@ describe("collection pipeline", () => {
     expect(summary.attempted).toBe(2_000);
   }, 20_000);
 
+  it("applies the 2,000 cap cumulatively across same-day collection runs", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const strategyId = seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 10);
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at, finished_at)
+       VALUES
+         ('prior', 'retailer-1', 'collect', '2026-07-10', ?, 1,
+          'failed', 1999, 0, 1999, '2026-07-10T03:00:00.000Z',
+          '2026-07-10T03:10:00.000Z')`,
+    ).run(strategyId);
+    let calls = 0;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      limit: 100,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      execute: async () => {
+        calls += 1;
+        return { ok: false, failure: { category: "parse", message: "x", responded: true } };
+      },
+    });
+
+    expect(calls).toBe(1);
+    expect(summary.attempted).toBe(1);
+  });
+
   it("uses reservoir sampling to retain exactly 20 of 100 HTML bodies", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
@@ -191,5 +222,81 @@ describe("collection pipeline", () => {
     });
 
     expect(sleeps).toEqual([750, 750]);
+  });
+
+  it("finalizes replay-storage failure without rewriting a successful observation", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 1);
+    const directory = await mkdtemp(join(tmpdir(), "precos-replay-error-"));
+    directories.push(directory);
+    const invalidRoot = join(directory, "not-a-directory");
+    await writeFile(invalidRoot, "occupied");
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      rawHtmlRoot: invalidRoot,
+      execute: async () => ({
+        ok: true,
+        fields: {
+          title: "Product",
+          brand: null,
+          price: 1,
+          promoPrice: null,
+          unit: null,
+          available: true,
+        },
+        html: "<html>sample</html>",
+      }),
+    });
+
+    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1, status: "failed" });
+    expect(database.prepare("SELECT status, attempted, ok, failed FROM runs").get()).toEqual({
+      status: "failed",
+      attempted: 1,
+      ok: 0,
+      failed: 1,
+    });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM observations").get()).toEqual({ n: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 1 });
+  });
+
+  it("persists each completed attempt before executing the next queued product", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 2);
+    let calls = 0;
+    let observationsBeforeSecond = -1;
+
+    await runCollection("retailer-1", {
+      database,
+      concurrency: 1,
+      execute: async () => {
+        calls += 1;
+        if (calls === 2) {
+          observationsBeforeSecond = (
+            database.prepare("SELECT COUNT(*) AS n FROM observations").get() as { n: number }
+          ).n;
+        }
+        return {
+          ok: true,
+          fields: {
+            title: "Product",
+            brand: null,
+            price: 1,
+            promoPrice: null,
+            unit: null,
+            available: true,
+          },
+        };
+      },
+    });
+
+    expect(calls).toBe(2);
+    expect(observationsBeforeSecond).toBe(1);
   });
 });

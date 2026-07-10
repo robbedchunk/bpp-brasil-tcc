@@ -20,6 +20,15 @@ import {
   type RunSummary,
 } from "./pipeline/discover.js";
 import { loadRetailerConfigs } from "./retailers/config.js";
+import {
+  createAlertSink,
+  type AlertSink,
+} from "./ops/alerts.js";
+import {
+  checkHeartbeat,
+  latestSuccessfulHeartbeat,
+} from "./ops/heartbeat.js";
+import { withProcessLock } from "./ops/lock.js";
 
 interface PipelineCliOptions {
   limit: number;
@@ -33,6 +42,8 @@ export interface CliDependencies {
   now?: () => Date;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
+  alertSink?: AlertSink;
+  lockPath?: string;
   runDiscovery?: (
     retailerId: string,
     options: PipelineCliOptions,
@@ -142,7 +153,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         dryRun?: boolean;
         json?: boolean;
       }) => {
-        const summaries = await withDatabase(async (database) => {
+        const summaries = await withProcessLock(
+          dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock"),
+          () => withDatabase(async (database) => {
           const retailerIds = options.retailer === undefined
             ? activeRetailerIds(database)
             : [options.retailer];
@@ -173,8 +186,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               );
             }
           }
-          return results;
-        });
+            return results;
+          }),
+        );
         if (options.json === true) {
           stdout(`${JSON.stringify(summaries)}\n`);
         } else {
@@ -197,18 +211,50 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option("--dry-run", "execute without writing pipeline evidence")
     .option("--json", "emit only the JSON summary")
     .action(async (options: { limit?: number; dryRun?: boolean; json?: boolean }) => {
-      const result = await withDatabase((database) => runDaily({
-        database,
-        limit: Math.min(options.limit ?? config().dailyPageCap, 2_000),
-        dryRun: options.dryRun === true,
-        concurrency: config().pageConcurrency,
-        rawHtmlRoot: resolve(config().projectRoot, "data/raw-html"),
-        retailerOptions,
-        now,
-      }));
+      const result = await withProcessLock(
+        dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock"),
+        () => withDatabase((database) => runDaily({
+          database,
+          limit: Math.min(options.limit ?? config().dailyPageCap, 2_000),
+          dryRun: options.dryRun === true,
+          concurrency: config().pageConcurrency,
+          rawHtmlRoot: resolve(config().projectRoot, "data/raw-html"),
+          retailerOptions,
+          now,
+        })),
+      );
       stdout(options.json === true
         ? `${JSON.stringify(result)}\n`
         : `daily: ${result.terminal}/${result.retailers} retailers terminal\n`);
+    });
+
+  command
+    .command("heartbeat")
+    .description("Inspect scheduled collection heartbeat health")
+    .command("check")
+    .option("--json", "emit only the JSON heartbeat check")
+    .action(async (options: { json?: boolean }) => {
+      const check = await withDatabase((database) =>
+        checkHeartbeat(now(), latestSuccessfulHeartbeat(database, "collect")));
+      if (check.stale) {
+        const topic = config().ntfyTopic;
+        const sink = dependencies.alertSink ?? createAlertSink({
+          ...(topic === undefined ? {} : { ntfyTopic: topic }),
+          fallbackPath: resolve(config().projectRoot, "var/log/alerts.jsonl"),
+          now,
+        });
+        await sink.send({
+          severity: "error",
+          title: "Preço collection heartbeat stale",
+          message: check.lastSuccessAt === null
+            ? "No successful daily collection heartbeat is recorded"
+            : "The latest successful daily collection heartbeat is older than 24 hours",
+          details: check,
+        });
+      }
+      stdout(options.json === true
+        ? `${JSON.stringify(check)}\n`
+        : `heartbeat: ${check.stale ? "STALE" : "FRESH"}\n`);
     });
 
   command

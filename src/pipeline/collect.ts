@@ -5,12 +5,11 @@ import type Database from "better-sqlite3";
 
 import { executeExtraction } from "../collection/executor.js";
 import {
-  reservoirSample,
   writeReplayHtml,
-  type ReplayArtifact,
 } from "../collection/replay.js";
 import {
   createRun,
+  attemptedForDay,
   finalizeRun,
   findActiveExtractionStrategy,
   insertObservation,
@@ -41,13 +40,13 @@ export interface CollectionPipelineDependencies {
   clock?: () => number;
 }
 
-interface AttemptResult {
+const MAX_DAILY_PAGES = 2_000;
+const DAILY_REPLAY_SAMPLE = 20;
+
+interface PendingHtmlAttempt {
   product: StoredProductRef;
   result: ExtractionResult;
 }
-
-const MAX_DAILY_PAGES = 2_000;
-const DAILY_REPLAY_SAMPLE = 20;
 
 function rejected(error: unknown): ExtractionResult {
   return {
@@ -100,8 +99,12 @@ export async function runCollection(
   const startedAt = now().toISOString();
   const day = collectionDay(new Date(startedAt));
   const active = findActiveExtractionStrategy(dependencies.database, retailerId);
+  const remainingDaily = Math.max(
+    0,
+    MAX_DAILY_PAGES - attemptedForDay(dependencies.database, retailerId, "collect", day),
+  );
   const limit = Math.min(
-    MAX_DAILY_PAGES,
+    remainingDaily,
     Math.max(0, Math.trunc(dependencies.limit ?? MAX_DAILY_PAGES)),
   );
   const products = listCollectionProducts(dependencies.database, retailerId, limit);
@@ -120,73 +123,78 @@ export async function runCollection(
     });
   }
 
-  const execute = dependencies.execute ?? executeExtraction;
-  const random = dependencies.random ?? Math.random;
-  const politeGate = createPoliteGate(
-    dependencies.politeDelayMs,
-    random,
-    dependencies.sleep ?? ((milliseconds) =>
-      new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
-    dependencies.clock ?? Date.now,
-  );
-  const attempts = await mapConcurrent(
-    products,
-    dependencies.concurrency,
-    async (product): Promise<AttemptResult> => {
-      try {
-        await politeGate();
-        return { product, result: await execute(active.strategy, product) };
-      } catch (error) {
-        return { product, result: rejected(error) };
-      }
-    },
-  );
-
-  const eligible = attempts
-    .map((attempt, index) => ({ attempt, index }))
-    .filter(({ attempt }) => typeof attempt.result.html === "string");
-  const selected = new Set(
-    reservoirSample(
-      eligible,
-      Math.min(DAILY_REPLAY_SAMPLE, eligible.length),
+  let finishedAt = startedAt;
+  let status = terminalStatus(0, 0);
+  let finalError: { category: "unknown"; message: string } | undefined;
+  try {
+    const execute = dependencies.execute ?? executeExtraction;
+    const random = dependencies.random ?? Math.random;
+    const replayRoot = resolve(dependencies.rawHtmlRoot ?? "data/raw-html");
+    const persistenceErrors: string[] = [];
+    const htmlReservoir: PendingHtmlAttempt[] = [];
+    let eligibleHtmlSeen = 0;
+    const politeGate = createPoliteGate(
+      dependencies.politeDelayMs,
       random,
-    ).map(({ index }) => index),
-  );
-  const replay = new Map<number, ReplayArtifact>();
-  if (dependencies.dryRun !== true) {
-    const root = resolve(dependencies.rawHtmlRoot ?? "data/raw-html");
-    await Promise.all([...selected].map(async (index) => {
-      const html = attempts[index]?.result.html;
-      if (html !== undefined) {
-        replay.set(index, await writeReplayHtml(html, root, day, retailerId));
-      }
-    }));
-  }
+      dependencies.sleep ?? ((milliseconds) =>
+        new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
+      dependencies.clock ?? Date.now,
+    );
 
-  for (const [index, attempt] of attempts.entries()) {
-    const replayArtifact = replay.get(index);
-    if (attempt.result.ok === true && attempt.result.fields !== undefined) {
-      counters.ok += 1;
-      if (dependencies.dryRun !== true) {
-        insertObservation(dependencies.database, {
-          product: attempt.product,
-          runId,
-          result: attempt.result,
-          observedAt: now().toISOString(),
-          collectionDay: day,
-          strategyId: active.id,
-          strategyVersion: active.version,
-          ...(replayArtifact === undefined ? {} : { replay: replayArtifact }),
-        });
+    const persistAttempt = async (
+      pending: PendingHtmlAttempt,
+      withReplay: boolean,
+    ): Promise<void> => {
+      let { result } = pending;
+      let replayArtifact;
+      if (
+        dependencies.dryRun !== true
+        && withReplay
+        && result.html !== undefined
+      ) {
+        try {
+          replayArtifact = await writeReplayHtml(
+            result.html,
+            replayRoot,
+            day,
+            retailerId,
+          );
+        } catch (error) {
+          result = rejected(error);
+        }
       }
-    } else {
+
+      if (result.ok === true && result.fields !== undefined) {
+        if (dependencies.dryRun === true) {
+          counters.ok += 1;
+          return;
+        }
+        try {
+          insertObservation(dependencies.database, {
+            product: pending.product,
+            runId,
+            result,
+            observedAt: now().toISOString(),
+            collectionDay: day,
+            strategyId: active.id,
+            strategyVersion: active.version,
+            ...(replayArtifact === undefined ? {} : { replay: replayArtifact }),
+          });
+          counters.ok += 1;
+          return;
+        } catch (error) {
+          result = rejected(error);
+        }
+      }
+
       counters.failed += 1;
-      if (dependencies.dryRun !== true) {
+      if (dependencies.dryRun === true) return;
+      try {
         insertRunFailure(dependencies.database, {
           runId,
           retailerId,
-          product: attempt.product,
-          failure: attempt.result.failure ?? {
+          product: pending.product,
+          failure: result.failure ?? {
             category: "unknown",
             message: "Extraction returned neither fields nor failure",
             responded: false,
@@ -196,14 +204,90 @@ export async function runCollection(
           strategyVersion: active.version,
           ...(replayArtifact === undefined ? {} : { replay: replayArtifact }),
         });
+      } catch (error) {
+        persistenceErrors.push(
+          error instanceof Error ? error.message : "Failure evidence persistence failed",
+        );
+      }
+    };
+
+    await mapConcurrent(
+      products,
+      dependencies.concurrency,
+      async (product): Promise<void> => {
+        let result: ExtractionResult;
+        try {
+          await politeGate();
+          result = await execute(active.strategy, product);
+        } catch (error) {
+          result = rejected(error);
+        }
+        const pending = { product, result };
+        if (dependencies.dryRun === true || result.html === undefined) {
+          await persistAttempt(pending, false);
+          return;
+        }
+        eligibleHtmlSeen += 1;
+        if (htmlReservoir.length < DAILY_REPLAY_SAMPLE) {
+          htmlReservoir.push(pending);
+          return;
+        }
+        const replacement = Math.floor(random() * eligibleHtmlSeen);
+        if (replacement < DAILY_REPLAY_SAMPLE) {
+          const evicted = htmlReservoir[replacement];
+          htmlReservoir[replacement] = pending;
+          if (evicted !== undefined) await persistAttempt(evicted, false);
+          return;
+        }
+        await persistAttempt(pending, false);
+      },
+    );
+    for (const pending of htmlReservoir) {
+      await persistAttempt(pending, true);
+    }
+    if (persistenceErrors.length > 0) {
+      finalError = { category: "unknown", message: persistenceErrors[0] ?? "Persistence failed" };
+    }
+  } catch (error) {
+    const failure = rejected(error).failure ?? {
+      category: "unknown" as const,
+      message: "Collection pipeline failed",
+      responded: false,
+    };
+    finalError = { category: "unknown", message: failure.message };
+    const unaccounted = counters.attempted - counters.ok - counters.failed;
+    counters.failed += Math.max(0, unaccounted);
+    if (counters.attempted === 0) {
+      counters.attempted = 1;
+      counters.failed = 1;
+    }
+    if (dependencies.dryRun !== true) {
+      try {
+        insertRunFailure(dependencies.database, {
+          runId,
+          retailerId,
+          failure,
+          occurredAt: now().toISOString(),
+          strategyId: active.id,
+          strategyVersion: active.version,
+        });
+      } catch {
+        // Finalizing the runs-first lifecycle remains the priority if evidence I/O failed.
       }
     }
-  }
-
-  const finishedAt = now().toISOString();
-  const status = terminalStatus(counters.ok, counters.failed);
-  if (dependencies.dryRun !== true) {
-    finalizeRun(dependencies.database, runId, counters, status, finishedAt);
+  } finally {
+    finishedAt = now().toISOString();
+    status = terminalStatus(counters.ok, counters.failed);
+    if (dependencies.dryRun !== true) {
+      finalizeRun(
+        dependencies.database,
+        runId,
+        counters,
+        status,
+        finishedAt,
+        finalError,
+      );
+    }
   }
   return {
     id: runId,

@@ -24,11 +24,12 @@ if command -v ldd >/dev/null 2>&1 && ldd "$CHROMIUM_PATH" 2>/dev/null | grep -q 
   npx playwright install-deps chromium
 fi
 
-install -d -m 0700 var var/backups var/log var/replay
-npm run --silent cli -- db init >/dev/null
+install -d -m 0700 data data/raw-html var var/backups var/log var/replay
+migrate_legacy_database "$PROJECT_ROOT/var/precos.sqlite" "$PROJECT_ROOT/data/precos.sqlite"
+DATABASE_PATH="${DATABASE_PATH:-data/precos.sqlite}" npm run --silent cli -- db init >/dev/null
 
 if [[ "${INSTALL_TIMERS:-0}" == "1" ]]; then
-  "$PROJECT_ROOT/ops/install-status-timer.sh"
+  "$PROJECT_ROOT/ops/install-systemd.sh"
 fi
 
 printf 'setup: ready.\n'

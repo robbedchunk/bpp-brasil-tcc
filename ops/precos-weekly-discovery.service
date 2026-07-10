@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh supermarket product discovery weekly
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_ROOT@
+Environment=@RUNTIME_PATH@
+Environment=TZ=America/Sao_Paulo
+EnvironmentFile=-@ENV_FILE@
+UMask=0077
+ExecStart=@NODE_PATH@ @PROJECT_ROOT@/dist/cli.js discover --limit 2000 --json

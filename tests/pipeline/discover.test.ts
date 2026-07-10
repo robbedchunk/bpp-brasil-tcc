@@ -62,4 +62,93 @@ describe("discovery pipeline", () => {
     expect(database.prepare("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM products").get()).toEqual({ n: 0 });
   });
+
+  it("applies the 2,000 cap cumulatively across same-day discovery runs", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const strategyId = seedStrategy(database, "discovery", discoveryStrategy);
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at, finished_at)
+       VALUES
+         ('prior', 'retailer-1', 'discover', '2026-07-10', ?, 1,
+          'failed', 1999, 0, 1999, '2026-07-10T03:00:00.000Z',
+          '2026-07-10T03:10:00.000Z')`,
+    ).run(strategyId);
+    let yielded = 0;
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      limit: 100,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      execute: async function* () {
+        for (let index = 0; index < 10; index += 1) {
+          yielded += 1;
+          yield {
+            canonicalUrl: `https://shop.test/${index}`,
+            externalId: String(index),
+            sourceCategory: null,
+          };
+        }
+      },
+    });
+
+    expect(yielded).toBe(1);
+    expect(summary.attempted).toBe(1);
+  });
+
+  it("does not exceed the cap when closing a limited iterator throws", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      limit: 1,
+      execute: async function* () {
+        try {
+          yield { canonicalUrl: "https://shop.test/1", externalId: "1", sourceCategory: null };
+          yield { canonicalUrl: "https://shop.test/2", externalId: "2", sourceCategory: null };
+        } finally {
+          throw new Error("iterator cleanup failed");
+        }
+      },
+    });
+
+    expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
+  });
+
+  it("does not double-count a product when failure-evidence persistence also fails", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+    database.exec(`
+      CREATE TRIGGER reject_test_failures
+      BEFORE INSERT ON run_failures
+      BEGIN SELECT RAISE(ABORT, 'failure sink unavailable'); END
+    `);
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      execute: async function* () {
+        yield {
+          canonicalUrl: null as unknown as string,
+          externalId: "broken",
+          sourceCategory: null,
+        };
+      },
+    });
+
+    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1 });
+    expect(database.prepare("SELECT attempted, ok, failed, status FROM runs").get()).toEqual({
+      attempted: 1,
+      ok: 0,
+      failed: 1,
+      status: "failed",
+    });
+  });
 });

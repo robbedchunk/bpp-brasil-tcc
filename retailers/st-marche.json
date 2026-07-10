@@ -19,7 +19,7 @@
   "storeMapping": null,
   "seedHints": ["https://www.marche.com.br/sitemap.xml"],
   "politeDelayMs": { "min": 1000, "max": 1800 },
-  "strategyVersions": { "discovery": 1, "extraction": 1 },
+  "strategyVersions": { "discovery": 2, "extraction": 2 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
@@ -41,6 +41,7 @@
       "brand": "$.state.loaderData['routes/products.$handle'].product.vendor",
       "price": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.price.amount",
       "promoPrice": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.compareAtPrice.amount",
+      "priceOrder": "sale-list",
       "unit": "$.state.loaderData['routes/products.$handle'].product.title",
       "availability": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.availableForSale"
     }
@@ -67,11 +68,21 @@
     }
   ],
   "validation": {
-    "externallyValidated": false,
-    "validatedAt": "2026-07-10T15:37:00.000Z",
-    "sampleSize": 1,
-    "successes": 1,
-    "score": 1,
-    "evidence": "One public product page exposed valid fields, but there is no honest CEP/store identity and no 30-sample regional score; activation denied."
+    "discovery": {
+      "externallyValidated": false,
+      "validatedAt": "2026-07-10T15:37:00.000Z",
+      "sampleSize": 1,
+      "successes": 1,
+      "score": 1,
+      "evidence": "The official sitemap was reachable, but a full 30-sample discovery validation was not run."
+    },
+    "extraction": {
+      "externallyValidated": false,
+      "validatedAt": "2026-07-10T15:37:00.000Z",
+      "sampleSize": 1,
+      "successes": 1,
+      "score": 1,
+      "evidence": "One public product page exposed valid fields, but there is no honest CEP/store identity and no 30-sample regional score; activation denied."
+    }
   }
 }

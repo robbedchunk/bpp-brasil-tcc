@@ -60,3 +60,24 @@
 - Saved live fixtures contain provenance timestamps and no response headers,
   cookies, address details, session identifiers, or tokens. Every mutation is
   synthetic and labeled as such.
+
+## 2026-07-10 — M2 production operations
+
+- Daily collection runs around 03:00, weekly discovery on Sunday around 02:00,
+  heartbeat checks hourly, and backups around 04:15, all in
+  `America/Sao_Paulo` with persistent randomized user timers.
+- All mutating CLI entry points share one atomic PID/start-time process lock.
+  Live owners are never killed; orphaned locks are recovered by atomic rename.
+- JSONL logs rotate on the São Paulo date and size, use mode `0600`, and
+  recursively redact credentials, authorization/cookies, API keys, tokens, and
+  `NTFY_TOPIC`. Alerts use validated ntfy topics only and otherwise append to a
+  private local fallback.
+- SQLite backups use the online `.backup` command, require an `ok` integrity
+  check, use mode `0600`, and retain 14 days. Legacy `var/precos.sqlite` is
+  copied only when the destination is absent; a populated legacy source never
+  overwrites an existing production database.
+- The budget guard pauses only nonessential model work above its configured
+  monthly ceiling. Deterministic collection and other essential work continue.
+- The production host logged inotify watch-capacity warnings while starting
+  one-shot services, but both heartbeat and backup drills exited successfully;
+  this host-level limit remains visible for operator follow-up.

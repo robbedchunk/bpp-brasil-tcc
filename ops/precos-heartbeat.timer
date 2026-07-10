@@ -1,0 +1,11 @@
+[Unit]
+Description=Check price-collection heartbeat hourly
+
+[Timer]
+OnCalendar=*-*-* *:15:00 America/Sao_Paulo
+RandomizedDelaySec=5m
+Persistent=true
+Unit=precos-heartbeat.service
+
+[Install]
+WantedBy=timers.target

@@ -218,6 +218,7 @@ export const JsonFieldMapSchema = z
     promoPrice: JsonPathSchema,
     unit: JsonPathSchema,
     availability: JsonPathSchema,
+    priceOrder: z.enum(["regular-promo", "sale-list"]).optional(),
   })
   .strict();
 

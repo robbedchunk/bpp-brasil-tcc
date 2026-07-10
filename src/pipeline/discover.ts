@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 
 import {
   createRun,
+  attemptedForDay,
   finalizeRun,
   findActiveDiscoveryStrategy,
   insertRunFailure,
@@ -71,11 +72,21 @@ export async function runDiscovery(
   const active = findActiveDiscoveryStrategy(dependencies.database, retailerId);
   const runId = dependencies.dryRun === true ? `dry-run-${makeId()}` : makeId();
   const limit = Math.min(
-    MAX_DAILY_PAGES,
+    Math.max(
+      0,
+      MAX_DAILY_PAGES - attemptedForDay(
+        dependencies.database,
+        retailerId,
+        "discover",
+        day,
+      ),
+    ),
     Math.max(0, Math.trunc(dependencies.limit ?? MAX_DAILY_PAGES)),
   );
   const counters = { attempted: 0, ok: 0, failed: 0 };
   let finalError: { category: "unknown"; message: string } | undefined;
+  let finishedAt = startedAt;
+  let status = terminalStatus(0, 0);
 
   if (dependencies.dryRun !== true) {
     createRun(dependencies.database, {
@@ -90,61 +101,87 @@ export async function runDiscovery(
   }
 
   try {
-    const refs = (dependencies.execute ?? ((strategy) => executeDiscovery(strategy)))(active.strategy);
-    for await (const ref of refs) {
-      if (counters.attempted >= limit) break;
+    try {
+      const refs = (dependencies.execute ?? ((strategy) => executeDiscovery(strategy)))(active.strategy);
+      const iterator = refs[Symbol.asyncIterator]();
+      while (counters.attempted < limit) {
+        const next = await iterator.next();
+        if (next.done) break;
+        const ref = next.value;
+        counters.attempted += 1;
+        if (dependencies.dryRun === true) {
+          counters.ok += 1;
+          continue;
+        }
+        try {
+          upsertDiscoveredProduct(dependencies.database, retailerId, ref, now().toISOString());
+          counters.ok += 1;
+        } catch (error) {
+          counters.failed += 1;
+          try {
+            insertRunFailure(dependencies.database, {
+              runId,
+              retailerId,
+              canonicalUrl: ref.canonicalUrl,
+              failure: {
+                category: "unknown",
+                message: errorMessage(error),
+                responded: false,
+              },
+              occurredAt: now().toISOString(),
+              strategyId: active.id,
+              strategyVersion: active.version,
+            });
+          } catch (persistenceError) {
+            finalError = {
+              category: "unknown",
+              message: errorMessage(persistenceError),
+            };
+          }
+        }
+      }
+      if (counters.attempted >= limit) {
+        try {
+          await iterator.return?.();
+        } catch {
+          // Iterator cleanup is not another page attempt and cannot exceed the cap.
+        }
+      }
+    } catch (error) {
       counters.attempted += 1;
-      if (dependencies.dryRun === true) {
-        counters.ok += 1;
-        continue;
-      }
-      try {
-        upsertDiscoveredProduct(dependencies.database, retailerId, ref, now().toISOString());
-        counters.ok += 1;
-      } catch (error) {
-        counters.failed += 1;
-        insertRunFailure(dependencies.database, {
-          runId,
-          retailerId,
-          canonicalUrl: ref.canonicalUrl,
-          failure: {
+      counters.failed += 1;
+      finalError = { category: "unknown", message: errorMessage(error) };
+      if (dependencies.dryRun !== true) {
+        try {
+          insertRunFailure(dependencies.database, {
+            runId,
+            retailerId,
+            failure: { ...finalError, responded: false },
+            occurredAt: now().toISOString(),
+            strategyId: active.id,
+            strategyVersion: active.version,
+          });
+        } catch (persistenceError) {
+          finalError = {
             category: "unknown",
-            message: errorMessage(error),
-            responded: false,
-          },
-          occurredAt: now().toISOString(),
-          strategyId: active.id,
-          strategyVersion: active.version,
-        });
+            message: errorMessage(persistenceError),
+          };
+        }
       }
     }
-  } catch (error) {
-    counters.attempted += 1;
-    counters.failed += 1;
-    finalError = { category: "unknown", message: errorMessage(error) };
+  } finally {
+    finishedAt = now().toISOString();
+    status = terminalStatus(counters.ok, counters.failed);
     if (dependencies.dryRun !== true) {
-      insertRunFailure(dependencies.database, {
+      finalizeRun(
+        dependencies.database,
         runId,
-        retailerId,
-        failure: { ...finalError, responded: false },
-        occurredAt: now().toISOString(),
-        strategyId: active.id,
-        strategyVersion: active.version,
-      });
+        counters,
+        status,
+        finishedAt,
+        finalError,
+      );
     }
-  }
-
-  const finishedAt = now().toISOString();
-  const status = terminalStatus(counters.ok, counters.failed);
-  if (dependencies.dryRun !== true) {
-    finalizeRun(
-      dependencies.database,
-      runId,
-      counters,
-      status,
-      finishedAt,
-      finalError,
-    );
   }
 
   return {

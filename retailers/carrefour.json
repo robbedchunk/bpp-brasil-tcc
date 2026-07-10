@@ -23,7 +23,7 @@
   },
   "seedHints": ["arroz", "https://mercado.carrefour.com.br/sitemap.xml"],
   "politeDelayMs": { "min": 900, "max": 1500 },
-  "strategyVersions": { "discovery": 1, "extraction": 1 },
+  "strategyVersions": { "discovery": 2, "extraction": 2 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
@@ -86,11 +86,21 @@
     }
   ],
   "validation": {
-    "externallyValidated": false,
-    "validatedAt": "2026-07-10T15:36:00.000Z",
-    "sampleSize": 30,
-    "successes": 30,
-    "score": 1,
-    "evidence": "Catalog fields were 30/30, but the CEP checkout seller mapping was not reflected in catalog offers; activation denied."
+    "discovery": {
+      "externallyValidated": true,
+      "validatedAt": "2026-07-10T15:36:00.000Z",
+      "sampleSize": 30,
+      "successes": 30,
+      "score": 1,
+      "evidence": "Official account-host VTEX catalog discovery returned 30/30 canonical product records."
+    },
+    "extraction": {
+      "externallyValidated": false,
+      "validatedAt": "2026-07-10T15:36:00.000Z",
+      "sampleSize": 30,
+      "successes": 30,
+      "score": 1,
+      "evidence": "Catalog fields were 30/30, but the CEP checkout seller mapping was not reflected in catalog offers; extraction activation denied."
+    }
   }
 }

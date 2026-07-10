@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect supermarket prices around 03:00 São Paulo time
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/Sao_Paulo
+RandomizedDelaySec=15m
+Persistent=true
+Unit=precos-daily.service
+
+[Install]
+WantedBy=timers.target

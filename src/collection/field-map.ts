@@ -147,11 +147,14 @@ export function mapJsonExtractionFields(
   fields: FieldMap,
 ): ExtractionResult {
   try {
+    const mappedPrice = safeJsonPathValue(document, fields.price);
+    const mappedPromo = safeJsonPathValue(document, fields.promoPrice);
+    const saleList = fields.priceOrder === "sale-list" && !isEmptyValue(mappedPromo);
     return mapExtractionFields({
       title: safeJsonPathValue(document, fields.title),
       brand: safeJsonPathValue(document, fields.brand),
-      price: safeJsonPathValue(document, fields.price),
-      promoPrice: safeJsonPathValue(document, fields.promoPrice),
+      price: saleList ? mappedPromo : mappedPrice,
+      promoPrice: saleList ? mappedPrice : mappedPromo,
       unit: safeJsonPathValue(document, fields.unit),
       availability: safeJsonPathValue(document, fields.availability),
     });

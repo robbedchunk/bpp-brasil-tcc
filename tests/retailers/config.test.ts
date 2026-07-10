@@ -44,12 +44,14 @@ describe("live retailer configuration", () => {
       "pao-de-acucar",
     ]);
     for (const config of configs.filter(({ active }) => active)) {
-      expect(config.validation).toMatchObject({
-        externallyValidated: true,
-        sampleSize: 30,
-        successes: 30,
-        score: 1,
-      });
+      for (const purpose of ["discovery", "extraction"] as const) {
+        expect(config.validation[purpose]).toMatchObject({
+          externallyValidated: true,
+          sampleSize: 30,
+          successes: 30,
+          score: 1,
+        });
+      }
     }
     expect(configs.find(({ id }) => id === "sonda")).toMatchObject({
       active: false,
@@ -93,6 +95,14 @@ describe("live retailer configuration", () => {
       { id: "extra-mercado" },
       { id: "pao-de-acucar" },
     ]);
+    const provenance = database.prepare(
+      `SELECT purpose, provenance FROM strategies
+       WHERE retailer_id = 'pao-de-acucar' ORDER BY purpose`,
+    ).all() as Array<{ purpose: string; provenance: string }>;
+    expect(provenance.find(({ purpose }) => purpose === "discovery")?.provenance)
+      .toMatch(/official store-61 response/i);
+    expect(provenance.find(({ purpose }) => purpose === "extraction")?.provenance)
+      .toMatch(/bestPrices/i);
   });
 
   it("retires a previous active strategy when a validated append-only version is registered", () => {
@@ -118,5 +128,60 @@ describe("live retailer configuration", () => {
       { version: 1, active: 0, retired: 1 },
       { version: 2, active: 1, retired: 0 },
     ]);
+  });
+
+  it("fails closed when immutable strategy JSON changes without a version bump", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "pao-de-acucar");
+    expect(current).toBeDefined();
+    if (current === undefined || current.extraction.tier !== "api") return;
+    registerRetailerConfigs(database, [current]);
+    const changed = {
+      ...current,
+      extraction: {
+        ...current.extraction,
+        request: {
+          ...current.extraction.request,
+          headers: { ...current.extraction.request.headers, "x-drift": "changed" },
+        },
+      },
+    };
+
+    expect(() => registerRetailerConfigs(database, [changed])).toThrow(/version bump/i);
+    expect(database.prepare(
+      "SELECT COUNT(*) AS n FROM strategies WHERE retailer_id = 'pao-de-acucar' AND active = 1",
+    ).get()).toEqual({ n: 2 });
+  });
+
+  it("deactivates every strategy version when a retailer is made inactive", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "extra-mercado");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    registerRetailerConfigs(database, [current]);
+
+    registerRetailerConfigs(database, [{ ...current, active: false }]);
+
+    expect(database.prepare(
+      "SELECT COUNT(*) AS n FROM strategies WHERE retailer_id = 'extra-mercado' AND active = 1",
+    ).get()).toEqual({ n: 0 });
+  });
+
+  it("requires a successor version instead of reactivating a retired strategy", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "pao-de-acucar");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    registerRetailerConfigs(database, [current]);
+    registerRetailerConfigs(database, [{ ...current, active: false }]);
+
+    expect(() => registerRetailerConfigs(database, [current]))
+      .toThrow(/retired.*version/i);
   });
 });

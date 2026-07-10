@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { executeExtraction } from "../../src/collection/executor.js";
-import { mapExtractionFields } from "../../src/collection/field-map.js";
+import {
+  mapExtractionFields,
+  mapJsonExtractionFields,
+} from "../../src/collection/field-map.js";
 import {
   DEFAULT_RESEARCH_USER_AGENT,
   fetchBounded,
@@ -382,6 +385,29 @@ describe("API extraction", () => {
     expect(result).toMatchObject({
       ok: false,
       failure: { category: "invalid-price", responded: true },
+    });
+  });
+
+  it("maps storefront sale/list order to regular and promotional prices", () => {
+    const result = mapJsonExtractionFields({
+      title: "Produto",
+      brand: "Marca",
+      sale: 8,
+      list: 10,
+      available: true,
+    }, {
+      title: "$.title",
+      brand: "$.brand",
+      price: "$.sale",
+      promoPrice: "$.list",
+      priceOrder: "sale-list",
+      unit: "$.unit",
+      availability: "$.available",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      fields: { price: 10, promoPrice: 8 },
     });
   });
 

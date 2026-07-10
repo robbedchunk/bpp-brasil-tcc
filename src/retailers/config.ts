@@ -36,6 +36,13 @@ const ValidationSchema = z.object({
   if (Math.abs(value.score - expected) > Number.EPSILON) {
     context.addIssue({ code: "custom", message: "score must equal successes/sampleSize" });
   }
+  if (value.externallyValidated && value.validatedAt === null) {
+    context.addIssue({
+      code: "custom",
+      path: ["validatedAt"],
+      message: "Externally validated evidence requires a validation timestamp",
+    });
+  }
 });
 
 export const RetailerConfigSchema = z.object({
@@ -75,7 +82,10 @@ export const RetailerConfigSchema = z.object({
     sourceCategory: z.string().nullable(),
   }).strict(),
   fixtureProvenance: z.array(FixtureProvenanceSchema).min(2),
-  validation: ValidationSchema,
+  validation: z.object({
+    discovery: ValidationSchema,
+    extraction: ValidationSchema,
+  }).strict(),
 }).strict().superRefine((config, context) => {
   if (config.politeDelayMs.max < config.politeDelayMs.min) {
     context.addIssue({
@@ -97,12 +107,21 @@ export const RetailerConfigSchema = z.object({
       });
     }
   }
-  if (
-    config.active &&
-    (!config.validation.externallyValidated ||
-      config.validation.sampleSize !== 30 ||
-      config.validation.score < 0.9)
-  ) {
+  for (const domain of strategyDomains) {
+    if (!config.allowedDomains.includes(domain)) {
+      context.addIssue({
+        code: "custom",
+        path: ["allowedDomains"],
+        message: `Strategy domain ${domain} is absent from retailer allowedDomains`,
+      });
+    }
+  }
+  if (config.active && (["discovery", "extraction"] as const).some((purpose) => {
+    const validation = config.validation[purpose];
+    return !validation.externallyValidated
+      || validation.sampleSize !== 30
+      || validation.score < 0.9;
+  })) {
     context.addIssue({
       code: "custom",
       path: ["active"],
@@ -239,61 +258,99 @@ export function registerRetailerConfigs(
         const version = config.strategyVersions[purpose];
         const id = `${config.id}-${purpose}-v${version}`;
         const strategyActive = config.active ? 1 : 0;
+        const validation = config.validation[purpose];
+        const lifecycleAt = validation.validatedAt ?? config.platformEvidence.observedAt;
+        const tier = strategyTier(strategy);
+        const strategyJson = JSON.stringify(strategy);
+        const provenance = `retailer config; ${validation.evidence}`;
+        const existingImmutable = database.prepare(
+          `SELECT retailer_id, purpose, tier, version, strategy_json, provenance,
+                  retired_at
+           FROM strategies WHERE id = ?`,
+        ).get(id) as {
+          retailer_id: string;
+          purpose: string;
+          tier: number;
+          version: number;
+          strategy_json: string;
+          provenance: string;
+          retired_at: string | null;
+        } | undefined;
+        if (existingImmutable !== undefined && (
+          existingImmutable.retailer_id !== config.id
+          || existingImmutable.purpose !== purpose
+          || existingImmutable.tier !== tier
+          || existingImmutable.version !== version
+          || existingImmutable.strategy_json !== strategyJson
+          || existingImmutable.provenance !== provenance
+        )) {
+          throw new Error(
+            `Strategy ${id} changed immutable fields; create a version bump instead`,
+          );
+        }
+        if (
+          existingImmutable?.retired_at !== null
+          && existingImmutable?.retired_at !== undefined
+          && strategyActive === 1
+        ) {
+          throw new Error(
+            `Strategy ${id} is retired; activation requires a successor version`,
+          );
+        }
         if (strategyActive === 1) {
           database.prepare(
             `UPDATE strategies
              SET active = 0, retired_at = COALESCE(retired_at, ?)
              WHERE retailer_id = ? AND purpose = ? AND active = 1 AND id <> ?`,
-          ).run(config.validation.validatedAt, config.id, purpose, id);
+          ).run(lifecycleAt, config.id, purpose, id);
+        } else {
+          database.prepare(
+            `UPDATE strategies
+             SET active = 0, retired_at = COALESCE(retired_at, ?)
+             WHERE retailer_id = ? AND purpose = ? AND active = 1`,
+          ).run(lifecycleAt, config.id, purpose);
         }
-        database.prepare(
-          `INSERT OR IGNORE INTO strategies
+        if (existingImmutable === undefined) {
+          database.prepare(
+            `INSERT INTO strategies
              (id, retailer_id, purpose, tier, version, strategy_json, provenance,
               validation_sample_size, validation_successes, validation_rate,
               active, validated_at, activated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).run(
-          id,
-          config.id,
-          purpose,
-          strategyTier(strategy),
-          version,
-          JSON.stringify(strategy),
-          `retailer config; ${config.validation.evidence}`,
-          config.validation.sampleSize,
-          config.validation.successes,
-          config.validation.sampleSize === 0 ? null : config.validation.score,
-          strategyActive,
-          config.validation.validatedAt,
-          strategyActive === 1 ? config.validation.validatedAt : null,
-        );
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            id,
+            config.id,
+            purpose,
+            tier,
+            version,
+            strategyJson,
+            provenance,
+            validation.sampleSize,
+            validation.successes,
+            validation.sampleSize === 0 ? null : validation.score,
+            strategyActive,
+            validation.validatedAt,
+            strategyActive === 1 ? validation.validatedAt : null,
+          );
+        }
 
-        const existing = database.prepare(
-          "SELECT active FROM strategies WHERE id = ?",
-        ).get(id) as { active: number };
-        if (existing.active !== strategyActive) {
-          if (strategyActive === 1) {
-            // Competing versions were retired before this version was inserted.
-          }
-          database.prepare(
-            `UPDATE strategies
+        database.prepare(
+          `UPDATE strategies
              SET active = ?, validation_sample_size = ?, validation_successes = ?,
                  validation_rate = ?, validated_at = ?,
                  activated_at = CASE WHEN ? = 1 THEN COALESCE(activated_at, ?) ELSE activated_at END,
-                 retired_at = CASE WHEN ? = 1 THEN NULL ELSE retired_at END
-             WHERE id = ?`,
-          ).run(
-            strategyActive,
-            config.validation.sampleSize,
-            config.validation.successes,
-            config.validation.sampleSize === 0 ? null : config.validation.score,
-            config.validation.validatedAt,
-            strategyActive,
-            config.validation.validatedAt,
-            strategyActive,
-            id,
-          );
-        }
+                 retired_at = retired_at
+           WHERE id = ?`,
+        ).run(
+          strategyActive,
+          validation.sampleSize,
+          validation.successes,
+          validation.sampleSize === 0 ? null : validation.score,
+          validation.validatedAt,
+          strategyActive,
+          validation.validatedAt,
+          id,
+        );
       }
     }
   });
