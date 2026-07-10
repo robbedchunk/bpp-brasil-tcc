@@ -279,3 +279,30 @@ Pending time-gated authority boundaries:
   heartbeat. Production evidence counts were identical before and after:
   8 runs, 62 observations, 60 historical failures, and 1 heartbeat. No live
   collection/discovery request ran and no historical evidence was altered.
+
+## Final replay crash-recovery correction
+
+- RED: focused replay/collection ran 15 tests with one deterministic failure.
+  A simulated crash after the closed-day manifest hard link but before mutable
+  state unlink left both names. Advancing another São Paulo day recomputed a new
+  `finalizedAt`, rejected the already-published immutable manifest, and required
+  manual cleanup.
+- GREEN: when a valid immutable manifest already exists, finalization now treats
+  it as authoritative if version, retailer day, population, slots, hashes, and
+  evidence references match; `finalizedAt` is intentionally excluded from that
+  content comparison. Recovery removes only the leftover mutable hard link and
+  never rewrites the manifest. When publication has not happened, a finalized
+  timestamp already present in mutable state is preserved rather than
+  regenerated.
+- The regression injects failure immediately after manifest publication,
+  verifies mutable state and the manifest are byte-identical hard-link content,
+  advances from 2026-07-11 to 2026-07-12, confirms manifest bytes remain
+  unchanged, confirms `.reservoir.json` is removed, and successfully records a
+  new-day sample. Focused replay/collect: 15/15; Node 24 typecheck; full suite:
+  31 files and 199/199 tests.
+- `npm run build` changed only the expected generated replay runtime (56 diff
+  lines; SHA-256 `89997fcf18ba...`). Production units were reinstalled/reloaded,
+  and the same crash/recovery scenario passed by importing the rebuilt
+  `dist/collection/replay.js` directly. All four timers remain enabled/active,
+  installed ExecStart remains Node 24 plus `dist/cli.js`, and production counts
+  remained exactly 8 runs, 62 observations, 60 failures, and 1 heartbeat.

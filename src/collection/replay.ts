@@ -44,6 +44,7 @@ export interface ReplayReservoirOptions {
   random?: () => number;
   beforeStatePublish?: (state: ReplayReservoirState) => void | Promise<void>;
   cleanupFile?: (path: string) => Promise<void>;
+  afterManifestPublish?: (path: string) => void | Promise<void>;
 }
 
 export interface DailyReplayReservoir {
@@ -249,6 +250,7 @@ async function finalizeEarlierDays(
   retailerId: string,
   size: number,
   cleanupFile: (path: string) => Promise<void>,
+  afterManifestPublish?: ReplayReservoirOptions["afterManifestPublish"],
 ): Promise<void> {
   let entries;
   try {
@@ -266,12 +268,28 @@ async function finalizeEarlierDays(
     if (!(await fileExists(source))) continue;
     await recoverTransaction(directory, entry.name, size, cleanupFile);
     const state = await loadState(directory, entry.name, size);
-    const finalized: ReplayReservoirState = {
-      ...state,
-      finalizedAt: `${currentDay}T00:00:00.000-03:00`,
-    };
-    await saveState(directory, finalized);
     const destination = join(directory, FINAL_MANIFEST);
+    if (await fileExists(destination)) {
+      const published = validateState(
+        JSON.parse(await readFile(destination, "utf8")),
+        entry.name,
+        size,
+      );
+      const comparable = ({ finalizedAt: _ignored, ...value }: ReplayReservoirState) => value;
+      if (
+        published.finalizedAt === undefined
+        || JSON.stringify(comparable(published)) !== JSON.stringify(comparable(state))
+      ) {
+        throw new Error(`Final replay manifest already differs for ${entry.name}/${retailerId}`);
+      }
+      await unlink(source);
+      continue;
+    }
+
+    const finalized: ReplayReservoirState = state.finalizedAt === undefined
+      ? { ...state, finalizedAt: `${currentDay}T00:00:00.000-03:00` }
+      : state;
+    if (state.finalizedAt === undefined) await saveState(directory, finalized);
     try {
       await link(source, destination);
     } catch (error) {
@@ -285,6 +303,7 @@ async function finalizeEarlierDays(
         throw new Error(`Final replay manifest already differs for ${entry.name}/${retailerId}`);
       }
     }
+    await afterManifestPublish?.(destination);
     await unlink(source);
   }
 }
@@ -301,7 +320,14 @@ export async function openDailyReplayReservoir(
   if (!Number.isSafeInteger(size) || size < 0) {
     throw new RangeError("Reservoir size must be a non-negative safe integer");
   }
-  await finalizeEarlierDays(root, collectionDay, retailerId, size, cleanupFile);
+  await finalizeEarlierDays(
+    root,
+    collectionDay,
+    retailerId,
+    size,
+    cleanupFile,
+    options.afterManifestPublish,
+  );
   const directory = join(root, collectionDay, retailerId);
   await recoverTransaction(directory, collectionDay, size, cleanupFile);
   let state = await loadState(directory, collectionDay, size);

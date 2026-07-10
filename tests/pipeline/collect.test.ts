@@ -358,6 +358,50 @@ describe("collection pipeline", () => {
     expect(finalized.slots[0]?.evidence.id).toBe("stable-observation");
   });
 
+  it("recovers a crash after immutable manifest publication without mutating it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "precos-replay-finalize-crash-"));
+    directories.push(root);
+    const firstDay = await openDailyReplayReservoir(root, "2026-07-10", "retailer-1", {
+      size: 20,
+      random: () => 0,
+    });
+    await firstDay.consider("<html>stable</html>", {
+      kind: "observation",
+      id: "stable-observation",
+    });
+
+    await expect(openDailyReplayReservoir(root, "2026-07-11", "retailer-1", {
+      size: 20,
+      random: () => 0,
+      afterManifestPublish: () => {
+        throw new Error("simulated crash after manifest link");
+      },
+    })).rejects.toThrow(/simulated crash/u);
+
+    const previous = join(root, "2026-07-10", "retailer-1");
+    const manifestPath = join(previous, "replay-samples.json");
+    const statePath = join(previous, ".reservoir.json");
+    const immutableBefore = await readFile(manifestPath, "utf8");
+    expect(await readFile(statePath, "utf8")).toBe(immutableBefore);
+
+    const thirdDay = await openDailyReplayReservoir(root, "2026-07-12", "retailer-1", {
+      size: 20,
+      random: () => 0,
+    });
+    await thirdDay.consider("<html>collection continues</html>", {
+      kind: "observation",
+      id: "third-day-observation",
+    });
+
+    expect(await readFile(manifestPath, "utf8")).toBe(immutableBefore);
+    await expect(readFile(statePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const thirdState = JSON.parse(
+      await readFile(join(root, "2026-07-12", "retailer-1", ".reservoir.json"), "utf8"),
+    ) as { population: number; slots: Array<{ evidence: { id: string } }> };
+    expect(thirdState.population).toBe(1);
+    expect(thirdState.slots[0]?.evidence.id).toBe("third-day-observation");
+  });
+
   it("performs no executor/network work and writes no evidence during dry-run", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
