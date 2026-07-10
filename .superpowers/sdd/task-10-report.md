@@ -107,6 +107,7 @@ After implementation:
 - `ClassificationProviderError` carries only sanitized attempt metadata: requested and actual model, nullable response ID, attempt number, exact usage, and failure kind. The actual response model/snapshot is stored for successful and failed response evidence.
 - Every billed incomplete, refusal, schema-invalid, host-invalid, retry, duplicate-conflict, and Batch residual/invalid response writes an append-only `classification_failure` cost-ledger row without inventing a classification. The monthly budget query already sums the full ledger, so retries/failures count toward the cap.
 - Production synchronous classification is held under the dedicated existing process-lock mechanism for the complete provider/billing/persistence interval. A deterministic two-invocation regression proves only one provider entry and one classification/cost row.
+- Active asynchronous Batch item/version claims are excluded from synchronous eligibility after submission releases the lock; a focused regression proves the synchronous provider is never entered for an active claim.
 - The model is normalized once from the injected CLI environment and the same alias is passed to provider construction and budget preflight. Zero eligible products return `completed` before provider/key checks.
 
 ### Exact reference correction
