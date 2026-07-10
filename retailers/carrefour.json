@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "id": "carrefour",
+  "name": "Carrefour Mercado",
+  "baseUrl": "https://mercado.carrefour.com.br",
+  "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
+  "cep": "01310-100",
+  "active": false,
+  "backupRank": null,
+  "platformEvidence": {
+    "platform": "VTEX public catalog plus checkout region",
+    "observedAt": "2026-07-10T15:36:00.000Z",
+    "urls": [
+      "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=arroz&_from=0&_to=29",
+      "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
+    ],
+    "notes": "Catalog returned 30 records (HTTP 206), but catalog seller 1 did not match CEP region seller carrefourbrfood1935; inactive until store-aware sampling is proven."
+  },
+  "storeMapping": {
+    "storeId": "carrefourbrfood1935",
+    "erpCode": null,
+    "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
+  },
+  "seedHints": ["arroz", "https://mercado.carrefour.com.br/sitemap.xml"],
+  "politeDelayMs": { "min": 900, "max": 1500 },
+  "strategyVersions": { "discovery": 1, "extraction": 1 },
+  "discovery": {
+    "schemaVersion": 1,
+    "purpose": "discovery",
+    "tier": "api",
+    "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
+    "request": {
+      "method": "GET",
+      "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
+      "headers": { "accept": "application/json" },
+      "query": { "ft": "arroz", "_from": "{from}", "_to": "{to}" }
+    },
+    "itemsPath": "$",
+    "refFields": {
+      "url": "$.link",
+      "externalId": "$.productId",
+      "sourceCategory": "$.categories[0]"
+    },
+    "pagination": { "kind": "page", "start": 0, "step": 1, "pageSize": 30, "maxPages": 1 },
+    "maxProducts": 30
+  },
+  "extraction": {
+    "schemaVersion": 1,
+    "purpose": "extraction",
+    "tier": "api",
+    "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
+    "request": {
+      "method": "GET",
+      "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
+      "headers": { "accept": "application/json" },
+      "query": { "fq": "productId:{externalId}", "sc": 2 }
+    },
+    "fields": {
+      "title": "$[0].productName",
+      "brand": "$[0].brand",
+      "price": "$[0].items[0].sellers[0].commertialOffer.Price",
+      "promoPrice": "$[0].items[0].sellers[0].commertialOffer.PromotionPrice",
+      "unit": "$[0].items[0].measurementUnit",
+      "availability": "$[0].items[0].sellers[0].commertialOffer.IsAvailable"
+    }
+  },
+  "fixtureRef": {
+    "canonicalUrl": "https://carrefourbrfood.vtexcommercestable.com.br/arroz-oriental-grao-longo-t1-momiji-1kg-9354581/p",
+    "externalId": "4244",
+    "sourceCategory": "/mercearia/"
+  },
+  "fixtureProvenance": [
+    {
+      "path": "tests/fixtures/carrefour/catalog-product.json",
+      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=arroz&_from=0&_to=29",
+      "capturedAt": "2026-07-10T15:36:00.000Z",
+      "redactions": ["response headers omitted", "price token removed", "payment metadata removed"],
+      "synthetic": false
+    },
+    {
+      "path": "tests/fixtures/carrefour/mutated-product.json",
+      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=arroz&_from=0&_to=29",
+      "capturedAt": "2026-07-10T15:36:00.000Z",
+      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "synthetic": true
+    }
+  ],
+  "validation": {
+    "externallyValidated": false,
+    "validatedAt": "2026-07-10T15:36:00.000Z",
+    "sampleSize": 30,
+    "successes": 30,
+    "score": 1,
+    "evidence": "Catalog fields were 30/30, but the CEP checkout seller mapping was not reflected in catalog offers; activation denied."
+  }
+}

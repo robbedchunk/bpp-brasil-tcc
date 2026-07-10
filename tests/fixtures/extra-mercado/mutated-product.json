@@ -1,0 +1,14 @@
+{
+  "_fixture": {
+    "provenance": "synthetic mutation for drift testing",
+    "synthetic": true
+  },
+  "content": {
+    "id": "synthetic-41329",
+    "name": "Arroz CAMIL Pacote 5 kg",
+    "brand": "CAMIL",
+    "sellInfos": [
+      { "storeId": 923, "currentPrice": "21,99", "sellPrice": null, "stock": true }
+    ]
+  }
+}

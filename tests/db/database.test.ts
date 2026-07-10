@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -281,6 +281,18 @@ describe("database foundation", () => {
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
     ).toEqual({ count: 2 });
+  });
+
+  it("creates a private parent directory for a new production database", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-parent-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "data", "precos.sqlite");
+
+    const database = openDatabase(databasePath);
+    databases.push(database);
+
+    await expect(stat(join(directory, "data")).then((value) => value.mode & 0o777))
+      .resolves.toBe(0o700);
   });
 
   it("rejects deletion from every append-only evidence table", () => {

@@ -36,6 +36,9 @@ export interface CollectionPipelineDependencies {
   id?: () => string;
   random?: () => number;
   rawHtmlRoot?: string;
+  politeDelayMs?: { min: number; max: number };
+  sleep?: (milliseconds: number) => Promise<void>;
+  clock?: () => number;
 }
 
 interface AttemptResult {
@@ -54,6 +57,37 @@ function rejected(error: unknown): ExtractionResult {
       message: error instanceof Error ? error.message : String(error) || "Executor rejected",
       responded: false,
     },
+  };
+}
+
+function createPoliteGate(
+  delay: CollectionPipelineDependencies["politeDelayMs"],
+  random: () => number,
+  sleep: (milliseconds: number) => Promise<void>,
+  clock: () => number,
+): () => Promise<void> {
+  if (delay === undefined) return async () => {};
+  const minimum = Math.max(0, Math.trunc(delay.min));
+  const maximum = Math.max(minimum, Math.trunc(delay.max));
+  let first = true;
+  let nextStart = clock();
+  let queue = Promise.resolve();
+
+  return async () => {
+    const turn = queue.then(async () => {
+      if (first) {
+        first = false;
+        nextStart = clock();
+        return;
+      }
+      const spacing = minimum + Math.floor(random() * (maximum - minimum + 1));
+      const current = clock();
+      nextStart = Math.max(nextStart, current) + spacing;
+      const wait = Math.max(0, nextStart - current);
+      if (wait > 0) await sleep(wait);
+    });
+    queue = turn.catch(() => {});
+    await turn;
   };
 }
 
@@ -87,11 +121,20 @@ export async function runCollection(
   }
 
   const execute = dependencies.execute ?? executeExtraction;
+  const random = dependencies.random ?? Math.random;
+  const politeGate = createPoliteGate(
+    dependencies.politeDelayMs,
+    random,
+    dependencies.sleep ?? ((milliseconds) =>
+      new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
+    dependencies.clock ?? Date.now,
+  );
   const attempts = await mapConcurrent(
     products,
     dependencies.concurrency,
     async (product): Promise<AttemptResult> => {
       try {
+        await politeGate();
         return { product, result: await execute(active.strategy, product) };
       } catch (error) {
         return { product, result: rejected(error) };
@@ -106,7 +149,7 @@ export async function runCollection(
     reservoirSample(
       eligible,
       Math.min(DAILY_REPLAY_SAMPLE, eligible.length),
-      dependencies.random,
+      random,
     ).map(({ index }) => index),
   );
   const replay = new Map<number, ReplayArtifact>();

@@ -1,0 +1,12 @@
+[
+  {
+    "_fixture": {
+      "provenance": "synthetic mutation for drift testing",
+      "synthetic": true
+    },
+    "productId": "synthetic-4244",
+    "productName": "Arroz Synthetic 1kg",
+    "brand": "Synthetic",
+    "items": []
+  }
+]

@@ -11,10 +11,12 @@ coverage/
 # Runtime evidence (never committed or published)
 var/
 replay/
+data/raw-html/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.log
+!data/precos.sqlite
 
 # Test and editor artifacts
 playwright-report/

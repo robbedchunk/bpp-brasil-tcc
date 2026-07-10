@@ -19,6 +19,7 @@ import {
   runDiscovery,
   type RunSummary,
 } from "./pipeline/discover.js";
+import { loadRetailerConfigs } from "./retailers/config.js";
 
 interface PipelineCliOptions {
   limit: number;
@@ -84,6 +85,11 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   const databasePath = (): string =>
     dependencies.databasePath ?? loadConfig(dependencies.env).databasePath;
   const config = () => loadConfig(dependencies.env);
+  const retailerOptions = (retailerId: string): { politeDelayMs?: { min: number; max: number } } => {
+    const retailer = loadRetailerConfigs(resolve(config().projectRoot, "retailers"))
+      .find(({ id }) => id === retailerId);
+    return retailer === undefined ? {} : { politeDelayMs: retailer.politeDelayMs };
+  };
   const withDatabase = async <T>(
     action: (database: Database.Database) => T | Promise<T>,
   ): Promise<T> => {
@@ -161,6 +167,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
                       ...pipelineOptions,
                       concurrency: config().pageConcurrency,
                       rawHtmlRoot: resolve(config().projectRoot, "data/raw-html"),
+                      ...retailerOptions(retailerId),
                     })
                   : await dependencies.runCollection(retailerId, pipelineOptions),
               );
@@ -196,6 +203,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         dryRun: options.dryRun === true,
         concurrency: config().pageConcurrency,
         rawHtmlRoot: resolve(config().projectRoot, "data/raw-html"),
+        retailerOptions,
         now,
       }));
       stdout(options.json === true

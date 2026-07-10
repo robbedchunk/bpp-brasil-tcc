@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "sonda",
+  "name": "Sonda Delivery",
+  "baseUrl": "https://www.sondadelivery.com.br",
+  "allowedDomains": ["www.sondadelivery.com.br"],
+  "cep": "01310-100",
+  "active": false,
+  "backupRank": 1,
+  "platformEvidence": {
+    "platform": "Sonda storefront sitemap plus Product JSON-LD",
+    "observedAt": "2026-07-10T15:38:00.000Z",
+    "urls": [
+      "https://www.sondadelivery.com.br/sitemap.xml",
+      "https://www.sondadelivery.com.br/delivery/produto/patinho-em-bife-bandeja-500g/1000036517"
+    ],
+    "notes": "Named first backup only. Sitemap and JSON-LD title/price are reachable, but availability/store evidence is incomplete; no primary swap without three blocked days."
+  },
+  "storeMapping": null,
+  "seedHints": ["https://www.sondadelivery.com.br/sitemap.xml"],
+  "politeDelayMs": { "min": 1000, "max": 1800 },
+  "strategyVersions": { "discovery": 1, "extraction": 1 },
+  "discovery": {
+    "schemaVersion": 1,
+    "purpose": "discovery",
+    "tier": "sitemap",
+    "allowedDomains": ["www.sondadelivery.com.br"],
+    "sitemapUrls": ["https://www.sondadelivery.com.br/sitemap.xml"],
+    "maxSitemaps": 1,
+    "maxProducts": 2000
+  },
+  "extraction": {
+    "schemaVersion": 1,
+    "purpose": "extraction",
+    "tier": "embedded-json",
+    "allowedDomains": ["www.sondadelivery.com.br"],
+    "request": { "method": "GET", "url": "{productUrl}", "headers": { "accept": "text/html" } },
+    "source": { "kind": "json-ld" },
+    "fields": {
+      "title": "$.name",
+      "brand": "$.brand.name",
+      "price": "$.offers.price",
+      "promoPrice": "$.offers.promoPrice",
+      "unit": "$.name",
+      "availability": "$.offers.availability"
+    }
+  },
+  "fixtureRef": {
+    "canonicalUrl": "https://www.sondadelivery.com.br/delivery/produto/patinho-em-bife-bandeja-500g/1000036517",
+    "externalId": "1000036517",
+    "sourceCategory": "Carnes"
+  },
+  "fixtureProvenance": [
+    {
+      "path": "tests/fixtures/sonda/jsonld-product.html",
+      "sourceUrl": "https://www.sondadelivery.com.br/delivery/produto/patinho-em-bife-bandeja-500g/1000036517",
+      "capturedAt": "2026-07-10T15:38:00.000Z",
+      "redactions": ["response headers omitted", "cookies omitted", "unrelated scripts removed"],
+      "synthetic": false
+    },
+    {
+      "path": "tests/fixtures/sonda/mutated-product.html",
+      "sourceUrl": "https://www.sondadelivery.com.br/delivery/produto/patinho-em-bife-bandeja-500g/1000036517",
+      "capturedAt": "2026-07-10T15:38:00.000Z",
+      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "synthetic": true
+    }
+  ],
+  "validation": {
+    "externallyValidated": false,
+    "validatedAt": "2026-07-10T15:38:00.000Z",
+    "sampleSize": 1,
+    "successes": 0,
+    "score": 0,
+    "evidence": "Public JSON-LD omitted availability/store selection, so the extraction contract is incomplete and remains inactive backup."
+  }
+}

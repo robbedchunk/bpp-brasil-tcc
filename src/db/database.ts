@@ -1,4 +1,5 @@
-import { chmodSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 import Database from "better-sqlite3";
 
@@ -48,6 +49,9 @@ export function migrate(database: Database.Database): void {
 }
 
 export function openDatabase(path: string): Database.Database {
+  if (path !== ":memory:") {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  }
   const database = new Database(path);
   try {
     database.pragma("foreign_keys = ON");

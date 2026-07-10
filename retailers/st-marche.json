@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "st-marche",
+  "name": "St Marché",
+  "baseUrl": "https://marche.com.br",
+  "allowedDomains": ["marche.com.br"],
+  "cep": "01310-100",
+  "active": false,
+  "backupRank": null,
+  "platformEvidence": {
+    "platform": "Shopify Hydrogen/Oxygen Remix",
+    "observedAt": "2026-07-10T15:37:00.000Z",
+    "urls": [
+      "https://www.marche.com.br/sitemap.xml",
+      "https://marche.com.br/products/alho-em-po-st-marche-45g"
+    ],
+    "notes": "Sitemap and embedded Remix loader product/SKU/BRL/availability fields work, but no CEP/store selection is represented; inactive pending restricted store-aware validation."
+  },
+  "storeMapping": null,
+  "seedHints": ["https://www.marche.com.br/sitemap.xml"],
+  "politeDelayMs": { "min": 1000, "max": 1800 },
+  "strategyVersions": { "discovery": 1, "extraction": 1 },
+  "discovery": {
+    "schemaVersion": 1,
+    "purpose": "discovery",
+    "tier": "sitemap",
+    "allowedDomains": ["marche.com.br"],
+    "sitemapUrls": ["https://www.marche.com.br/sitemap.xml"],
+    "maxSitemaps": 1,
+    "maxProducts": 2000
+  },
+  "extraction": {
+    "schemaVersion": 1,
+    "purpose": "extraction",
+    "tier": "embedded-json",
+    "allowedDomains": ["marche.com.br"],
+    "request": { "method": "GET", "url": "{productUrl}", "headers": { "accept": "text/html" } },
+    "source": { "kind": "script", "selector": "script" },
+    "fields": {
+      "title": "$.state.loaderData['routes/products.$handle'].product.title",
+      "brand": "$.state.loaderData['routes/products.$handle'].product.vendor",
+      "price": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.price.amount",
+      "promoPrice": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.compareAtPrice.amount",
+      "unit": "$.state.loaderData['routes/products.$handle'].product.title",
+      "availability": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.availableForSale"
+    }
+  },
+  "fixtureRef": {
+    "canonicalUrl": "https://marche.com.br/products/alho-em-po-st-marche-45g",
+    "externalId": "20051807",
+    "sourceCategory": "Mercearia"
+  },
+  "fixtureProvenance": [
+    {
+      "path": "tests/fixtures/st-marche/remix-product.html",
+      "sourceUrl": "https://marche.com.br/products/alho-em-po-st-marche-45g",
+      "capturedAt": "2026-07-10T15:37:00.000Z",
+      "redactions": ["root loader removed", "public access tokens removed", "analytics identifiers removed"],
+      "synthetic": false
+    },
+    {
+      "path": "tests/fixtures/st-marche/mutated-product.html",
+      "sourceUrl": "https://marche.com.br/products/alho-em-po-st-marche-45g",
+      "capturedAt": "2026-07-10T15:37:00.000Z",
+      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "synthetic": true
+    }
+  ],
+  "validation": {
+    "externallyValidated": false,
+    "validatedAt": "2026-07-10T15:37:00.000Z",
+    "sampleSize": 1,
+    "successes": 1,
+    "score": 1,
+    "evidence": "One public product page exposed valid fields, but there is no honest CEP/store identity and no 30-sample regional score; activation denied."
+  }
+}

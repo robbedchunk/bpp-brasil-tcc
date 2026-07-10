@@ -20,6 +20,9 @@ export interface DailyPipelineDependencies
   extends Omit<CollectionPipelineDependencies, "database"> {
   database: Database.Database;
   collect?: (retailerId: string) => Promise<RunSummary>;
+  retailerOptions?: (
+    retailerId: string,
+  ) => Pick<CollectionPipelineDependencies, "politeDelayMs">;
 }
 
 export async function runDaily(
@@ -30,7 +33,10 @@ export async function runDaily(
   const retailerIds = activeRetailerIds(dependencies.database);
   const runs: RunSummary[] = [];
   const collect = dependencies.collect ?? ((retailerId: string) =>
-    runCollection(retailerId, dependencies));
+    runCollection(retailerId, {
+      ...dependencies,
+      ...(dependencies.retailerOptions?.(retailerId) ?? {}),
+    }));
 
   for (const retailerId of retailerIds) {
     runs.push(await collect(retailerId));

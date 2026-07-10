@@ -100,7 +100,12 @@ function parseDocuments(rawDocuments: string[]): {
   const errors: string[] = [];
   for (const raw of rawDocuments) {
     try {
-      documents.push(JSON.parse(raw));
+      const trimmed = raw.trim();
+      const remixPrefix = "window.__remixContext =";
+      const json = trimmed.startsWith(remixPrefix)
+        ? trimmed.slice(remixPrefix.length).trim().replace(/;\s*$/u, "")
+        : trimmed;
+      documents.push(JSON.parse(json));
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "Embedded JSON is invalid");
     }

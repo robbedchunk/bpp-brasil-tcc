@@ -1,0 +1,27 @@
+{
+  "_fixture": {
+    "provenance": "Official GPA bestPrices response, captured 2026-07-10",
+    "sanitized": true
+  },
+  "status": "success",
+  "code": 200,
+  "content": {
+    "id": 41329,
+    "name": "Arroz Agulhinha Tipo 1 CAMIL Pacote 5kg",
+    "sku": "0791595",
+    "brand": "CAMIL",
+    "urlDetails": "/produto/41329/arroz-agulhinha-tipo-1-camil-pacote-5kg",
+    "sellInfos": [
+      {
+        "name": "Pão de Açúcar",
+        "storeId": 61,
+        "sellType": "1P",
+        "currentPrice": 23.99,
+        "sellPrice": 23.99,
+        "validOnStore": true,
+        "stock": true,
+        "stockQuantity": 56
+      }
+    ]
+  }
+}

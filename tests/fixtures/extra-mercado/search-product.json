@@ -1,0 +1,27 @@
+{
+  "_fixture": {
+    "provenance": "Official GPA bestPrices response, captured 2026-07-10",
+    "sanitized": true
+  },
+  "status": "success",
+  "code": 200,
+  "content": {
+    "id": 41329,
+    "name": "Arroz Agulhinha Tipo 1 CAMIL Pacote 5kg",
+    "sku": "0791595",
+    "brand": "Camil",
+    "urlDetails": "/produto/41329/arroz-agulhinha-tipo-1-camil-pacote-5kg",
+    "sellInfos": [
+      {
+        "name": "Clube Extra",
+        "storeId": 923,
+        "sellType": "1P",
+        "currentPrice": 21.99,
+        "sellPrice": 21.99,
+        "validOnStore": true,
+        "stock": true,
+        "stockQuantity": 48
+      }
+    ]
+  }
+}

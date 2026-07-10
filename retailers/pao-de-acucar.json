@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "id": "pao-de-acucar",
+  "name": "Pão de Açúcar",
+  "baseUrl": "https://www.paodeacucar.com",
+  "allowedDomains": ["api.vendas.gpa.digital", "www.paodeacucar.com"],
+  "cep": "01310-100",
+  "active": true,
+  "backupRank": null,
+  "platformEvidence": {
+    "platform": "GPA vendas delivery-v2 plus search API",
+    "observedAt": "2026-07-10T15:47:55.000Z",
+    "urls": [
+      "https://api.vendas.gpa.digital/pa/delivery-v2/ecom/deliveryOptions?zipCode=01310100",
+      "https://api.vendas.gpa.digital/pa/search/search"
+    ],
+    "notes": "Official CEP lookup returned covered store 61; bounded discovery returned 30 records and extraction v2 bestPrices passed an independent paced 30/30 sample."
+  },
+  "storeMapping": {
+    "storeId": "61",
+    "erpCode": "0001",
+    "evidenceUrl": "https://api.vendas.gpa.digital/pa/delivery-v2/ecom/deliveryOptions?zipCode=01310100"
+  },
+  "seedHints": ["arroz"],
+  "politeDelayMs": { "min": 750, "max": 1250 },
+  "strategyVersions": { "discovery": 1, "extraction": 2 },
+  "discovery": {
+    "schemaVersion": 1,
+    "purpose": "discovery",
+    "tier": "api",
+    "allowedDomains": ["api.vendas.gpa.digital", "www.paodeacucar.com"],
+    "request": {
+      "method": "POST",
+      "url": "https://api.vendas.gpa.digital/pa/search/search",
+      "headers": { "accept": "application/json" },
+      "body": {
+        "terms": "arroz",
+        "page": "{page}",
+        "sortBy": "relevance",
+        "resultsPerPage": 30,
+        "allowRedirect": true,
+        "storeId": 61,
+        "department": "ecom",
+        "customerPlus": true,
+        "partner": "fallback"
+      }
+    },
+    "itemsPath": "$.products",
+    "refFields": {
+      "url": "$.urlDetails",
+      "externalId": "$.id",
+      "sourceCategory": "$.sellerName"
+    },
+    "pagination": { "kind": "page", "start": 1, "step": 1, "pageSize": 30, "maxPages": 1 },
+    "maxProducts": 30
+  },
+  "extraction": {
+    "schemaVersion": 1,
+    "purpose": "extraction",
+    "tier": "api",
+    "allowedDomains": ["api.vendas.gpa.digital", "www.paodeacucar.com"],
+    "request": {
+      "method": "GET",
+      "url": "https://api.vendas.gpa.digital/pa/v4/products/ecom/{externalId}/bestPrices",
+      "headers": { "accept": "application/json" },
+      "query": {
+        "storeId": 61,
+        "isClienteMais": true
+      }
+    },
+    "fields": {
+      "title": "$.content.name",
+      "brand": "$.content.brand",
+      "price": "$.content.sellInfos[0].currentPrice",
+      "promoPrice": "$.content.sellInfos[0].sellPrice",
+      "unit": "$.content.name",
+      "availability": "$.content.sellInfos[0].stock"
+    }
+  },
+  "fixtureRef": {
+    "canonicalUrl": "https://www.paodeacucar.com/produto/41329/arroz-agulhinha-tipo-1-camil-pacote-5kg",
+    "externalId": "41329",
+    "sourceCategory": "Pão de Açúcar"
+  },
+  "fixtureProvenance": [
+    {
+      "path": "tests/fixtures/pao-de-acucar/search-product.json",
+      "sourceUrl": "https://api.vendas.gpa.digital/pa/v4/products/ecom/41329/bestPrices?storeId=61&isClienteMais=true",
+      "capturedAt": "2026-07-10T15:45:00.000Z",
+      "redactions": ["response headers omitted", "cookies omitted", "delivery address omitted"],
+      "synthetic": false
+    },
+    {
+      "path": "tests/fixtures/pao-de-acucar/mutated-product.json",
+      "sourceUrl": "https://api.vendas.gpa.digital/pa/v4/products/ecom/41329/bestPrices?storeId=61&isClienteMais=true",
+      "capturedAt": "2026-07-10T15:45:00.000Z",
+      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "synthetic": true
+    }
+  ],
+  "validation": {
+    "externallyValidated": true,
+    "validatedAt": "2026-07-10T15:47:55.000Z",
+    "sampleSize": 30,
+    "successes": 30,
+    "score": 1,
+    "evidence": "Extraction v2 independently requested 30 discovered IDs through official store-61 bestPrices, sequentially paced; HTTP responses mapped 30/30 valid title, brand, price, stock and unit fields."
+  }
+}

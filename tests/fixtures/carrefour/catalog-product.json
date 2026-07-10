@@ -1,0 +1,32 @@
+[
+  {
+    "_fixture": {
+      "provenance": "Official VTEX public catalog response, captured 2026-07-10",
+      "sanitized": true,
+      "regionalSellerObservedSeparately": "carrefourbrfood1935",
+      "catalogSeller": "1"
+    },
+    "productId": "4244",
+    "productName": "Arroz Oriental Grão Longo T1 Momiji 1kg",
+    "brand": "Momiji",
+    "link": "https://carrefourbrfood.vtexcommercestable.com.br/arroz-oriental-grao-longo-t1-momiji-1kg-9354581/p",
+    "categories": ["/mercearia/"],
+    "items": [
+      {
+        "measurementUnit": "un",
+        "unitMultiplier": 1,
+        "sellers": [
+          {
+            "sellerId": "1",
+            "commertialOffer": {
+              "Price": 12.99,
+              "ListPrice": 12.99,
+              "AvailableQuantity": 100,
+              "IsAvailable": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

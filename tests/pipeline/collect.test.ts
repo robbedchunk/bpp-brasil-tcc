@@ -165,4 +165,31 @@ describe("collection pipeline", () => {
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations WHERE response_path IS NOT NULL").get()).toEqual({ n: 20 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations WHERE response_path LIKE '%<html>%'").get()).toEqual({ n: 0 });
   });
+
+  it("paces live attempts through an injected polite start gate", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 3);
+    const sleeps: number[] = [];
+    let clock = 1_000;
+
+    await runCollection("retailer-1", {
+      database,
+      concurrency: 3,
+      politeDelayMs: { min: 750, max: 750 },
+      clock: () => clock,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        clock += milliseconds;
+      },
+      execute: async () => ({
+        ok: false,
+        failure: { category: "parse", message: "fixture", responded: true },
+      }),
+    });
+
+    expect(sleeps).toEqual([750, 750]);
+  });
 });
