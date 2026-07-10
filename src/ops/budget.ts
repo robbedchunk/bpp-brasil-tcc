@@ -6,6 +6,8 @@ export const RELEASED_CLASSIFICATION_BATCH_STATUSES = [
   "finalize_failed",
   "submission_released",
 ] as const;
+export const MAX_EXPLORATION_EVENT_USD = 5;
+export const MAX_MONTHLY_MODEL_USD = 50;
 
 export function classificationMonthlyCommittedUsd(
   database: Database.Database,
@@ -32,12 +34,11 @@ export function classificationMonthlyCommittedUsd(
       +
       (SELECT COALESCE(SUM(amount_usd), 0)
        FROM model_budget_reservations
-       WHERE status = 'reserved' AND month_start = ?) AS committed
+       WHERE status = 'reserved') AS committed
   `).get(
     monthStart,
     nextMonth,
     ...RELEASED_CLASSIFICATION_BATCH_STATUSES,
-    monthStart,
   ) as { committed: number };
   return row.committed;
 }
@@ -49,9 +50,9 @@ export interface ExplorationBudgetReservationDecision {
   committedBeforeUsd: number;
 }
 
-function validUsd(name: string, value: number, allowZero = false): void {
-  if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
-    throw new RangeError(`${name} must be ${allowZero ? "a non-negative" : "a positive"} finite number`);
+function validUsd(name: string, value: number, maximum: number): void {
+  if (!Number.isFinite(value) || value <= 0 || value > maximum) {
+    throw new RangeError(`${name} must be positive and at most USD ${maximum}`);
   }
 }
 
@@ -70,8 +71,8 @@ export function reserveExplorationBudget(
     now: Date;
   },
 ): ExplorationBudgetReservationDecision {
-  validUsd("eventAllowanceUsd", input.eventAllowanceUsd);
-  validUsd("monthlyLimitUsd", input.monthlyLimitUsd, true);
+  validUsd("eventAllowanceUsd", input.eventAllowanceUsd, MAX_EXPLORATION_EVENT_USD);
+  validUsd("monthlyLimitUsd", input.monthlyLimitUsd, MAX_MONTHLY_MODEL_USD);
   const reserve = database.transaction((): ExplorationBudgetReservationDecision => {
     const existing = database.prepare(
       `SELECT amount_usd, status FROM model_budget_reservations
@@ -130,7 +131,9 @@ export function settleExplorationBudget(
     release?: boolean;
   },
 ): void {
-  validUsd("actualCostUsd", input.actualCostUsd, true);
+  if (!Number.isFinite(input.actualCostUsd) || input.actualCostUsd < 0) {
+    throw new RangeError("actualCostUsd must be a non-negative finite number");
+  }
   if (!Number.isFinite(Date.parse(input.settledAt))) {
     throw new RangeError("settledAt must be an ISO timestamp");
   }

@@ -28,19 +28,30 @@ const MAX_WORKSPACE_ENTRIES = 128;
 const MAX_WORKSPACE_DEPTH = 8;
 
 interface CodexThreadLike {
-  run(
+  runStreamed(
     prompt: string,
     options?: TurnOptions,
   ): Promise<{
-    finalResponse: string;
-    items: unknown[];
-    usage: null | {
-      input_tokens: number;
-      cached_input_tokens: number;
-      output_tokens: number;
-      reasoning_output_tokens: number;
-    };
+    events: AsyncIterable<
+      | { type: "turn.started" }
+      | { type: "turn.completed"; usage: CodexUsageLike | null }
+      | { type: "turn.failed"; error: { message: string } }
+      | { type: "error"; message: string }
+      | {
+          type: "item.completed";
+          item: { type: string; text?: string };
+        }
+      | { type: "thread.started"; thread_id: string }
+      | { type: "item.started" | "item.updated"; item: unknown }
+    >;
   }>;
+}
+
+interface CodexUsageLike {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
 }
 
 interface CodexLike {
@@ -141,6 +152,15 @@ function parseEnvelope(text: string, source: string) {
     throw new Error(`${source} was not valid JSON`);
   }
   return StrategyEnvelopeSchema.parse(parsed);
+}
+
+function generationUsage(usage: CodexUsageLike) {
+  return {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    cachedInputTokens: usage.cached_input_tokens,
+    reasoningOutputTokens: usage.reasoning_output_tokens,
+  };
 }
 
 function canonicalValue(value: unknown): unknown {
@@ -315,29 +335,49 @@ export class CodexStrategyGenerator implements StrategyGenerator {
         approvalPolicy: "never",
         webSearchMode: "disabled",
       });
-      const turn = await thread.run(request.prompt, {
-        outputSchema: STRATEGY_OUTPUT_SCHEMA,
-        signal: controller.signal,
-      });
-      const usage = turn.usage === null
+      let finalResponse = "";
+      let completedUsage: CodexUsageLike | null = null;
+      let streamError: string | undefined;
+      try {
+        const streamed = await thread.runStreamed(request.prompt, {
+          outputSchema: STRATEGY_OUTPUT_SCHEMA,
+          signal: controller.signal,
+        });
+        for await (const event of streamed.events) {
+          if (event.type === "item.completed") {
+            if (event.item.type === "agent_message" && typeof event.item.text === "string") {
+              finalResponse = event.item.text;
+            }
+          } else if (event.type === "turn.completed") {
+            completedUsage = event.usage;
+          } else if (event.type === "turn.failed") {
+            streamError = event.error.message;
+          } else if (event.type === "error") {
+            streamError = event.message;
+          }
+        }
+      } catch (error) {
+        streamError = error instanceof Error ? error.message : String(error) || "Codex stream failed";
+      }
+      const usage = completedUsage === null
         ? { inputTokens: 0, outputTokens: 0 }
-        : {
-            inputTokens: turn.usage.input_tokens,
-            outputTokens: turn.usage.output_tokens,
-            cachedInputTokens: turn.usage.cached_input_tokens,
-            reasoningOutputTokens: turn.usage.reasoning_output_tokens,
-          };
-      if (turn.usage === null) {
+        : generationUsage(completedUsage);
+      if (completedUsage === null) {
         return {
-          status: "failed",
+          status: "unauditable_spend",
           model: this.#model,
           usage,
-          error: "Codex completed without auditable token usage",
+          error: streamError === undefined
+            ? "Codex turn completed without auditable token usage"
+            : `Codex spend is unauditable: ${streamError}`,
         };
+      }
+      if (streamError !== undefined) {
+        return { status: "failed", model: this.#model, usage, error: streamError };
       }
       try {
         await auditWorkspaceTree(workspacePath);
-        const response = parseEnvelope(turn.finalResponse, "Codex final response");
+        const response = parseEnvelope(finalResponse, "Codex final response");
         const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
         const artifact = parseEnvelope(artifactText, "strategy.json");
         if (canonicalJson(response) !== canonicalJson(artifact)) {

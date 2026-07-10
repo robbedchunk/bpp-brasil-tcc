@@ -1008,6 +1008,62 @@ export function commitExplorationSuccess(
   return commit.immediate();
 }
 
+export function commitExplorationTerminal(
+  database: Database.Database,
+  input: {
+    explorationRunId: string;
+    outcome: string;
+    finishedAt: string;
+    artifact: unknown;
+    errorMessage?: string;
+    totalAttempts: number;
+    totalCostUsd: number;
+    reservationActive: boolean;
+    healingEventId: string;
+    healingStatus: "failed" | "provider_unavailable" | "deferred";
+    healingDetails: unknown;
+  },
+): void {
+  const commit = database.transaction(() => {
+    const event = findHealingEvent(database, "id = ?", input.healingEventId);
+    if (event === null || event.status !== "open") {
+      throw new Error("Healing event changed before exploration finalization");
+    }
+    finishExplorationRun(database, {
+      explorationRunId: input.explorationRunId,
+      outcome: input.outcome,
+      finishedAt: input.finishedAt,
+      artifact: input.artifact,
+      ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
+    });
+    if (input.reservationActive) {
+      const reservation = database.prepare(
+        `UPDATE model_budget_reservations
+         SET status = ?, actual_cost_usd = ?, settled_at = ?,
+             details_json = json_set(details_json, '$.actualCostUsd', ?)
+         WHERE exploration_run_id = ? AND status = 'reserved'`,
+      ).run(
+        input.totalCostUsd === 0 ? "released" : "settled",
+        input.totalCostUsd,
+        input.finishedAt,
+        input.totalCostUsd,
+        input.explorationRunId,
+      );
+      if (reservation.changes !== 1) {
+        throw new Error("Terminal exploration requires its active budget reservation");
+      }
+    }
+    finishHealingEvent(database, {
+      healingEventId: input.healingEventId,
+      status: input.healingStatus,
+      attempts: input.totalAttempts,
+      finishedAt: input.finishedAt,
+      details: input.healingDetails,
+    });
+  });
+  commit.immediate();
+}
+
 export function consecutiveFailedHealingEvents(
   database: Database.Database,
   retailerId: string,

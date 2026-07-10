@@ -11,6 +11,7 @@ import {
 } from "../db/repositories.js";
 import {
   exploreRetailer,
+  ExplorationEvidenceError,
   type ExploreRetailerDependencies,
   type ExplorationOutcome,
 } from "../explorer/explore.js";
@@ -227,14 +228,16 @@ export async function healRetailer(
     explorationError = redactSandboxText(
       error instanceof Error ? error.message : String(error) || "Unknown error",
     );
-    exploration = {
-      explorationRunId: "unavailable",
-      activated: false,
-      attempts: 0,
-      externalScore: null,
-      outcome: "provider_failed",
-      costUsd: 0,
-    };
+    exploration = error instanceof ExplorationEvidenceError
+      ? error.outcome
+      : {
+          explorationRunId: "unavailable",
+          activated: false,
+          attempts: 0,
+          externalScore: null,
+          outcome: "provider_failed",
+          costUsd: 0,
+        };
   }
 
   const status = exploration.activated

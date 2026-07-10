@@ -22,6 +22,35 @@ afterEach(async () => {
 });
 
 describe("exploration budget reservations", () => {
+  it("rejects caller allowances above the binding USD 5/50 maxima", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "test",
+      maxAttempts: 1,
+      startedAt: now.toISOString(),
+    });
+
+    expect(() => reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5.01,
+      monthlyLimitUsd: 50,
+      now,
+    })).toThrow(/eventAllowanceUsd.*at most.*5/iu);
+    expect(() => reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 50.01,
+      now,
+    })).toThrow(/monthlyLimitUsd.*at most.*50/iu);
+  });
+
   it("atomically admits only one concurrent USD 5 event under a USD 5 monthly limit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "explorer-reservation-"));
     directories.push(directory);
@@ -75,5 +104,48 @@ describe("exploration budget reservations", () => {
       settledAt: now.toISOString(),
     });
     expect(classificationMonthlyCommittedUsd(first, now)).toBe(0);
+  });
+
+  it("counts an active previous-month reservation against the new month", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "explorer-midnight-reservation-"));
+    directories.push(directory);
+    const path = join(directory, "evidence.sqlite");
+    const beforeMidnight = openDatabase(path);
+    const afterMidnight = openDatabase(path);
+    databases.push(beforeMidnight, afterMidnight);
+    seedRetailer(beforeMidnight, "before");
+    seedRetailer(beforeMidnight, "after");
+    const august = new Date("2026-08-31T23:59:59.000Z");
+    const september = new Date("2026-09-01T00:00:01.000Z");
+    const augustRun = beginExplorationRun(beforeMidnight, {
+      retailerId: "before",
+      purpose: "extraction",
+      trigger: "test",
+      maxAttempts: 1,
+      startedAt: august.toISOString(),
+    });
+    const septemberRun = beginExplorationRun(beforeMidnight, {
+      retailerId: "after",
+      purpose: "extraction",
+      trigger: "test",
+      maxAttempts: 1,
+      startedAt: september.toISOString(),
+    });
+
+    expect(reserveExplorationBudget(beforeMidnight, {
+      explorationRunId: augustRun,
+      retailerId: "before",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 5,
+      now: august,
+    }).reserved).toBe(true);
+    expect(classificationMonthlyCommittedUsd(afterMidnight, september)).toBe(5);
+    expect(reserveExplorationBudget(afterMidnight, {
+      explorationRunId: septemberRun,
+      retailerId: "after",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 5,
+      now: september,
+    }).reserved).toBe(false);
   });
 });

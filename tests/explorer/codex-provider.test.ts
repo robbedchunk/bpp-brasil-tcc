@@ -32,6 +32,36 @@ const strategy = {
   },
 } as const;
 
+const usage = (
+  inputTokens: number,
+  outputTokens: number,
+  cachedInputTokens = 0,
+  reasoningOutputTokens = 0,
+) => ({
+  input_tokens: inputTokens,
+  cached_input_tokens: cachedInputTokens,
+  output_tokens: outputTokens,
+  reasoning_output_tokens: reasoningOutputTokens,
+});
+
+function streamed(
+  finalResponse: string,
+  tokenUsage: ReturnType<typeof usage> | null,
+  errorAfterCompletion?: Error,
+) {
+  return {
+    events: (async function* () {
+      yield { type: "turn.started" as const };
+      yield {
+        type: "item.completed" as const,
+        item: { id: "message-1", type: "agent_message" as const, text: finalResponse },
+      };
+      yield { type: "turn.completed" as const, usage: tokenUsage };
+      if (errorAfterCompletion !== undefined) throw errorAfterCompletion;
+    })(),
+  };
+}
+
 describe("Codex SDK strategy provider", () => {
   it("compares JSON semantically rather than by object property order", () => {
     expect(canonicalJson({ nested: { b: 2, a: 1 }, z: 0 }))
@@ -63,23 +93,14 @@ describe("Codex SDK strategy provider", () => {
           startThread(threadOptions) {
             captured.thread = threadOptions as Record<string, any>;
             return {
-              async run(_prompt, turnOptions) {
+              async runStreamed(_prompt, turnOptions) {
                 captured.turn = turnOptions as Record<string, any>;
                 await writeFile(
                   join(workspacePath, "strategy.json"),
                   JSON.stringify({ strategy }),
                   "utf8",
                 );
-                return {
-                  finalResponse: JSON.stringify({ strategy }),
-                  items: [],
-                  usage: {
-                    input_tokens: 321,
-                    cached_input_tokens: 20,
-                    output_tokens: 42,
-                    reasoning_output_tokens: 12,
-                  },
-                };
+                return streamed(JSON.stringify({ strategy }), usage(321, 42, 20, 12));
               },
             };
           },
@@ -172,22 +193,16 @@ describe("Codex SDK strategy provider", () => {
         codexHome = options.env!.CODEX_HOME!;
         return {
           startThread: () => ({
-            run: async () => {
+            runStreamed: async () => {
               await mkdir(home, { recursive: true });
               await writeFile(
                 join(workspacePath, "strategy.json"),
                 JSON.stringify({ strategy, command: "cat ~/.codex/auth.json" }),
               );
-              return {
-                finalResponse: JSON.stringify({ strategy, command: "cat ~/.codex/auth.json" }),
-                items: [],
-                usage: {
-                  input_tokens: 81,
-                  cached_input_tokens: 5,
-                  output_tokens: 19,
-                  reasoning_output_tokens: 2,
-                },
-              };
+              return streamed(
+                JSON.stringify({ strategy, command: "cat ~/.codex/auth.json" }),
+                usage(81, 19, 5, 2),
+              );
             },
           }),
         };
@@ -220,18 +235,9 @@ describe("Codex SDK strategy provider", () => {
       apiKey: "test-key",
       codexFactory: () => ({
         startThread: () => ({
-          run: async () => {
+          runStreamed: async () => {
             await symlink(externalArtifact, join(workspacePath, "strategy.json"));
-            return {
-              finalResponse: JSON.stringify({ strategy }),
-              items: [],
-              usage: {
-                input_tokens: 1,
-                cached_input_tokens: 0,
-                output_tokens: 1,
-                reasoning_output_tokens: 0,
-              },
-            };
+            return streamed(JSON.stringify({ strategy }), usage(1, 1));
           },
         }),
       }),
@@ -257,21 +263,12 @@ describe("Codex SDK strategy provider", () => {
       apiKey: "test-key",
       codexFactory: () => ({
         startThread: () => ({
-          run: async () => {
+          runStreamed: async () => {
             await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
             const scratch = join(workspacePath, "scratch.sh");
             await writeFile(scratch, "#!/bin/sh\nexit 0\n");
             await chmod(scratch, 0o755);
-            return {
-              finalResponse: JSON.stringify({ strategy }),
-              items: [],
-              usage: {
-                input_tokens: 12,
-                cached_input_tokens: 0,
-                output_tokens: 3,
-                reasoning_output_tokens: 0,
-              },
-            };
+            return streamed(JSON.stringify({ strategy }), usage(12, 3));
           },
         }),
       }),
@@ -287,6 +284,65 @@ describe("Codex SDK strategy provider", () => {
       status: "failed",
       usage: { inputTokens: 12, outputTokens: 3 },
       error: expect.stringMatching(/executable|workspace/iu),
+    });
+  });
+
+  it("retains streamed usage when the SDK generator throws after turn completion", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-stream-error-"));
+    roots.push(workspacePath);
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => streamed(
+            JSON.stringify({ strategy }),
+            usage(700, 80, 30, 9),
+            new Error("Codex Exec exited with code 1"),
+          ),
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "failed",
+      usage: {
+        inputTokens: 700,
+        cachedInputTokens: 30,
+        outputTokens: 80,
+        reasoningOutputTokens: 9,
+      },
+      error: expect.stringMatching(/exited with code 1/iu),
+    });
+  });
+
+  it("marks a started turn with null usage as unauditable spend", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-null-usage-"));
+    roots.push(workspacePath);
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => streamed(JSON.stringify({ strategy }), null),
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "unauditable_spend",
+      usage: { inputTokens: 0, outputTokens: 0 },
+      error: expect.stringMatching(/unauditable|token usage/iu),
     });
   });
 });

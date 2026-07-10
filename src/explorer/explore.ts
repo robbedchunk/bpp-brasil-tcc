@@ -7,6 +7,7 @@ import { executeExtraction } from "../collection/executor.js";
 import {
   beginExplorationRun,
   commitExplorationSuccess,
+  commitExplorationTerminal,
   findRetailerExplorationContext,
   finishExplorationRun,
   listStrategyValidationRefs,
@@ -16,6 +17,8 @@ import {
 import { executeDiscovery } from "../discovery/executor.js";
 import type { AlertSink } from "../ops/alerts.js";
 import {
+  MAX_EXPLORATION_EVENT_USD,
+  MAX_MONTHLY_MODEL_USD,
   reserveExplorationBudget,
   settleExplorationBudget,
 } from "../ops/budget.js";
@@ -107,6 +110,7 @@ export type ExplorationOutcomeName =
   | "invalid_candidate"
   | "provider_unavailable"
   | "provider_failed"
+  | "unauditable_spend"
   | "insufficient_samples"
   | "budget_paused"
   | "budget_exhausted";
@@ -120,6 +124,17 @@ export interface ExplorationOutcome {
   costUsd: number;
   strategyId?: string;
   strategyVersion?: number;
+  alerted?: boolean;
+}
+
+export class ExplorationEvidenceError extends Error {
+  readonly outcome: ExplorationOutcome;
+
+  constructor(message: string, outcome: ExplorationOutcome, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ExplorationEvidenceError";
+    this.outcome = outcome;
+  }
 }
 
 function positiveFinite(name: string, value: number): number {
@@ -127,6 +142,14 @@ function positiveFinite(name: string, value: number): number {
     throw new RangeError(`${name} must be a positive finite number`);
   }
   return value;
+}
+
+function boundedPositive(name: string, value: number, maximum: number): number {
+  const checked = positiveFinite(name, value);
+  if (checked > maximum) {
+    throw new RangeError(`${name} must be at most USD ${maximum}`);
+  }
+  return checked;
 }
 
 function positiveInteger(name: string, value: number): number {
@@ -273,13 +296,15 @@ export async function exploreRetailer(
 ): Promise<ExplorationOutcome> {
   const now = dependencies.now ?? (() => new Date());
   const maxAttempts = positiveInteger("maxAttempts", dependencies.maxAttempts ?? 3);
-  const eventBudgetUsd = positiveFinite(
+  const eventBudgetUsd = boundedPositive(
     "eventBudgetUsd",
     dependencies.eventBudgetUsd ?? 5,
+    MAX_EXPLORATION_EVENT_USD,
   );
-  const monthlyBudgetUsd = positiveFinite(
+  const monthlyBudgetUsd = boundedPositive(
     "monthlyBudgetUsd",
     dependencies.monthlyBudgetUsd ?? 50,
+    MAX_MONTHLY_MODEL_USD,
   );
   const rate = dependencies.rate ?? configuredRate(dependencies.env ?? process.env);
   const context = findRetailerExplorationContext(
@@ -306,6 +331,19 @@ export async function exploreRetailer(
   let finalError: string | undefined;
   let reservationActive = false;
   let explorationFinished = false;
+  let specificAlertSent = false;
+  const outcomeEvidence = (): ExplorationOutcome => ({
+    explorationRunId,
+    activated: activated !== undefined,
+    attempts,
+    externalScore,
+    outcome,
+    costUsd: totalCostUsd,
+    ...(specificAlertSent ? { alerted: true } : {}),
+    ...(activated === undefined
+      ? {}
+      : { strategyId: activated.id, strategyVersion: activated.version }),
+  });
 
   const attemptEvidence = (
     attemptNumber: number,
@@ -316,10 +354,12 @@ export async function exploreRetailer(
       report?: CandidateValidationReport;
       artifact?: unknown;
       errorMessage?: string;
+      costUsd?: number;
+      estimateSource?: string;
     } = {},
   ): ExplorationAttemptEvidence => {
     const usage = result.usage;
-    const costUsd = estimateExplorerCost(usage, rate);
+    const costUsd = options.costUsd ?? estimateExplorerCost(usage, rate);
     return {
       explorationRunId,
       attemptNumber,
@@ -332,7 +372,7 @@ export async function exploreRetailer(
       reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
       costUsd,
       costEstimated: true,
-      estimateSource: rate.source,
+      estimateSource: options.estimateSource ?? rate.source,
       rateVersion: rate.version,
       ...(options.report === undefined
         ? {}
@@ -358,6 +398,8 @@ export async function exploreRetailer(
       report?: CandidateValidationReport;
       artifact?: unknown;
       errorMessage?: string;
+      costUsd?: number;
+      estimateSource?: string;
     } = {},
   ): void => {
     recordExplorationAttempt(
@@ -515,6 +557,7 @@ export async function exploreRetailer(
               actualCostUsd: totalCostUsd,
             },
           });
+          specificAlertSent = true;
         } catch {
           // Budget evidence is authoritative even when the optional alert sink fails.
         }
@@ -525,6 +568,28 @@ export async function exploreRetailer(
         outcome = "provider_unavailable";
         finalError = result.error ?? "Explorer provider is unavailable";
         record(attempt, prompt, result, outcome, { errorMessage: finalError });
+        break;
+      }
+      if (result.status === "unauditable_spend") {
+        totalCostUsd = eventBudgetUsd;
+        outcome = "unauditable_spend";
+        finalError = result.error;
+        record(attempt, prompt, result, outcome, {
+          errorMessage: finalError,
+          costUsd: eventBudgetUsd,
+          estimateSource: "unauditable-full-event-reservation",
+        });
+        try {
+          await dependencies.alertSink?.send({
+            severity: "error",
+            title: "Strategy exploration spend is unauditable",
+            message: "A potentially paid model turn returned no auditable usage; the full event reservation was charged and no retry was attempted",
+            details: { retailerId, purpose, explorationRunId, eventBudgetUsd },
+          });
+          specificAlertSent = true;
+        } catch {
+          // The durable full-reservation charge remains authoritative.
+        }
         break;
       }
       if (result.status === "failed") {
@@ -627,38 +692,72 @@ export async function exploreRetailer(
       break;
     }
 
-    return {
-      explorationRunId,
+    return outcomeEvidence();
+  } catch (error) {
+    if (error instanceof ExplorationEvidenceError) throw error;
+    throw new ExplorationEvidenceError(safeError(error), outcomeEvidence(), {
+      cause: error,
+    });
+  } finally {
+    const finishedAt = now().toISOString();
+    const artifact = {
       activated: activated !== undefined,
       attempts,
       externalScore,
-      outcome,
-      costUsd: totalCostUsd,
-      ...(activated === undefined
-        ? {}
-        : { strategyId: activated.id, strategyVersion: activated.version }),
+      costEstimated: true,
+      estimateSource: rate.source,
+      rateVersion: rate.version,
     };
-  } finally {
-    const finishedAt = now().toISOString();
     try {
       if (!explorationFinished) {
-        finishExplorationRun(dependencies.database, {
-          explorationRunId,
-          outcome,
-          finishedAt,
-          artifact: {
-            activated: activated !== undefined,
-            attempts,
-            externalScore,
-            costEstimated: true,
-            estimateSource: rate.source,
-            rateVersion: rate.version,
-          },
-          ...(finalError === undefined ? {} : { errorMessage: finalError }),
-        });
+        if (dependencies.healingEventId === undefined) {
+          finishExplorationRun(dependencies.database, {
+            explorationRunId,
+            outcome,
+            finishedAt,
+            artifact,
+            ...(finalError === undefined ? {} : { errorMessage: finalError }),
+          });
+        } else {
+          const healingStatus = outcome === "provider_unavailable"
+            ? "provider_unavailable" as const
+            : outcome === "budget_paused"
+                || outcome === "budget_exhausted"
+                || outcome === "insufficient_samples"
+              ? "deferred" as const
+              : "failed" as const;
+          try {
+            commitExplorationTerminal(dependencies.database, {
+              explorationRunId,
+              outcome,
+              finishedAt,
+              artifact,
+              ...(finalError === undefined ? {} : { errorMessage: finalError }),
+              totalAttempts: attempts,
+              totalCostUsd,
+              reservationActive,
+              healingEventId: dependencies.healingEventId,
+              healingStatus,
+              healingDetails: {
+                explorationRunId,
+                explorationOutcome: outcome,
+                externalScore,
+                costUsd: totalCostUsd,
+                alerted: specificAlertSent,
+                ...(finalError === undefined ? {} : { error: finalError }),
+              },
+            });
+            explorationFinished = true;
+            reservationActive = false;
+          } catch (error) {
+            throw new ExplorationEvidenceError(safeError(error), outcomeEvidence(), {
+              cause: error,
+            });
+          }
+        }
       }
     } finally {
-      if (reservationActive) {
+      if (reservationActive && dependencies.healingEventId === undefined) {
         settleExplorationBudget(dependencies.database, {
           explorationRunId,
           actualCostUsd: totalCostUsd,

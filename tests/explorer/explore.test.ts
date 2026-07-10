@@ -5,6 +5,7 @@ import { beginHealingEvent } from "../../src/db/repositories.js";
 import { CodexStrategyGenerator } from "../../src/explorer/codex-provider.js";
 import {
   DEFAULT_EXPLORER_RATE,
+  ExplorationEvidenceError,
   exploreRetailer,
   type CandidateValidator,
 } from "../../src/explorer/explore.js";
@@ -215,24 +216,99 @@ describe("trusted strategy exploration", () => {
     ]);
   });
 
+  it("charges the full reservation once and never retries unauditable spend", async () => {
+    const database = seedExploration();
+    const alerts: Array<{ title: string }> = [];
+    const generator = new FixtureGenerator([
+      {
+        status: "unauditable_spend",
+        model: "fixture-model",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        error: "turn started but usage was unavailable",
+      } as GenerationResult,
+      generated(candidate),
+    ]);
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      validateCandidate: scoreSequence(1),
+      maxAttempts: 3,
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(outcome).toMatchObject({
+      outcome: "unauditable_spend",
+      activated: false,
+      attempts: 1,
+      costUsd: 5,
+      alerted: true,
+    });
+    expect(generator.requests).toHaveLength(1);
+    expect(database.prepare(
+      "SELECT outcome, input_tokens, output_tokens, cost_usd FROM exploration_attempts",
+    ).get()).toEqual({
+      outcome: "unauditable_spend",
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 5,
+    });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations",
+    ).get()).toEqual({ status: "settled", actual_cost_usd: 5 });
+    expect(alerts).toEqual([
+      expect.objectContaining({ title: "Strategy exploration spend is unauditable" }),
+    ]);
+  });
+
+  it("rejects exploration allowances above the binding maxima before opening a run", async () => {
+    const database = seedExploration();
+    const generator = new FixtureGenerator([generated(candidate)]);
+
+    await expect(exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      eventBudgetUsd: 5.01,
+    })).rejects.toThrow(/eventBudgetUsd.*at most.*5/iu);
+    await expect(exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      monthlyBudgetUsd: 50.01,
+    })).rejects.toThrow(/monthlyBudgetUsd.*at most.*50/iu);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM exploration_runs").get())
+      .toEqual({ n: 0 });
+  });
+
   it("persists paid usage and cost when the provider produces an invalid artifact", async () => {
     const database = seedExploration();
     const generator = new CodexStrategyGenerator({
       apiKey: "fixture-key",
       codexFactory: () => ({
         startThread: ({ workingDirectory }) => ({
-          run: async () => {
+          runStreamed: async () => {
             const { writeFile } = await import("node:fs/promises");
             await writeFile(`${workingDirectory}/strategy.json`, "{not-json", "utf8");
             return {
-              finalResponse: JSON.stringify({ strategy: candidate }),
-              items: [],
-              usage: {
-                input_tokens: 100,
-                cached_input_tokens: 10,
-                output_tokens: 50,
-                reasoning_output_tokens: 5,
-              },
+              events: (async function* () {
+                yield { type: "turn.started" as const };
+                yield {
+                  type: "item.completed" as const,
+                  item: {
+                    id: "message-1",
+                    type: "agent_message" as const,
+                    text: JSON.stringify({ strategy: candidate }),
+                  },
+                };
+                yield {
+                  type: "turn.completed" as const,
+                  usage: {
+                    input_tokens: 100,
+                    cached_input_tokens: 10,
+                    output_tokens: 50,
+                    reasoning_output_tokens: 5,
+                  },
+                };
+              })(),
             };
           },
         }),
@@ -310,7 +386,68 @@ describe("trusted strategy exploration", () => {
       "SELECT id, active FROM strategies WHERE retailer_id = 'retailer-1' ORDER BY version",
     ).all()).toEqual([{ id: "retailer-1-extraction-v1", active: 1 }]);
     expect(database.prepare("SELECT status FROM healing_events WHERE id = ?").get(healing.event.id))
-      .toEqual({ status: "open" });
+      .toEqual({ status: "failed" });
+    expect(database.prepare("SELECT status FROM exploration_runs").get())
+      .toEqual({ status: "finished" });
+    expect(database.prepare("SELECT status FROM model_budget_reservations").get())
+      .toEqual({ status: "settled" });
+  });
+
+  it("atomically keeps failed healing finalization, settlement, and event closure together", async () => {
+    const database = seedExploration();
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at, finished_at)
+       VALUES ('failed-drift', 'retailer-1', 'collect', '2026-07-10',
+               'retailer-1-extraction-v1', 1, 'failed', 1, 0, 1,
+               '2026-07-10T00:00:00.000Z', '2026-07-10T00:01:00.000Z')`,
+    ).run();
+    database.prepare(
+      `INSERT INTO run_failures
+         (id, run_id, retailer_id, category, responded, message, strategy_id,
+          strategy_version, occurred_at)
+       VALUES ('failed-drift-evidence', 'failed-drift', 'retailer-1',
+               'missing-fields', 1, 'fixture drift',
+               'retailer-1-extraction-v1', 1,
+               '2026-07-10T00:00:30.000Z')`,
+    ).run();
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "failed-drift",
+      detectedAt: "2026-07-10T00:02:00.000Z",
+    });
+    database.exec(`
+      CREATE TRIGGER sabotage_failed_healing_close
+      BEFORE UPDATE OF status ON healing_events
+      WHEN NEW.status = 'failed'
+      BEGIN
+        SELECT RAISE(ABORT, 'fixture failed-healing closure failure');
+      END
+    `);
+
+    await expect(exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: new FixtureGenerator([generated(candidate)]),
+      validateCandidate: scoreSequence(0.8),
+      maxAttempts: 1,
+      healingEventId: healing.event.id,
+      now: () => new Date("2026-07-10T00:03:00.000Z"),
+    })).rejects.toBeInstanceOf(ExplorationEvidenceError);
+
+    expect(database.prepare(
+      "SELECT status FROM exploration_runs",
+    ).get()).toEqual({ status: "running" });
+    expect(database.prepare(
+      "SELECT status FROM model_budget_reservations",
+    ).get()).toEqual({ status: "reserved" });
+    expect(database.prepare(
+      "SELECT status FROM healing_events",
+    ).get()).toEqual({ status: "open" });
+    expect(database.prepare(
+      "SELECT outcome, input_tokens, output_tokens FROM exploration_attempts",
+    ).get()).toEqual({ outcome: "validation_failed", input_tokens: 100, output_tokens: 50 });
   });
 
   it("records provider_unavailable without retiring the active strategy", async () => {
