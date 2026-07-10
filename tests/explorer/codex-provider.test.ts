@@ -321,6 +321,52 @@ describe("Codex SDK strategy provider", () => {
     });
   });
 
+  it("returns non-retryable paid evidence when disposable state cleanup fails", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-cleanup-test-"));
+    const temporaryRoot = await mkdtemp(join(tmpdir(), "explorer-provider-state-root-"));
+    roots.push(workspacePath, temporaryRoot);
+    const cleanupCalls: string[] = [];
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      temporaryRoot,
+      removeTemporaryState: async (path: string) => {
+        cleanupCalls.push(path);
+        throw new Error("fixture state cleanup failure");
+      },
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => {
+            await writeFile(
+              join(workspacePath, "strategy.json"),
+              JSON.stringify({ strategy }),
+              "utf8",
+            );
+            return streamed(JSON.stringify({ strategy }), usage(800, 50, 25, 7));
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "safety_failure",
+      model: "gpt-5.6-sol",
+      usage: {
+        inputTokens: 800,
+        cachedInputTokens: 25,
+        outputTokens: 50,
+        reasoningOutputTokens: 7,
+      },
+      error: expect.stringMatching(/state cleanup failure/iu),
+    });
+    expect(cleanupCalls).toHaveLength(1);
+  });
+
   it("marks a started turn with null usage as unauditable spend", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-null-usage-"));
     roots.push(workspacePath);

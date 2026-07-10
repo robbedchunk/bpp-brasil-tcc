@@ -259,7 +259,7 @@ describe("database foundation", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 8 });
+    ).toEqual({ count: 9 });
 
     database.exec("SELECT 1");
     expect(() => openMemoryDatabase()).not.toThrow();
@@ -281,7 +281,35 @@ describe("database foundation", () => {
     databases.push(database);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-    ).toEqual({ count: 8 });
+    ).toEqual({ count: 9 });
+  });
+
+  it("binds at most one immutable exploration run to each healing event", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    expect(database.prepare("PRAGMA table_info(exploration_runs)").all())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "healing_event_id", notnull: 0 }),
+      ]));
+    expect(() => database.prepare(
+      "UPDATE exploration_runs SET healing_event_id = 'healing-1' WHERE id = 'exploration-1'",
+    ).run()).toThrow(/immutable/iu);
+
+    database.prepare(
+      `INSERT INTO exploration_runs
+         (id, retailer_id, purpose, trigger, previous_strategy_id,
+          healing_event_id, status, event_budget, started_at)
+       VALUES (?, 'retailer-1', 'extraction', 'healing', 'strategy-1',
+               'healing-1', 'running', 3, '2026-07-10T04:20:00.000Z')`,
+    ).run("healing-exploration-1");
+    expect(() => database.prepare(
+      `INSERT INTO exploration_runs
+         (id, retailer_id, purpose, trigger, previous_strategy_id,
+          healing_event_id, status, event_budget, started_at)
+       VALUES (?, 'retailer-1', 'extraction', 'healing', 'strategy-1',
+               'healing-1', 'running', 3, '2026-07-10T04:21:00.000Z')`,
+    ).run("healing-exploration-2")).toThrow(/unique/iu);
   });
 
   it("creates a private parent directory for a new production database", async () => {

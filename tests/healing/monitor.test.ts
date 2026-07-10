@@ -1,15 +1,28 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { openDatabase } from "../../src/db/database.js";
-import { beginHealingEvent } from "../../src/db/repositories.js";
+import {
+  beginExplorationRun,
+  beginHealingEvent,
+  recordExplorationAttempt,
+} from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
+import { reserveExplorationBudget } from "../../src/ops/budget.js";
 import { healPendingEvents, healRetailer } from "../../src/healing/heal.js";
 import { ExplorationEvidenceError } from "../../src/explorer/explore.js";
 import { monitorRun } from "../../src/healing/monitor.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
-afterEach(() => databases.splice(0).forEach((database) => database.close()));
+const temporaryDirectories: string[] = [];
+afterEach(async () => {
+  databases.splice(0).forEach((database) => database.close());
+  await Promise.all(temporaryDirectories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true })));
+});
 
 function seed(): ReturnType<typeof openDatabase> {
   const database = openDatabase(":memory:");
@@ -511,6 +524,276 @@ describe("drift monitor state machine", () => {
     });
     expect(database.prepare("SELECT status FROM healing_events").get())
       .toEqual({ status: "open" });
+  });
+
+  it("preserves terminal-commit failures for recovery while processing later retailers", async () => {
+    const database = seed();
+    seedRetailer(database, "retailer-2");
+    seedStrategy(database, "extraction", extractionStrategy, "retailer-2");
+    insertRun(database, "terminal-worker-1", [
+      { category: "missing-fields", responded: true },
+    ]);
+    insertRun(database, "terminal-worker-2", [
+      { category: "missing-fields", responded: true },
+    ], 0, "failed", "retailer-2");
+    for (const [index, [retailerId, onsetRunId]] of [
+      ["retailer-1", "terminal-worker-1"],
+      ["retailer-2", "terminal-worker-2"],
+    ].entries()) {
+      beginHealingEvent(database, {
+        retailerId,
+        purpose: "extraction",
+        onsetRunId,
+        detectedAt: `2026-07-10T00:0${index}:00.000Z`,
+        queued: true,
+      });
+    }
+    const explored: string[] = [];
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async (retailerId) => {
+        explored.push(retailerId);
+        if (retailerId === "retailer-1") {
+          throw new ExplorationEvidenceError(
+            "fixture terminal transaction failed",
+            {
+              explorationRunId: "terminal-evidence",
+              activated: false,
+              attempts: 1,
+              externalScore: 0.5,
+              outcome: "validation_failed",
+              costUsd: 0.01,
+            },
+            { terminalCommitFailed: true },
+          );
+        }
+        return {
+          explorationRunId: "later-provider",
+          activated: false,
+          attempts: 1,
+          externalScore: null,
+          outcome: "provider_unavailable",
+          costUsd: 0,
+        };
+      },
+    });
+
+    expect(explored).toEqual(["retailer-1", "retailer-2"]);
+    expect(summary).toMatchObject({
+      queued: 2,
+      processed: 1,
+      failed: 0,
+      providerUnavailable: 1,
+      inProgress: 1,
+      workerErrors: 1,
+    });
+    expect(database.prepare(
+      "SELECT retailer_id, status, attempts FROM healing_events ORDER BY retailer_id",
+    ).all()).toEqual([
+      { retailer_id: "retailer-1", status: "open", attempts: 0 },
+      { retailer_id: "retailer-2", status: "provider_unavailable", attempts: 1 },
+    ]);
+  });
+
+  it("reconciles a crashed paid exploration from immutable evidence without another model call", async () => {
+    const database = seed();
+    insertRun(database, "paid-crash", [{ category: "missing-fields", responded: true }]);
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "paid-crash",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: healing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:01:00.000Z",
+    });
+    reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 50,
+      now: new Date("2026-07-10T00:01:00.000Z"),
+    });
+    recordExplorationAttempt(database, {
+      explorationRunId,
+      attemptNumber: 1,
+      model: "fixture-model",
+      promptVersion: "fixture-prompt",
+      promptHash: "a".repeat(64),
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 50,
+      reasoningOutputTokens: 0,
+      costUsd: 0.75,
+      costEstimated: true,
+      estimateSource: "fixture-rate",
+      rateVersion: "fixture-v1",
+      externalSampleSize: 30,
+      externalSuccesses: 24,
+      externalScore: 0.8,
+      outcome: "validation_failed",
+      errorMessage: "candidate missed trusted gate",
+      createdAt: "2026-07-10T00:02:00.000Z",
+    });
+    let modelCalls = 0;
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async () => {
+        modelCalls += 1;
+        throw new Error("crash recovery must not regenerate");
+      },
+    });
+
+    expect(modelCalls).toBe(0);
+    expect(summary).toMatchObject({ processed: 1, failed: 1, workerErrors: 0 });
+    expect(database.prepare(
+      "SELECT status, outcome, events_used, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({
+      status: "finished",
+      outcome: "validation_failed",
+      events_used: 1,
+      cost_usd: 0.75,
+    });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "settled", actual_cost_usd: 0.75 });
+    const event = database.prepare(
+      "SELECT status, attempts, details_json FROM healing_events WHERE id = ?",
+    ).get(healing.event.id) as { status: string; attempts: number; details_json: string };
+    expect(event).toMatchObject({ status: "failed", attempts: 1 });
+    expect(JSON.parse(event.details_json)).toMatchObject({
+      reconciled: true,
+      explorationRunId,
+      explorationOutcome: "validation_failed",
+      costUsd: 0.75,
+    });
+  });
+
+  it("releases an active reservation for a crashed zero-attempt exploration", async () => {
+    const database = seed();
+    insertRun(database, "zero-crash", [{ category: "missing-fields", responded: true }]);
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "zero-crash",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: healing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:01:00.000Z",
+    });
+    reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 50,
+      now: new Date("2026-07-10T00:01:00.000Z"),
+    });
+    let modelCalls = 0;
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async () => {
+        modelCalls += 1;
+        throw new Error("zero-attempt crash recovery must not regenerate");
+      },
+    });
+
+    expect(modelCalls).toBe(0);
+    expect(summary).toMatchObject({ processed: 1, deferred: 1, workerErrors: 0 });
+    expect(database.prepare(
+      "SELECT status, outcome, events_used, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({
+      status: "finished",
+      outcome: "recovery_zero_attempt",
+      events_used: 0,
+      cost_usd: 0,
+    });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "released", actual_cost_usd: 0 });
+    expect(database.prepare(
+      "SELECT status, attempts FROM healing_events WHERE id = ?",
+    ).get(healing.event.id)).toEqual({ status: "deferred", attempts: 0 });
+  });
+
+  it("reconciles a zero-attempt pre-reservation crash once across concurrent workers", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "healing-reconcile-race-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "precos.sqlite");
+    const firstDatabase = openDatabase(databasePath);
+    databases.push(firstDatabase);
+    seedRetailer(firstDatabase);
+    seedStrategy(firstDatabase, "extraction", extractionStrategy);
+    insertRun(firstDatabase, "concurrent-crash", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const healing = beginHealingEvent(firstDatabase, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "concurrent-crash",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(firstDatabase, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: healing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:01:00.000Z",
+    });
+    const secondDatabase = openDatabase(databasePath);
+    databases.push(secondDatabase);
+    let modelCalls = 0;
+    const worker = (database: ReturnType<typeof openDatabase>) => healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async () => {
+        modelCalls += 1;
+        throw new Error("concurrent recovery must not regenerate");
+      },
+    });
+
+    const summaries = await Promise.all([
+      worker(firstDatabase),
+      worker(secondDatabase),
+    ]);
+
+    expect(modelCalls).toBe(0);
+    expect(summaries.reduce((sum, summary) => sum + summary.processed, 0)).toBe(1);
+    expect(summaries.reduce((sum, summary) => sum + summary.deferred, 0)).toBe(1);
+    expect(firstDatabase.prepare(
+      "SELECT status, attempts FROM healing_events WHERE id = ?",
+    ).get(healing.event.id)).toEqual({ status: "deferred", attempts: 0 });
+    expect(firstDatabase.prepare(
+      "SELECT status, outcome FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({
+      status: "finished",
+      outcome: "recovery_zero_attempt",
+    });
+    expect(firstDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+    expect(firstDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_runs WHERE healing_event_id = ?",
+    ).get(healing.event.id)).toEqual({ count: 1 });
   });
 
   it("isolates each pending retailer and persists a sanitized worker error", async () => {

@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 
 import { randomUUID } from "node:crypto";
+import { Decimal } from "decimal.js";
 
 import { normalizeUnit } from "../normalize/unit.js";
 import {
@@ -419,26 +420,52 @@ export function beginExplorationRun(
     purpose: StrategyPurpose;
     trigger: string;
     previousStrategyId?: string;
+    healingEventId?: string;
     maxAttempts: number;
     startedAt: string;
   },
 ): string {
   const id = randomUUID();
-  database.prepare(
-    `INSERT INTO exploration_runs
-       (id, retailer_id, purpose, trigger, previous_strategy_id, status,
-        event_budget, events_used, sandbox_id, started_at)
-     VALUES (?, ?, ?, ?, ?, 'running', ?, 0, ?, ?)`,
-  ).run(
-    id,
-    input.retailerId,
-    input.purpose,
-    input.trigger,
-    input.previousStrategyId ?? null,
-    input.maxAttempts,
-    randomUUID(),
-    input.startedAt,
-  );
+  const begin = database.transaction(() => {
+    if (input.healingEventId !== undefined) {
+      const event = database.prepare(
+        `SELECT retailer_id, purpose, previous_strategy_id, status
+         FROM healing_events WHERE id = ?`,
+      ).get(input.healingEventId) as {
+        retailer_id: string;
+        purpose: StrategyPurpose;
+        previous_strategy_id: string | null;
+        status: string;
+      } | undefined;
+      if (
+        event === undefined
+        || event.status !== "open"
+        || event.retailer_id !== input.retailerId
+        || event.purpose !== input.purpose
+        || event.previous_strategy_id !== (input.previousStrategyId ?? null)
+      ) {
+        throw new Error("Healing exploration must bind to its matching open event");
+      }
+    }
+    database.prepare(
+      `INSERT INTO exploration_runs
+         (id, retailer_id, purpose, trigger, previous_strategy_id,
+          healing_event_id, status, event_budget, events_used, sandbox_id,
+          started_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, 0, ?, ?)`,
+    ).run(
+      id,
+      input.retailerId,
+      input.purpose,
+      input.trigger,
+      input.previousStrategyId ?? null,
+      input.healingEventId ?? null,
+      input.maxAttempts,
+      randomUUID(),
+      input.startedAt,
+    );
+  });
+  begin.immediate();
   return id;
 }
 
@@ -983,6 +1010,203 @@ export function finishHealingEvent(
     return completed;
   });
   return finish.immediate();
+}
+
+export interface ReconciledHealingExploration {
+  explorationRunId: string;
+  outcome: string;
+  status: "recovered" | "failed" | "provider_unavailable" | "deferred" | "superseded";
+  attempts: number;
+  costUsd: number;
+}
+
+function reconciliationHealingStatus(
+  outcome: string,
+): "failed" | "provider_unavailable" | "deferred" {
+  if (outcome === "provider_unavailable") return "provider_unavailable";
+  if (
+    outcome === "budget_paused"
+    || outcome === "budget_exhausted"
+    || outcome === "insufficient_samples"
+    || outcome === "recovery_zero_attempt"
+  ) return "deferred";
+  return "failed";
+}
+
+function terminalHealingStatus(
+  status: string,
+): ReconciledHealingExploration["status"] | null {
+  return status === "recovered"
+    || status === "failed"
+    || status === "provider_unavailable"
+    || status === "deferred"
+    || status === "superseded"
+    ? status
+    : null;
+}
+
+export function reconcileHealingExploration(
+  database: Database.Database,
+  input: { healingEventId: string; finishedAt: string },
+): ReconciledHealingExploration | null {
+  const reconcile = database.transaction((): ReconciledHealingExploration | null => {
+    const event = findHealingEvent(database, "id = ?", input.healingEventId);
+    if (event === null) throw new Error(`Healing event ${input.healingEventId} was not found`);
+    const run = database.prepare(
+      `SELECT id, retailer_id, purpose, status, outcome, events_used,
+              input_tokens, output_tokens, cost_usd
+       FROM exploration_runs WHERE healing_event_id = ?`,
+    ).get(input.healingEventId) as {
+      id: string;
+      retailer_id: string;
+      purpose: StrategyPurpose;
+      status: string;
+      outcome: string | null;
+      events_used: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+    } | undefined;
+    if (run === undefined) return null;
+    if (run.retailer_id !== event.retailerId || run.purpose !== event.purpose) {
+      throw new Error("Healing exploration identity does not match its event");
+    }
+
+    const attempts = database.prepare(
+      `SELECT attempt_number, outcome, input_tokens, output_tokens, cost_usd,
+              error_message
+       FROM exploration_attempts
+       WHERE exploration_run_id = ?
+       ORDER BY attempt_number`,
+    ).all(run.id) as Array<{
+      attempt_number: number;
+      outcome: string;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+      error_message: string | null;
+    }>;
+    const ledger = database.prepare(
+      `SELECT input_tokens, output_tokens, cost_usd
+       FROM cost_ledger WHERE exploration_run_id = ?
+       ORDER BY occurred_at, id`,
+    ).all(run.id) as Array<{
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+    }>;
+    const attemptInputTokens = attempts.reduce((sum, row) => sum + row.input_tokens, 0);
+    const attemptOutputTokens = attempts.reduce((sum, row) => sum + row.output_tokens, 0);
+    const attemptCost = attempts.reduce(
+      (sum, row) => sum.plus(row.cost_usd),
+      new Decimal(0),
+    ).toDecimalPlaces(12);
+    const ledgerInputTokens = ledger.reduce((sum, row) => sum + row.input_tokens, 0);
+    const ledgerOutputTokens = ledger.reduce((sum, row) => sum + row.output_tokens, 0);
+    const ledgerCost = ledger.reduce(
+      (sum, row) => sum.plus(row.cost_usd),
+      new Decimal(0),
+    ).toDecimalPlaces(12);
+    if (
+      run.events_used !== attempts.length
+      || run.input_tokens !== attemptInputTokens
+      || run.output_tokens !== attemptOutputTokens
+      || !new Decimal(run.cost_usd).toDecimalPlaces(12).equals(attemptCost)
+      || ledgerInputTokens !== attemptInputTokens
+      || ledgerOutputTokens !== attemptOutputTokens
+      || !ledgerCost.equals(attemptCost)
+    ) {
+      throw new Error("Healing exploration attempt, run, and cost-ledger evidence disagree");
+    }
+
+    const lastAttempt = attempts.at(-1);
+    const outcome = run.status === "finished" && run.outcome !== null
+      ? run.outcome
+      : lastAttempt?.outcome ?? "recovery_zero_attempt";
+    const costUsd = attemptCost.toNumber();
+    const existingTerminalStatus = terminalHealingStatus(event.status);
+    if (existingTerminalStatus !== null) {
+      return {
+        explorationRunId: run.id,
+        outcome,
+        status: existingTerminalStatus,
+        attempts: attempts.length,
+        costUsd,
+      };
+    }
+    if (event.status !== "open") {
+      throw new Error("Associated healing exploration cannot reconcile a non-open event");
+    }
+    if (run.status === "running") {
+      finishExplorationRun(database, {
+        explorationRunId: run.id,
+        outcome,
+        finishedAt: input.finishedAt,
+        artifact: {
+          reconciled: true,
+          attempts: attempts.length,
+          costUsd,
+          source: "immutable-attempt-and-cost-ledger-evidence",
+        },
+        errorMessage: lastAttempt?.error_message
+          ?? (attempts.length === 0
+            ? "Healing exploration stopped before the first model attempt"
+            : "Healing exploration terminal bundle was recovered after worker interruption"),
+      });
+    } else if (run.status !== "finished") {
+      throw new Error(`Healing exploration ${run.id} has an unknown lifecycle status`);
+    }
+
+    const reservation = database.prepare(
+      `SELECT status, actual_cost_usd
+       FROM model_budget_reservations WHERE exploration_run_id = ?`,
+    ).get(run.id) as { status: string; actual_cost_usd: number } | undefined;
+    if (reservation?.status === "reserved") {
+      const settled = database.prepare(
+        `UPDATE model_budget_reservations
+         SET status = ?, actual_cost_usd = ?, settled_at = ?,
+             details_json = json_set(details_json, '$.actualCostUsd', ?, '$.reconciled', json('true'))
+         WHERE exploration_run_id = ? AND status = 'reserved'`,
+      ).run(
+        costUsd === 0 ? "released" : "settled",
+        costUsd,
+        input.finishedAt,
+        costUsd,
+        run.id,
+      );
+      if (settled.changes !== 1) {
+        throw new Error("Healing exploration reservation changed during reconciliation");
+      }
+    } else if (
+      reservation !== undefined
+      && !new Decimal(reservation.actual_cost_usd).toDecimalPlaces(12).equals(attemptCost)
+    ) {
+      throw new Error("Healing exploration reservation disagrees with immutable cost evidence");
+    }
+
+    const healingStatus = reconciliationHealingStatus(outcome);
+    finishHealingEvent(database, {
+      healingEventId: input.healingEventId,
+      status: healingStatus,
+      attempts: attempts.length,
+      finishedAt: input.finishedAt,
+      details: {
+        reconciled: true,
+        explorationRunId: run.id,
+        explorationOutcome: outcome,
+        costUsd,
+        evidenceSource: "immutable-attempt-and-cost-ledger-evidence",
+      },
+    });
+    return {
+      explorationRunId: run.id,
+      outcome,
+      status: healingStatus,
+      attempts: attempts.length,
+      costUsd,
+    };
+  });
+  return reconcile.immediate();
 }
 
 export function commitExplorationSuccess(

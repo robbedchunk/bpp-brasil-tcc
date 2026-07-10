@@ -32,6 +32,10 @@ const HEALING_WORKER_BUDGET_RESERVATIONS_SQL = readFileSync(
   new URL("./migrations/008_healing_worker_budget_reservations.sql", import.meta.url),
   "utf8",
 );
+const HEALING_EXPLORATION_RECOVERY_SQL = readFileSync(
+  new URL("./migrations/009_healing_exploration_recovery.sql", import.meta.url),
+  "utf8",
+);
 
 const MIGRATIONS = [
   { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
@@ -53,6 +57,11 @@ const MIGRATIONS = [
     version: 8,
     name: "healing_worker_budget_reservations",
     sql: HEALING_WORKER_BUDGET_RESERVATIONS_SQL,
+  },
+  {
+    version: 9,
+    name: "healing_exploration_recovery",
+    sql: HEALING_EXPLORATION_RECOVERY_SQL,
   },
 ] as const;
 

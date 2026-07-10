@@ -261,6 +261,148 @@ describe("trusted strategy exploration", () => {
     ]);
   });
 
+  it("charges only the remaining allowance when a later attempt is unauditable", async () => {
+    const database = seedExploration();
+    const generator = new FixtureGenerator([
+      {
+        status: "failed",
+        model: "fixture-model",
+        usage: { inputTokens: 1_000_000, outputTokens: 0 },
+        error: "audited first-attempt failure",
+      },
+      {
+        status: "unauditable_spend",
+        model: "fixture-model",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        error: "second turn usage unavailable",
+      },
+      generated(candidate),
+    ]);
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      maxAttempts: 3,
+      eventBudgetUsd: 5,
+      rate: {
+        inputUsdPerMillion: 1,
+        outputUsdPerMillion: 1,
+        source: "fixture-rate",
+        version: "fixture-v1",
+      },
+    });
+
+    expect(outcome).toMatchObject({
+      outcome: "unauditable_spend",
+      activated: false,
+      attempts: 2,
+      costUsd: 5,
+    });
+    expect(generator.requests).toHaveLength(2);
+    expect(database.prepare(
+      "SELECT attempt_number, outcome, cost_usd FROM exploration_attempts ORDER BY attempt_number",
+    ).all()).toEqual([
+      { attempt_number: 1, outcome: "provider_failed", cost_usd: 1 },
+      { attempt_number: 2, outcome: "unauditable_spend", cost_usd: 4 },
+    ]);
+    expect(database.prepare(
+      "SELECT events_used, cost_usd FROM exploration_runs",
+    ).get()).toEqual({ events_used: 2, cost_usd: 5 });
+    expect(database.prepare(
+      `SELECT COUNT(*) AS entries, SUM(cost_usd) AS cost_usd
+       FROM cost_ledger WHERE category = 'strategy-exploration'`,
+    ).get()).toEqual({ entries: 2, cost_usd: 5 });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations",
+    ).get()).toEqual({ status: "settled", actual_cost_usd: 5 });
+  });
+
+  it("treats a generator rejection after invocation as unauditable and never retries", async () => {
+    const database = seedExploration();
+    let calls = 0;
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: {
+        async generate() {
+          calls += 1;
+          throw new Error("fixture generator rejected after invocation");
+        },
+      },
+      maxAttempts: 3,
+      eventBudgetUsd: 5,
+    });
+
+    expect(calls).toBe(1);
+    expect(outcome).toMatchObject({
+      outcome: "unauditable_spend",
+      activated: false,
+      attempts: 1,
+      costUsd: 5,
+    });
+    expect(database.prepare(
+      "SELECT outcome, cost_usd, error_message FROM exploration_attempts",
+    ).get()).toMatchObject({
+      outcome: "unauditable_spend",
+      cost_usd: 5,
+      error_message: expect.stringMatching(/generator rejected/iu),
+    });
+  });
+
+  it("retains paid usage and forbids activation when sandbox cleanup fails", async () => {
+    const database = seedExploration();
+    const generator = new FixtureGenerator([
+      generated(candidate, { inputTokens: 100, outputTokens: 50 }),
+      generated(candidate),
+    ]);
+    let validationCalls = 0;
+    let disposeCalls = 0;
+    const dependencies = {
+      database,
+      generator,
+      validateCandidate: async () => {
+        validationCalls += 1;
+        return { attempted: 30, valid: 30, score: 1 };
+      },
+      maxAttempts: 3,
+      createSandbox: async () => ({
+        workspacePath: "/tmp/fixture-paid-sandbox",
+        files: [],
+        async dispose() {
+          disposeCalls += 1;
+          throw new Error("fixture sandbox cleanup failure");
+        },
+      }),
+    };
+
+    const outcome = await exploreRetailer(
+      "retailer-1",
+      "extraction",
+      dependencies,
+    );
+
+    expect(disposeCalls).toBe(1);
+    expect(generator.requests).toHaveLength(1);
+    expect(validationCalls).toBe(0);
+    expect(outcome).toMatchObject({
+      outcome: "safety_failure",
+      activated: false,
+      attempts: 1,
+      costUsd: 0.004,
+    });
+    expect(database.prepare(
+      "SELECT outcome, input_tokens, output_tokens, cost_usd FROM exploration_attempts",
+    ).get()).toEqual({
+      outcome: "safety_failure",
+      input_tokens: 100,
+      output_tokens: 50,
+      cost_usd: 0.004,
+    });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations",
+    ).get()).toEqual({ status: "settled", actual_cost_usd: 0.004 });
+  });
+
   it("rejects exploration allowances above the binding maxima before opening a run", async () => {
     const database = seedExploration();
     const generator = new FixtureGenerator([generated(candidate)]);

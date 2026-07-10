@@ -65,6 +65,10 @@ export interface CodexStrategyGeneratorOptions {
   timeoutMs?: number;
   temporaryRoot?: string;
   codexFactory?: (options: CodexOptions) => CodexLike;
+  removeTemporaryState?: (
+    path: string,
+    options: { recursive: true; force: true },
+  ) => Promise<void>;
 }
 
 function optional(value: string | undefined): string | undefined {
@@ -281,6 +285,9 @@ export class CodexStrategyGenerator implements StrategyGenerator {
   readonly #timeoutMs: number;
   readonly #temporaryRoot: string;
   readonly #factory: (options: CodexOptions) => CodexLike;
+  readonly #removeTemporaryState: NonNullable<
+    CodexStrategyGeneratorOptions["removeTemporaryState"]
+  >;
 
   constructor(options: CodexStrategyGeneratorOptions = {}) {
     const env = options.env ?? process.env;
@@ -289,10 +296,12 @@ export class CodexStrategyGenerator implements StrategyGenerator {
     this.#timeoutMs = options.timeoutMs ?? 120_000;
     this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
     this.#factory = options.codexFactory ?? ((codexOptions) => new Codex(codexOptions));
+    this.#removeTemporaryState = options.removeTemporaryState ?? rm;
   }
 
   async generate(request: GenerationRequest): Promise<GenerationResult> {
-    if (this.#apiKey === undefined) {
+    const apiKey = this.#apiKey;
+    if (apiKey === undefined) {
       return {
         status: "provider_unavailable",
         model: this.#model,
@@ -304,105 +313,135 @@ export class CodexStrategyGenerator implements StrategyGenerator {
     await mkdir(this.#temporaryRoot, { recursive: true, mode: 0o700 });
     const stateRoot = await mkdtemp(join(this.#temporaryRoot, "codex-explorer-state-"));
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let result: GenerationResult | undefined;
+    let generationError: unknown;
+    let cleanupError: unknown;
     try {
-      const home = join(stateRoot, "home");
-      const codexHome = join(stateRoot, "codex-home");
-      await Promise.all([
-        mkdir(home, { recursive: true, mode: 0o700 }),
-        mkdir(codexHome, { recursive: true, mode: 0o700 }),
-      ]);
-      const workspacePath = resolve(request.workspacePath);
-      const runtimeEnv = {
-        PATH: "/usr/local/bin:/usr/bin:/bin",
-        HOME: home,
-        CODEX_HOME: codexHome,
-        LANG: "C.UTF-8",
-        LC_ALL: "C.UTF-8",
-        TZ: "UTC",
-      };
-      const controller = new AbortController();
-      timer = setTimeout(() => controller.abort(), this.#timeoutMs);
-      const codex = this.#factory({
-        apiKey: this.#apiKey,
-        env: runtimeEnv,
-        config: codexConfig(workspacePath, request.allowedDomains),
-      });
-      const thread = codex.startThread({
-        model: this.#model,
-        workingDirectory: workspacePath,
-        skipGitRepoCheck: true,
-        modelReasoningEffort: "medium",
-        approvalPolicy: "never",
-        webSearchMode: "disabled",
-      });
-      let finalResponse = "";
-      let completedUsage: CodexUsageLike | null = null;
-      let streamError: string | undefined;
-      let turnStarted = false;
-      try {
-        const streamed = await thread.runStreamed(request.prompt, {
-          outputSchema: STRATEGY_OUTPUT_SCHEMA,
-          signal: controller.signal,
+      result = await (async (): Promise<GenerationResult> => {
+        const home = join(stateRoot, "home");
+        const codexHome = join(stateRoot, "codex-home");
+        await Promise.all([
+          mkdir(home, { recursive: true, mode: 0o700 }),
+          mkdir(codexHome, { recursive: true, mode: 0o700 }),
+        ]);
+        const workspacePath = resolve(request.workspacePath);
+        const runtimeEnv = {
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          HOME: home,
+          CODEX_HOME: codexHome,
+          LANG: "C.UTF-8",
+          LC_ALL: "C.UTF-8",
+          TZ: "UTC",
+        };
+        const controller = new AbortController();
+        timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+        const codex = this.#factory({
+          apiKey,
+          env: runtimeEnv,
+          config: codexConfig(workspacePath, request.allowedDomains),
         });
-        for await (const event of streamed.events) {
-          if (event.type === "turn.started") {
-            turnStarted = true;
-          } else if (event.type === "item.completed") {
-            if (event.item.type === "agent_message" && typeof event.item.text === "string") {
-              finalResponse = event.item.text;
+        const thread = codex.startThread({
+          model: this.#model,
+          workingDirectory: workspacePath,
+          skipGitRepoCheck: true,
+          modelReasoningEffort: "medium",
+          approvalPolicy: "never",
+          webSearchMode: "disabled",
+        });
+        let finalResponse = "";
+        let completedUsage: CodexUsageLike | null = null;
+        let streamError: string | undefined;
+        let turnStarted = false;
+        try {
+          const streamed = await thread.runStreamed(request.prompt, {
+            outputSchema: STRATEGY_OUTPUT_SCHEMA,
+            signal: controller.signal,
+          });
+          for await (const event of streamed.events) {
+            if (event.type === "turn.started") {
+              turnStarted = true;
+            } else if (event.type === "item.completed") {
+              if (event.item.type === "agent_message" && typeof event.item.text === "string") {
+                finalResponse = event.item.text;
+              }
+            } else if (event.type === "turn.completed") {
+              completedUsage = event.usage;
+            } else if (event.type === "turn.failed") {
+              streamError = event.error.message;
+            } else if (event.type === "error") {
+              streamError = event.message;
             }
-          } else if (event.type === "turn.completed") {
-            completedUsage = event.usage;
-          } else if (event.type === "turn.failed") {
-            streamError = event.error.message;
-          } else if (event.type === "error") {
-            streamError = event.message;
           }
+        } catch (error) {
+          streamError = error instanceof Error ? error.message : String(error) || "Codex stream failed";
         }
-      } catch (error) {
-        streamError = error instanceof Error ? error.message : String(error) || "Codex stream failed";
-      }
-      const usage = completedUsage === null
-        ? { inputTokens: 0, outputTokens: 0 }
-        : generationUsage(completedUsage);
-      if (completedUsage === null) {
-        return {
-          status: "unauditable_spend",
-          model: this.#model,
-          usage,
-          error: streamError === undefined
-            ? `${turnStarted ? "Started Codex turn" : "Codex stream"} completed without auditable token usage`
-            : `Codex spend is unauditable${turnStarted ? " after turn start" : ""}: ${streamError}`,
-        };
-      }
-      if (streamError !== undefined) {
-        return { status: "failed", model: this.#model, usage, error: streamError };
-      }
-      try {
-        await auditWorkspaceTree(workspacePath);
-        const response = parseEnvelope(finalResponse, "Codex final response");
-        const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
-        const artifact = parseEnvelope(artifactText, "strategy.json");
-        if (canonicalJson(response) !== canonicalJson(artifact)) {
-          throw new Error("Codex response and strategy.json artifact differ");
+        const usage = completedUsage === null
+          ? { inputTokens: 0, outputTokens: 0 }
+          : generationUsage(completedUsage);
+        if (completedUsage === null) {
+          return {
+            status: "unauditable_spend",
+            model: this.#model,
+            usage,
+            error: streamError === undefined
+              ? `${turnStarted ? "Started Codex turn" : "Codex stream"} completed without auditable token usage`
+              : `Codex spend is unauditable${turnStarted ? " after turn start" : ""}: ${streamError}`,
+          };
         }
-        return {
-          status: "candidate",
-          model: this.#model,
-          strategy: artifact.strategy,
-          usage,
-        };
-      } catch (error) {
-        return {
-          status: "failed",
-          model: this.#model,
-          usage,
-          error: error instanceof Error ? error.message : String(error) || "Invalid Codex artifact",
-        };
-      }
+        if (streamError !== undefined) {
+          return { status: "failed", model: this.#model, usage, error: streamError };
+        }
+        try {
+          await auditWorkspaceTree(workspacePath);
+          const response = parseEnvelope(finalResponse, "Codex final response");
+          const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
+          const artifact = parseEnvelope(artifactText, "strategy.json");
+          if (canonicalJson(response) !== canonicalJson(artifact)) {
+            throw new Error("Codex response and strategy.json artifact differ");
+          }
+          return {
+            status: "candidate",
+            model: this.#model,
+            strategy: artifact.strategy,
+            usage,
+          };
+        } catch (error) {
+          return {
+            status: "failed",
+            model: this.#model,
+            usage,
+            error: error instanceof Error ? error.message : String(error) || "Invalid Codex artifact",
+          };
+        }
+      })();
+    } catch (error) {
+      generationError = error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      await rm(stateRoot, { recursive: true, force: true });
+      try {
+        await this.#removeTemporaryState(stateRoot, { recursive: true, force: true });
+      } catch (error) {
+        cleanupError = error;
+      }
     }
+
+    if (result === undefined) {
+      throw generationError ?? cleanupError ?? new Error("Codex generation produced no result");
+    }
+    if (cleanupError !== undefined) {
+      const message = cleanupError instanceof Error
+        ? cleanupError.message
+        : String(cleanupError) || "Disposable Codex state cleanup failed";
+      if (result.status === "unauditable_spend") {
+        return { ...result, error: `${result.error}; disposable state cleanup failed: ${message}` };
+      }
+      return {
+        status: "safety_failure",
+        model: result.model,
+        usage: result.usage,
+        error: `Disposable Codex state cleanup failed: ${message}`,
+      };
+    }
+    return result;
   }
 }

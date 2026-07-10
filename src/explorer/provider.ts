@@ -41,6 +41,12 @@ export type GenerationResult =
       model: string;
       usage: GenerationUsage;
       error: string;
+    }
+  | {
+      status: "safety_failure";
+      model: string;
+      usage: GenerationUsage;
+      error: string;
     };
 
 export interface StrategyGenerator {

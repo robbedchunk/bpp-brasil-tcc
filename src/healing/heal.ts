@@ -9,6 +9,7 @@ import {
   finishHealingEvent,
   listPendingHealingEvents,
   promoteQueuedHealingEvent,
+  reconcileHealingExploration,
   recordHealingWorkerError,
   setRetailerDegraded,
 } from "../db/repositories.js";
@@ -180,6 +181,45 @@ export async function healRetailer(
       ...(opened.event.successorStrategyId === null
         ? {}
         : { strategyId: opened.event.successorStrategyId }),
+    };
+  }
+
+  const reconciled = reconcileHealingExploration(dependencies.database, {
+    healingEventId: opened.event.id,
+    finishedAt: now().toISOString(),
+  });
+  if (reconciled !== null) {
+    let degraded = isDegraded(dependencies.database, retailerId);
+    if (reconciled.status === "failed") {
+      const consecutive = consecutiveFailedHealingEvents(
+        dependencies.database,
+        retailerId,
+        purpose,
+      );
+      if (consecutive >= 3 && !degraded) {
+        setRetailerDegraded(
+          dependencies.database,
+          retailerId,
+          true,
+          `${purpose} regeneration failed for ${consecutive} consecutive events`,
+          now().toISOString(),
+        );
+        degraded = true;
+        await dependencies.alertSink?.send({
+          severity: "error",
+          title: "Retailer strategy healing degraded",
+          message: "Three consecutive regeneration events failed; this retailer alone was degraded",
+          details: { retailerId, purpose, consecutiveEvents: consecutive, reconciled: true },
+        });
+      }
+    }
+    return {
+      healingEventId: opened.event.id,
+      status: reconciled.status,
+      attempts: reconciled.attempts,
+      activated: reconciled.status === "recovered",
+      degraded,
+      explorationRunId: reconciled.explorationRunId,
     };
   }
 
@@ -414,6 +454,8 @@ export async function healPendingEvents(
       countOutcome(outcome.status);
     } catch (error) {
       summary.workerErrors += 1;
+      const recoveryPending = error instanceof ExplorationEvidenceError
+        && error.terminalCommitFailed;
       const message = redactSandboxText(
         error instanceof Error ? error.message : String(error) || "Unknown worker error",
       ).slice(0, 2_000);
@@ -421,6 +463,20 @@ export async function healPendingEvents(
         recordHealingWorkerError(dependencies.database, event.id, message);
       } catch {
         // Continue to later retailers even if this event's evidence store is unavailable.
+      }
+      if (recoveryPending) {
+        countOutcome("in_progress");
+        try {
+          await dependencies.alertSink?.send({
+            severity: "error",
+            title: "Healing worker recovery pending",
+            message: "Atomic terminal persistence failed; the open event and durable exploration evidence were preserved for stale-worker reconciliation",
+            details: { healingEventId: event.id, retailerId: event.retailerId, error: message },
+          });
+        } catch {
+          // Persisted evidence and later retailer processing take precedence.
+        }
+        continue;
       }
       let current = null;
       try {

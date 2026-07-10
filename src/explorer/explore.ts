@@ -37,6 +37,8 @@ import {
   createSandboxPackage,
   redactSandboxText,
   type SandboxFailureSample,
+  type SandboxPackage,
+  type SandboxPackageInput,
   type SandboxSample,
 } from "./package.js";
 import { buildExplorerPrompt } from "./prompt.js";
@@ -102,6 +104,7 @@ export interface ExploreRetailerDependencies {
   now?: () => Date;
   healingEventId?: string;
   alertSink?: AlertSink;
+  createSandbox?: (input: SandboxPackageInput) => Promise<SandboxPackage>;
 }
 
 export type ExplorationOutcomeName =
@@ -110,6 +113,7 @@ export type ExplorationOutcomeName =
   | "invalid_candidate"
   | "provider_unavailable"
   | "provider_failed"
+  | "safety_failure"
   | "unauditable_spend"
   | "insufficient_samples"
   | "budget_paused"
@@ -326,6 +330,9 @@ export async function exploreRetailer(
     ...(context.previousStrategy === null
       ? {}
       : { previousStrategyId: context.previousStrategy.id }),
+    ...(dependencies.healingEventId === undefined
+      ? {}
+      : { healingEventId: dependencies.healingEventId }),
     maxAttempts,
     startedAt,
   });
@@ -510,8 +517,10 @@ export async function exploreRetailer(
       });
       let sandbox: Awaited<ReturnType<typeof createSandboxPackage>> | undefined;
       let result: GenerationResult;
+      let generatorInvoked = false;
+      let cleanupError: string | undefined;
       try {
-        sandbox = await createSandboxPackage({
+        sandbox = await (dependencies.createSandbox ?? createSandboxPackage)({
           retailerId,
           purpose,
           allowedDomains: context.allowedDomains,
@@ -523,6 +532,7 @@ export async function exploreRetailer(
             ? {}
             : { failureSamples: dependencies.failureSamples }),
         });
+        generatorInvoked = true;
         result = await dependencies.generator.generate({
           retailerId,
           purpose,
@@ -533,16 +543,66 @@ export async function exploreRetailer(
       } catch (error) {
         const message = safeError(error);
         result = {
-          status: "failed",
+          status: generatorInvoked ? "unauditable_spend" : "failed",
           model: explorerModelFromEnv(dependencies.env ?? process.env),
           usage: zeroUsage(),
           error: message,
         };
       } finally {
-        await sandbox?.dispose();
+        try {
+          await sandbox?.dispose();
+        } catch (error) {
+          cleanupError = safeError(error);
+        }
+      }
+      if (cleanupError !== undefined) {
+        result = result.status === "unauditable_spend"
+          ? { ...result, error: `${result.error}; sandbox cleanup failed: ${cleanupError}` }
+          : {
+              status: "safety_failure",
+              model: result.model,
+              usage: result.usage,
+              error: `Sandbox cleanup failed: ${cleanupError}`,
+            };
       }
 
+      const bookedCostBeforeAttempt = totalCostUsd;
       const attemptCost = estimateExplorerCost(result.usage, rate);
+      if (result.status === "unauditable_spend") {
+        const remainingAllowance = Decimal.max(
+          0,
+          new Decimal(eventBudgetUsd).minus(bookedCostBeforeAttempt),
+        ).toNumber();
+        totalCostUsd = new Decimal(bookedCostBeforeAttempt)
+          .plus(remainingAllowance)
+          .toNumber();
+        outcome = "unauditable_spend";
+        finalError = result.error;
+        record(attempt, prompt, result, outcome, {
+          errorMessage: finalError,
+          costUsd: remainingAllowance,
+          estimateSource: "unauditable-remaining-event-reservation",
+        });
+        try {
+          await dependencies.alertSink?.send({
+            severity: "error",
+            title: "Strategy exploration spend is unauditable",
+            message: "A potentially paid model turn returned no auditable usage; the remaining event reservation was charged and no retry was attempted",
+            details: {
+              retailerId,
+              purpose,
+              explorationRunId,
+              eventBudgetUsd,
+              previouslyBookedCostUsd: bookedCostBeforeAttempt,
+              chargedCostUsd: remainingAllowance,
+            },
+          });
+          specificAlertSent = true;
+        } catch {
+          // The durable remaining-reservation charge remains authoritative.
+        }
+        break;
+      }
       totalCostUsd = new Decimal(totalCostUsd).plus(attemptCost).toNumber();
       if (
         totalCostUsd > eventBudgetUsd
@@ -576,25 +636,20 @@ export async function exploreRetailer(
         record(attempt, prompt, result, outcome, { errorMessage: finalError });
         break;
       }
-      if (result.status === "unauditable_spend") {
-        totalCostUsd = eventBudgetUsd;
-        outcome = "unauditable_spend";
+      if (result.status === "safety_failure") {
+        outcome = "safety_failure";
         finalError = result.error;
-        record(attempt, prompt, result, outcome, {
-          errorMessage: finalError,
-          costUsd: eventBudgetUsd,
-          estimateSource: "unauditable-full-event-reservation",
-        });
+        record(attempt, prompt, result, outcome, { errorMessage: finalError });
         try {
           await dependencies.alertSink?.send({
             severity: "error",
-            title: "Strategy exploration spend is unauditable",
-            message: "A potentially paid model turn returned no auditable usage; the full event reservation was charged and no retry was attempted",
-            details: { retailerId, purpose, explorationRunId, eventBudgetUsd },
+            title: "Strategy exploration cleanup safety failure",
+            message: "A model result could not be activated safely after disposable-state cleanup failed; paid evidence was retained and no retry was attempted",
+            details: { retailerId, purpose, explorationRunId, actualCostUsd: totalCostUsd },
           });
           specificAlertSent = true;
         } catch {
-          // The durable full-reservation charge remains authoritative.
+          // Durable spend evidence remains authoritative when alerting fails.
         }
         break;
       }
