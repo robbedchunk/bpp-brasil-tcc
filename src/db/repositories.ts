@@ -6,8 +6,10 @@ import { normalizeUnit } from "../normalize/unit.js";
 import {
   DiscoveryStrategySchema,
   ExtractionStrategySchema,
+  StrategySchema,
   type DiscoveryStrategy,
   type ExtractionStrategy,
+  type Strategy,
 } from "../strategies/schema.js";
 import type {
   ExtractionFailure,
@@ -54,6 +56,43 @@ export interface ReplayReference {
 
 export interface StoredProductRef extends ProductRef {
   id: string;
+}
+
+export type StrategyPurpose = "discovery" | "extraction";
+
+export interface RetailerExplorationContext {
+  retailerId: string;
+  baseUrl: string;
+  allowedDomains: string[];
+  previousStrategy: ActiveStrategy<Strategy> | null;
+}
+
+export interface ExplorationAttemptEvidence {
+  explorationRunId: string;
+  attemptNumber: number;
+  model: string;
+  promptVersion: string;
+  promptHash: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  costUsd: number;
+  costEstimated: boolean;
+  estimateSource: string;
+  rateVersion: string;
+  externalSampleSize?: number;
+  externalSuccesses?: number;
+  externalScore?: number;
+  outcome: string;
+  artifact?: unknown;
+  errorMessage?: string;
+  createdAt: string;
+}
+
+export interface ActivatedStrategy {
+  id: string;
+  version: number;
 }
 
 export function findActiveDiscoveryStrategy(
@@ -238,6 +277,307 @@ export function listCollectionProducts(
     externalId: row.retailer_product_id,
     sourceCategory: row.source_category,
   }));
+}
+
+export function strategyTierNumber(strategy: Strategy): number {
+  switch (strategy.tier) {
+    case "api":
+    case "sitemap":
+      return 1;
+    case "embedded-json":
+    case "dom-crawl":
+      return 2;
+    case "dom":
+      return 3;
+    case "script":
+      return 4;
+  }
+}
+
+export function findRetailerExplorationContext(
+  database: Database.Database,
+  retailerId: string,
+  purpose: StrategyPurpose,
+): RetailerExplorationContext {
+  const retailer = database.prepare(
+    `SELECT id, base_url, domains_json
+     FROM retailers WHERE id = ?`,
+  ).get(retailerId) as {
+    id: string;
+    base_url: string;
+    domains_json: string;
+  } | undefined;
+  if (retailer === undefined) throw new Error(`Retailer ${retailerId} was not found`);
+
+  const row = database.prepare(
+    `SELECT id, retailer_id, purpose, version, strategy_json
+     FROM strategies
+     WHERE retailer_id = ? AND purpose = ? AND active = 1
+     ORDER BY version DESC LIMIT 1`,
+  ).get(retailerId, purpose) as ActiveStrategyRow | undefined;
+  const previousStrategy = row === undefined
+    ? null
+    : {
+        id: row.id,
+        retailerId: row.retailer_id,
+        purpose: row.purpose,
+        version: row.version,
+        strategy: StrategySchema.parse(JSON.parse(row.strategy_json)),
+      };
+  const domains = JSON.parse(retailer.domains_json) as unknown;
+  if (!Array.isArray(domains) || domains.some((domain) => typeof domain !== "string")) {
+    throw new Error(`Retailer ${retailerId} has invalid domain evidence`);
+  }
+  return {
+    retailerId: retailer.id,
+    baseUrl: retailer.base_url,
+    allowedDomains: domains,
+    previousStrategy,
+  };
+}
+
+export function listStrategyValidationRefs(
+  database: Database.Database,
+  retailerId: string,
+  limit = 30,
+): ProductRef[] {
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new RangeError("Validation reference limit must be positive");
+  }
+  return (database.prepare(
+    `SELECT canonical_url, retailer_product_id, source_category
+     FROM products
+     WHERE retailer_id = ? AND active = 1 AND in_scope = 1
+     GROUP BY canonical_url
+     ORDER BY last_seen DESC, canonical_url
+     LIMIT ?`,
+  ).all(retailerId, limit) as Array<{
+    canonical_url: string;
+    retailer_product_id: string | null;
+    source_category: string | null;
+  }>).map((row) => ({
+    canonicalUrl: row.canonical_url,
+    externalId: row.retailer_product_id,
+    sourceCategory: row.source_category,
+  }));
+}
+
+export function beginExplorationRun(
+  database: Database.Database,
+  input: {
+    retailerId: string;
+    purpose: StrategyPurpose;
+    trigger: string;
+    previousStrategyId?: string;
+    maxAttempts: number;
+    startedAt: string;
+  },
+): string {
+  const id = randomUUID();
+  database.prepare(
+    `INSERT INTO exploration_runs
+       (id, retailer_id, purpose, trigger, previous_strategy_id, status,
+        event_budget, events_used, sandbox_id, started_at)
+     VALUES (?, ?, ?, ?, ?, 'running', ?, 0, ?, ?)`,
+  ).run(
+    id,
+    input.retailerId,
+    input.purpose,
+    input.trigger,
+    input.previousStrategyId ?? null,
+    input.maxAttempts,
+    randomUUID(),
+    input.startedAt,
+  );
+  return id;
+}
+
+export function recordExplorationAttempt(
+  database: Database.Database,
+  input: ExplorationAttemptEvidence,
+): string {
+  const id = randomUUID();
+  const record = database.transaction(() => {
+    const lifecycle = database.prepare(
+      `UPDATE exploration_runs
+       SET events_used = events_used + 1,
+           input_tokens = input_tokens + ?,
+           output_tokens = output_tokens + ?,
+           cost_usd = cost_usd + ?
+       WHERE id = ? AND status = 'running' AND events_used < event_budget`,
+    ).run(
+      input.inputTokens,
+      input.outputTokens,
+      input.costUsd,
+      input.explorationRunId,
+    );
+    if (lifecycle.changes !== 1) {
+      throw new Error(`Exploration run ${input.explorationRunId} cannot accept another attempt`);
+    }
+    database.prepare(
+      `INSERT INTO exploration_attempts
+         (id, exploration_run_id, attempt_number, model, prompt_version,
+          prompt_hash, input_tokens, cached_input_tokens, output_tokens,
+          reasoning_output_tokens, cost_usd, cost_estimated, estimate_source,
+          rate_version, external_sample_size, external_successes,
+          external_score, outcome, artifact_json, error_message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      input.explorationRunId,
+      input.attemptNumber,
+      input.model,
+      input.promptVersion,
+      input.promptHash,
+      input.inputTokens,
+      input.cachedInputTokens,
+      input.outputTokens,
+      input.reasoningOutputTokens,
+      input.costUsd,
+      input.costEstimated ? 1 : 0,
+      input.estimateSource,
+      input.rateVersion,
+      input.externalSampleSize ?? null,
+      input.externalSuccesses ?? null,
+      input.externalScore ?? null,
+      input.outcome,
+      input.artifact === undefined ? null : JSON.stringify(input.artifact),
+      input.errorMessage ?? null,
+      input.createdAt,
+    );
+    if (input.inputTokens > 0 || input.outputTokens > 0 || input.costUsd > 0) {
+      database.prepare(
+        `INSERT INTO cost_ledger
+           (id, category, retailer_id, exploration_run_id, provider, model,
+            input_tokens, output_tokens, cost_usd, occurred_at, details_json)
+         SELECT ?, 'strategy-exploration', retailer_id, id, 'codex-sdk', ?,
+                ?, ?, ?, ?, ?
+         FROM exploration_runs WHERE id = ?`,
+      ).run(
+        randomUUID(),
+        input.model,
+        input.inputTokens,
+        input.outputTokens,
+        input.costUsd,
+        input.createdAt,
+        JSON.stringify({
+          attemptNumber: input.attemptNumber,
+          cachedInputTokens: input.cachedInputTokens,
+          reasoningOutputTokens: input.reasoningOutputTokens,
+          costEstimated: input.costEstimated,
+          estimateSource: input.estimateSource,
+          rateVersion: input.rateVersion,
+          promptHash: input.promptHash,
+        }),
+        input.explorationRunId,
+      );
+    }
+  });
+  record.immediate();
+  return id;
+}
+
+export function activateGeneratedStrategy(
+  database: Database.Database,
+  input: {
+    explorationRunId: string;
+    retailerId: string;
+    purpose: StrategyPurpose;
+    expectedPreviousStrategyId?: string;
+    strategy: Strategy;
+    model: string;
+    promptVersion: string;
+    validationSampleSize: number;
+    validationSuccesses: number;
+    validationScore: number;
+    activatedAt: string;
+  },
+): ActivatedStrategy {
+  if (input.strategy.purpose !== input.purpose) {
+    throw new Error("Generated strategy purpose does not match activation purpose");
+  }
+  const activate = database.transaction((): ActivatedStrategy => {
+    const current = database.prepare(
+      `SELECT id FROM strategies
+       WHERE retailer_id = ? AND purpose = ? AND active = 1`,
+    ).get(input.retailerId, input.purpose) as { id: string } | undefined;
+    if ((current?.id ?? undefined) !== input.expectedPreviousStrategyId) {
+      throw new Error("Active strategy changed during trusted validation");
+    }
+    const versionRow = database.prepare(
+      `SELECT COALESCE(MAX(version), 0) + 1 AS version
+       FROM strategies WHERE retailer_id = ? AND purpose = ?`,
+    ).get(input.retailerId, input.purpose) as { version: number };
+    const id = randomUUID();
+    database.prepare(
+      `INSERT INTO strategies
+         (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+          model, prompt_version, validation_sample_size,
+          validation_successes, validation_rate, active, created_at,
+          validated_at, activated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'Codex SDK; trusted host validation', ?, ?,
+               ?, ?, ?, 0, ?, ?, NULL)`,
+    ).run(
+      id,
+      input.retailerId,
+      input.purpose,
+      strategyTierNumber(input.strategy),
+      versionRow.version,
+      JSON.stringify(input.strategy),
+      input.model,
+      input.promptVersion,
+      input.validationSampleSize,
+      input.validationSuccesses,
+      input.validationScore,
+      input.activatedAt,
+      input.activatedAt,
+    );
+    if (current !== undefined) {
+      const retired = database.prepare(
+        `UPDATE strategies
+         SET active = 0, retired_at = ?
+         WHERE id = ? AND active = 1 AND retired_at IS NULL`,
+      ).run(input.activatedAt, current.id);
+      if (retired.changes !== 1) throw new Error("Previous strategy could not be retired");
+    }
+    const activated = database.prepare(
+      `UPDATE strategies SET active = 1, activated_at = ?
+       WHERE id = ? AND active = 0`,
+    ).run(input.activatedAt, id);
+    if (activated.changes !== 1) throw new Error("Generated strategy could not be activated");
+    database.prepare(
+      `UPDATE exploration_runs SET candidate_strategy_id = ? WHERE id = ?`,
+    ).run(id, input.explorationRunId);
+    return { id, version: versionRow.version };
+  });
+  return activate.immediate();
+}
+
+export function finishExplorationRun(
+  database: Database.Database,
+  input: {
+    explorationRunId: string;
+    outcome: string;
+    finishedAt: string;
+    artifact?: unknown;
+    errorMessage?: string;
+  },
+): void {
+  const result = database.prepare(
+    `UPDATE exploration_runs
+     SET status = 'finished', outcome = ?, artifact_json = ?,
+         error_message = ?, finished_at = ?
+     WHERE id = ? AND status = 'running' AND finished_at IS NULL`,
+  ).run(
+    input.outcome,
+    input.artifact === undefined ? null : JSON.stringify(input.artifact),
+    input.errorMessage ?? null,
+    input.finishedAt,
+    input.explorationRunId,
+  );
+  if (result.changes !== 1) {
+    throw new Error(`Exploration run ${input.explorationRunId} was already finished or missing`);
+  }
 }
 
 export function insertRunFailure(

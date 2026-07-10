@@ -48,6 +48,19 @@ import {
 } from "./ops/heartbeat.js";
 import { withProcessLock } from "./ops/lock.js";
 import { BudgetGuard } from "./ops/budget.js";
+import {
+  CodexStrategyGenerator,
+  resolveExplorerApiKey,
+} from "./explorer/codex-provider.js";
+import {
+  exploreRetailer as runExploreRetailer,
+  type ExploreRetailerDependencies,
+  type ExplorationOutcome,
+} from "./explorer/explore.js";
+import type {
+  StrategyGenerator,
+  StrategyPurpose,
+} from "./explorer/provider.js";
 
 interface PipelineCliOptions {
   limit: number;
@@ -67,6 +80,12 @@ export interface CliDependencies {
   productClassifierFactory?: (model: string, apiKey: string) => ProductClassifier;
   classificationBatchClient?: OpenAIBatchClient;
   budgetGuard?: BudgetGuard;
+  strategyGenerator?: StrategyGenerator;
+  exploreRetailer?: (
+    retailerId: string,
+    purpose: StrategyPurpose,
+    dependencies: ExploreRetailerDependencies,
+  ) => Promise<ExplorationOutcome>;
   runDiscovery?: (
     retailerId: string,
     options: PipelineCliOptions,
@@ -227,6 +246,83 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   pipelineCommand("discover", "Discover and persist retailer product references");
   pipelineCommand("collect", "Collect deterministic price observations");
+
+  const strategyPurpose = (value: string): StrategyPurpose => {
+    if (value !== "discovery" && value !== "extraction") {
+      throw new Error("--purpose must be discovery or extraction");
+    }
+    return value;
+  };
+
+  command
+    .command("explore")
+    .description("Generate and externally validate a disposable strategy candidate")
+    .requiredOption("--retailer <id>", "registered retailer ID")
+    .option(
+      "--purpose <purpose>",
+      "strategy purpose: discovery or extraction",
+      strategyPurpose,
+      "extraction",
+    )
+    .option("--json", "emit only JSON")
+    .action(async (options: {
+      retailer: string;
+      purpose: StrategyPurpose;
+      json?: boolean;
+    }) => {
+      const applicationConfig = config();
+      const environment = dependencies.env ?? process.env;
+      const apiKey = resolveExplorerApiKey(environment);
+      const generator = dependencies.strategyGenerator ?? (
+        apiKey === undefined
+          ? undefined
+          : new CodexStrategyGenerator({ apiKey, env: environment })
+      );
+      const outcome = await withProcessLock(
+        dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-explorer.lock"),
+        () => withDatabase((database) =>
+          (dependencies.exploreRetailer ?? runExploreRetailer)(
+            options.retailer,
+            options.purpose,
+            {
+              database,
+              ...(generator === undefined ? {} : { generator }),
+              env: environment,
+              now,
+            },
+          )),
+      );
+      if (!outcome.activated && (
+        outcome.outcome === "provider_unavailable"
+        || outcome.outcome === "budget_paused"
+        || outcome.outcome === "budget_exhausted"
+        || outcome.outcome === "provider_failed"
+      )) {
+        const sink = dependencies.alertSink ?? createAlertSink({
+          ...(applicationConfig.ntfyTopic === undefined
+            ? {}
+            : { ntfyTopic: applicationConfig.ntfyTopic }),
+          fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+          now,
+        });
+        await sink.send({
+          severity: "warning",
+          title: "Strategy exploration pending",
+          message: outcome.outcome === "provider_unavailable"
+            ? "Explorer credentials are not configured; the active strategy was preserved"
+            : "Strategy exploration stopped under its configured safety controls",
+          details: {
+            retailerId: options.retailer,
+            purpose: options.purpose,
+            outcome: outcome.outcome,
+            attempts: outcome.attempts,
+          },
+        });
+      }
+      stdout(options.json === true
+        ? `${JSON.stringify(outcome)}\n`
+        : `explore ${options.retailer}/${options.purpose}: ${outcome.outcome}; ${outcome.attempts} attempt(s)\n`);
+    });
 
   const classificationVersion = (value: string): number => {
     const parsed = Number(value);

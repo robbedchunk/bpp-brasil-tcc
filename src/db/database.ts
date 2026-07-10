@@ -20,6 +20,10 @@ const BATCH_COMMITMENTS_SQL = readFileSync(
   new URL("./migrations/005_batch_commitments.sql", import.meta.url),
   "utf8",
 );
+const EXPLORATION_ATTEMPT_EVIDENCE_SQL = readFileSync(
+  new URL("./migrations/006_exploration_attempt_evidence.sql", import.meta.url),
+  "utf8",
+);
 
 const MIGRATIONS = [
   { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
@@ -27,6 +31,11 @@ const MIGRATIONS = [
   { version: 3, name: "ipca_item_provenance", sql: IPCA_PROVENANCE_SQL },
   { version: 4, name: "classification_audit", sql: CLASSIFICATION_AUDIT_SQL },
   { version: 5, name: "batch_commitments", sql: BATCH_COMMITMENTS_SQL },
+  {
+    version: 6,
+    name: "exploration_attempt_evidence",
+    sql: EXPLORATION_ATTEMPT_EVIDENCE_SQL,
+  },
 ] as const;
 
 export function migrate(database: Database.Database): void {

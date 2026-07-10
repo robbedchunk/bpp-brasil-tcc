@@ -13,15 +13,17 @@
     "npm": ">=11 <12"
   },
   "scripts": {
-    "build": "tsc && mkdir -p dist/db/migrations && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && chmod 0755 dist/cli.js",
+    "build": "tsc && mkdir -p dist/db/migrations dist/explorer && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && cp -R src/explorer/sandbox dist/explorer/ && chmod 0755 dist/cli.js dist/explorer/sandbox/validate-strategy",
     "cli": "tsx src/cli.ts",
     "precos": "tsx src/cli.ts",
     "ipca:load": "tsx scripts/load-ipca-items.ts",
     "retailers:register": "tsx scripts/register-retailers.ts",
     "test": "vitest run",
+    "test:live": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@openai/codex-sdk": "0.144.1",
     "better-sqlite3": "12.11.1",
     "cheerio": "1.2.0",
     "commander": "15.0.0",
