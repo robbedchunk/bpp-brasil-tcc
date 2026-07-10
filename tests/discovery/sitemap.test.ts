@@ -149,7 +149,7 @@ describe("sitemap discovery", () => {
       sitemapUrls: ["https://shop.test/sitemap.xml"],
     });
 
-    const refs = await collect(executeDiscovery(strategy, {
+    await expect(collect(executeDiscovery(strategy, {
       robots: RobotsPolicy.allowAll("https://shop.test"),
       fetch: async (input) => String(input).includes("shop.test")
         ? new Response(null, {
@@ -157,9 +157,7 @@ describe("sitemap discovery", () => {
             headers: { location: "https://cdn.test/sitemap.xml" },
           })
         : new Response("<urlset><url><loc>https://shop.test/product/1</loc></url></urlset>"),
-    }));
-
-    expect(refs).toEqual([]);
+    }))).rejects.toMatchObject({ failure: { category: "domain-denied" } });
   });
 
   it("rejects gzip output that exceeds the aggregate body bound", async () => {
@@ -176,6 +174,26 @@ describe("sitemap discovery", () => {
       robots: RobotsPolicy.allowAll("https://shop.test"),
       maxBodyBytes: 1_000,
       fetch: async () => new Response(gzipSync(xml)),
-    }))).resolves.toEqual([]);
+    }))).rejects.toMatchObject({ failure: { category: "parse" } });
+  });
+
+  it("propagates categorized HTTP and malformed sitemap failures", async () => {
+    const strategy = SitemapDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "sitemap",
+      allowedDomains: ["shop.test"],
+      sitemapUrls: ["https://shop.test/sitemap.xml"],
+    });
+
+    await expect(collect(executeDiscovery(strategy, {
+      robots: RobotsPolicy.allowAll("https://shop.test"),
+      fetch: async () => new Response("throttled", { status: 429 }),
+    }))).rejects.toMatchObject({ failure: { category: "http-429" } });
+
+    await expect(collect(executeDiscovery(strategy, {
+      robots: RobotsPolicy.allowAll("https://shop.test"),
+      fetch: async () => new Response("<html>not a sitemap</html>"),
+    }))).rejects.toMatchObject({ failure: { category: "parse" } });
   });
 });

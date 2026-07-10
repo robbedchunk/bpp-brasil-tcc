@@ -10,6 +10,7 @@ import { canonicalizeRetailerUrl } from "../normalize/url.js";
 import type { SitemapDiscoveryStrategy } from "../strategies/schema.js";
 import type { ProductRef } from "../strategies/types.js";
 import type { DiscoveryExecutionContext } from "./executor.js";
+import { DiscoveryFailureError } from "./failure.js";
 import { robotsCanFetch } from "./robots.js";
 
 const parser = new XMLParser({
@@ -39,7 +40,15 @@ interface ParsedSitemap {
 }
 
 export function parseSitemapXml(xml: string): ParsedSitemap {
-  const document = parser.parse(xml) as {
+  const parsed = parser.parse(xml) as unknown;
+  if (
+    parsed === null
+    || typeof parsed !== "object"
+    || (!("sitemapindex" in parsed) && !("urlset" in parsed))
+  ) {
+    throw new Error("XML document has no sitemapindex or urlset root");
+  }
+  const document = parsed as {
     sitemapindex?: { sitemap?: Array<{ loc?: unknown }> | { loc?: unknown } };
     urlset?: { url?: Array<{ loc?: unknown }> | { loc?: unknown } };
   };
@@ -50,6 +59,14 @@ export function parseSitemapXml(xml: string): ParsedSitemap {
     .map((entry) => locationValue(entry.loc))
     .filter((url): url is string => url !== null);
   return { sitemapUrls, productUrls };
+}
+
+function hasRobotsPolicy(
+  context: DiscoveryExecutionContext,
+  target: string,
+): boolean {
+  const origin = new URL(target).origin;
+  return context.robots?.origin === origin || context.robotsByOrigin?.has(origin) === true;
 }
 
 function responseXml(
@@ -96,16 +113,40 @@ export async function* discoverSitemap(
 
     const sitemapUrl = candidate;
     queuedSitemaps.delete(sitemapUrl);
-    if (seenSitemaps.has(sitemapUrl) || !robotsCanFetch(context, sitemapUrl)) continue;
+    if (seenSitemaps.has(sitemapUrl)) continue;
+    if (!hasRobotsPolicy(context, sitemapUrl)) {
+      throw new DiscoveryFailureError({
+        category: "domain-denied",
+        message: `No robots policy is established for ${new URL(sitemapUrl).origin}`,
+        responded: false,
+      });
+    }
+    if (!robotsCanFetch(context, sitemapUrl)) continue;
     seenSitemaps.add(sitemapUrl);
 
+    await context.beforeRequest?.();
     const fetched = await fetchBounded(
       { url: sitemapUrl, method: "GET" },
       strategy.allowedDomains,
       context,
     );
-    if (!fetched.ok) continue;
-    if (!robotsCanFetch(context, fetched.response.url)) continue;
+    if (!fetched.ok) throw new DiscoveryFailureError(fetched.failure);
+    if (!hasRobotsPolicy(context, fetched.response.url)) {
+      throw new DiscoveryFailureError({
+        category: "domain-denied",
+        message: `No robots policy is established for ${new URL(fetched.response.url).origin}`,
+        responded: true,
+        statusCode: fetched.response.status,
+      });
+    }
+    if (!robotsCanFetch(context, fetched.response.url)) {
+      throw new DiscoveryFailureError({
+        category: "domain-denied",
+        message: "Sitemap redirect target is denied by robots policy",
+        responded: true,
+        statusCode: fetched.response.status,
+      });
+    }
 
     let parsed: ParsedSitemap;
     try {
@@ -114,8 +155,13 @@ export async function* discoverSitemap(
         fetched.response.body,
         context.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
       ));
-    } catch {
-      continue;
+    } catch (error) {
+      throw new DiscoveryFailureError({
+        category: "parse",
+        message: "Sitemap response could not be parsed",
+        responded: true,
+        statusCode: fetched.response.status,
+      }, { cause: error });
     }
 
     for (const nested of parsed.sitemapUrls) {

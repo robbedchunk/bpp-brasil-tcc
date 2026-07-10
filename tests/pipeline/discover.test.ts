@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
+import { DiscoveryFailureError } from "../../src/discovery/failure.js";
 import { runDiscovery } from "../../src/pipeline/discover.js";
 import type { ProductRef } from "../../src/strategies/types.js";
 import { discoveryStrategy, seedRetailer, seedStrategy } from "./helpers.js";
@@ -44,23 +45,27 @@ describe("discovery pipeline", () => {
     });
   });
 
-  it("does not write products, runs, or failures in dry-run mode", async () => {
+  it("does no network/executor work and writes no evidence in dry-run mode", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
     seedStrategy(database, "discovery", discoveryStrategy);
 
+    let executions = 0;
     const summary = await runDiscovery("retailer-1", {
       database,
       dryRun: true,
       execute: async function* () {
+        executions += 1;
         yield { canonicalUrl: "https://shop.test/a", externalId: null, sourceCategory: null };
       },
     });
 
-    expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0, dryRun: true });
+    expect(executions).toBe(0);
+    expect(summary).toMatchObject({ attempted: 0, ok: 0, failed: 0, dryRun: true });
     expect(database.prepare("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM products").get()).toEqual({ n: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 0 });
   });
 
   it("applies the 2,000 cap cumulatively across same-day discovery runs", async () => {
@@ -73,7 +78,7 @@ describe("discovery pipeline", () => {
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
           status, attempted, ok, failed, started_at, finished_at)
        VALUES
-         ('prior', 'retailer-1', 'discover', '2026-07-10', ?, 1,
+         ('prior', 'retailer-1', 'collect', '2026-07-10', ?, 1,
           'failed', 1999, 0, 1999, '2026-07-10T03:00:00.000Z',
           '2026-07-10T03:10:00.000Z')`,
     ).run(strategyId);
@@ -121,6 +126,35 @@ describe("discovery pipeline", () => {
     expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
   });
 
+  it("performs no executor or robots traffic after the combined cap is exhausted", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const strategyId = seedStrategy(database, "discovery", discoveryStrategy);
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at, finished_at)
+       VALUES
+         ('prior-cap', 'retailer-1', 'collect', '2026-07-10', ?, 1,
+          'failed', 2000, 0, 2000, '2026-07-10T03:00:00.000Z',
+          '2026-07-10T03:10:00.000Z')`,
+    ).run(strategyId);
+    let executions = 0;
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      execute: async function* () {
+        executions += 1;
+        yield { canonicalUrl: "https://shop.test/a", externalId: null, sourceCategory: null };
+      },
+    });
+
+    expect(executions).toBe(0);
+    expect(summary).toMatchObject({ attempted: 0, ok: 0, failed: 0, status: "completed" });
+  });
+
   it("does not double-count a product when failure-evidence persistence also fails", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
@@ -150,5 +184,86 @@ describe("discovery pipeline", () => {
       failed: 1,
       status: "failed",
     });
+  });
+
+  it("preserves typed page failure category and terminal failed evidence", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      execute: async function* () {
+        throw new DiscoveryFailureError({
+          category: "http-429",
+          message: "Discovery request returned HTTP 429",
+          responded: true,
+          statusCode: 429,
+        });
+      },
+    });
+
+    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1, status: "failed" });
+    expect(database.prepare(
+      "SELECT category, http_status FROM run_failures",
+    ).get()).toEqual({ category: "http-429", http_status: 429 });
+    expect(database.prepare(
+      "SELECT status, error_category FROM runs",
+    ).get()).toEqual({ status: "failed", error_category: "http-429" });
+  });
+
+  it("establishes robots and applies configured delay before sitemap requests", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+    const requests: string[] = [];
+    const sleeps: number[] = [];
+    let clock = 1_000;
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      politeDelayMs: { min: 750, max: 750 },
+      clock: () => clock,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        clock += milliseconds;
+      },
+      executionContext: {
+        fetch: async (input) => {
+          const url = String(input);
+          requests.push(url);
+          return new Response(url.endsWith("/robots.txt")
+            ? "User-agent: *\nDisallow:\n"
+            : "<urlset><url><loc>https://shop.test/a</loc></url></urlset>");
+        },
+      },
+    });
+
+    expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
+    expect(requests).toEqual([
+      "https://shop.test/robots.txt",
+      "https://shop.test/sitemap.xml",
+    ]);
+    expect(sleeps).toEqual([750]);
+  });
+
+  it("fails closed with categorized evidence when robots cannot be established", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      executionContext: {
+        fetch: async () => new Response("unavailable", { status: 503 }),
+      },
+    });
+
+    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1, status: "failed" });
+    expect(database.prepare("SELECT category, http_status FROM run_failures").get())
+      .toEqual({ category: "unknown", http_status: 503 });
   });
 });

@@ -122,14 +122,13 @@ export function createRun(database: Database.Database, run: NewRun): void {
 export function attemptedForDay(
   database: Database.Database,
   retailerId: string,
-  stage: "discover" | "collect",
   collectionDay: string,
 ): number {
   const row = database.prepare(
     `SELECT COALESCE(SUM(attempted), 0) AS attempted
      FROM runs
-     WHERE retailer_id = ? AND stage = ? AND collection_day = ?`,
-  ).get(retailerId, stage, collectionDay) as { attempted: number };
+     WHERE retailer_id = ? AND collection_day = ?`,
+  ).get(retailerId, collectionDay) as { attempted: number };
   return row.attempted;
 }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -98,11 +98,47 @@ describe("process lock", () => {
     directories.push(directory);
     const path = join(directory, "daily.lock");
     await writeFile(path, '{"pid":', { mode: 0o600 });
+    await utimes(
+      path,
+      new Date("2026-07-08T00:00:00.000Z"),
+      new Date("2026-07-08T00:00:00.000Z"),
+    );
 
     await expect(withProcessLock(path, async () => "recovered", {
       pid: 123,
+      now: () => new Date("2026-07-10T00:00:00.000Z"),
       getProcessIdentity: async () => "boot-a:400",
     })).resolves.toBe("recovered");
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("uses age as a safe fallback for a legacy lock whose PID was reused", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-aged-lock-"));
+    directories.push(directory);
+    const path = join(directory, "daily.lock");
+    await writeFile(path, JSON.stringify({
+      pid: 321,
+      startedAt: "2026-07-08T00:00:00.000Z",
+      token: "legacy-owner-without-start-identity",
+    }));
+
+    await expect(withProcessLock(path, async () => "recovered", {
+      pid: 654,
+      now: () => new Date("2026-07-10T00:00:00.000Z"),
+      isProcessAlive: () => true,
+      getProcessIdentity: async () => "boot-a:500",
+    })).resolves.toBe("recovered");
+  });
+
+  it("does not recover a fresh malformed legacy lock during its write window", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-fresh-malformed-lock-"));
+    directories.push(directory);
+    const path = join(directory, "daily.lock");
+    await writeFile(path, "", { mode: 0o600 });
+
+    await expect(withProcessLock(path, async () => "unsafe", {
+      pid: 654,
+      getProcessIdentity: async () => "boot-a:600",
+    })).rejects.toThrow(/already held/i);
   });
 });

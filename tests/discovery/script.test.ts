@@ -84,7 +84,8 @@ describe("script discovery", () => {
       ],
     });
 
-    await expect(collect(executeDiscovery(strategy, { browser }))).resolves.toEqual([]);
+    await expect(collect(executeDiscovery(strategy, { browser })))
+      .rejects.toMatchObject({ failure: { category: "domain-denied" } });
   });
 
   it("maps refs from an allowlisted saved HTTP JSON operation", async () => {
@@ -147,7 +148,7 @@ describe("script discovery", () => {
     let aborted = false;
     const startedAt = Date.now();
 
-    const refs = await collect(executeDiscovery(strategy, {
+    const failure = collect(executeDiscovery(strategy, {
       browser,
       totalTimeoutMs: 25,
       fetch: async (_input, init) => {
@@ -166,7 +167,7 @@ describe("script discovery", () => {
       },
     }));
 
-    expect(refs).toEqual([]);
+    await expect(failure).rejects.toMatchObject({ failure: { category: "timeout" } });
     expect(Date.now() - startedAt).toBeLessThan(500);
     expect(aborted).toBe(true);
     expect(active).toBe(0);
@@ -187,7 +188,7 @@ describe("script discovery", () => {
     let aborted = false;
     const startedAt = Date.now();
 
-    const refs = await collect(executeDiscovery(strategy, {
+    const failure = collect(executeDiscovery(strategy, {
       browser,
       totalTimeoutMs: 200,
       fetch: async (_input, init) => {
@@ -206,7 +207,7 @@ describe("script discovery", () => {
       },
     }));
 
-    expect(refs).toEqual([]);
+    await expect(failure).rejects.toMatchObject({ failure: { category: "timeout" } });
     expect(Date.now() - startedAt).toBeLessThan(750);
     expect(aborted).toBe(true);
     expect(active).toBe(0);
@@ -228,7 +229,7 @@ describe("script discovery", () => {
     let aborted = false;
     const startedAt = Date.now();
 
-    const refs = await collect(executeDiscovery(strategy, {
+    const failure = collect(executeDiscovery(strategy, {
       browser,
       timeoutMs: 1_000,
       totalTimeoutMs: 2_000,
@@ -253,9 +254,63 @@ describe("script discovery", () => {
       },
     }));
 
-    expect(refs).toEqual([]);
+    await expect(failure).rejects.toMatchObject({ failure: { category: "timeout" } });
     expect(Date.now() - startedAt).toBeLessThan(750);
     expect(aborted).toBe(true);
     expect(active).toBe(0);
+  });
+
+  it("propagates categorized HTTP and JSON parser failures", async () => {
+    const strategy = (url: string) => ScriptDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        { op: "http", request: { method: "GET", url, headers: {} }, saveAs: "catalog" },
+        {
+          op: "extract",
+          source: "json",
+          from: "catalog",
+          itemsPath: "$.items[*]",
+          refFields: { url: "$.url" },
+        },
+      ],
+    });
+
+    await expect(collect(executeDiscovery(strategy("https://shop.test/throttled"), {
+      browser,
+      fetch: async () => new Response("throttled", { status: 429 }),
+    }))).rejects.toMatchObject({ failure: { category: "http-429" } });
+
+    await expect(collect(executeDiscovery(strategy("https://shop.test/invalid"), {
+      browser,
+      fetch: async () => new Response("not-json"),
+    }))).rejects.toMatchObject({ failure: { category: "parse" } });
+  });
+
+  it("runs the request gate before scripted HTTP and page requests", async () => {
+    const strategy = ScriptDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "script",
+      allowedDomains: ["127.0.0.1"],
+      operations: [
+        { op: "goto", url: `${server.origin}/categoria` },
+        {
+          op: "http",
+          request: { method: "GET", url: `${server.origin}/api/products`, headers: {} },
+          saveAs: "catalog",
+        },
+      ],
+    });
+    let gated = 0;
+
+    await collect(executeDiscovery(strategy, {
+      browser,
+      beforeRequest: async () => { gated += 1; },
+    }));
+
+    expect(gated).toBe(2);
   });
 });

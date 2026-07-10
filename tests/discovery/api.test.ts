@@ -13,6 +13,71 @@ async function collect(iterable: AsyncIterable<ProductRef>): Promise<ProductRef[
 }
 
 describe("API discovery", () => {
+  const failureStrategy = ApiDiscoveryStrategySchema.parse({
+    schemaVersion: 1,
+    purpose: "discovery",
+    tier: "api",
+    allowedDomains: ["shop.test"],
+    request: { method: "GET", url: "https://shop.test/api?page={page}", headers: {} },
+    itemsPath: "$.items[*]",
+    refFields: { url: "$.url" },
+    pagination: { kind: "page", start: 0, pageSize: 2, maxPages: 2 },
+  });
+
+  it("throws categorized failures for HTTP, invalid JSON, and a missing items path", async () => {
+    const cases = [
+      {
+        fetch: async () => new Response("rate limited", { status: 429 }),
+        category: "http-429",
+      },
+      {
+        fetch: async () => new Response("not-json"),
+        category: "parse",
+      },
+      {
+        fetch: async () => new Response(JSON.stringify({ products: [] })),
+        category: "parse",
+      },
+      {
+        fetch: async () => new Response(JSON.stringify({ items: [{ id: "missing-url" }] })),
+        category: "parse",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      await expect(collect(executeDiscovery(failureStrategy, { fetch: testCase.fetch })))
+        .rejects.toMatchObject({ failure: { category: testCase.category } });
+    }
+  });
+
+  it("treats a valid later-page empty items array as normal completion", async () => {
+    let page = 0;
+    const refs = await collect(executeDiscovery(failureStrategy, {
+      fetch: async () => new Response(JSON.stringify({
+        items: page++ === 0
+          ? [{ url: "/a" }, { url: "/b" }]
+          : [],
+      })),
+    }));
+
+    expect(refs).toHaveLength(2);
+  });
+
+  it("invokes the caller request gate before every API page", async () => {
+    let page = 0;
+    let gated = 0;
+    await collect(executeDiscovery(failureStrategy, {
+      beforeRequest: async () => { gated += 1; },
+      fetch: async () => new Response(JSON.stringify({
+        items: page++ === 0
+          ? [{ url: "/a" }, { url: "/b" }]
+          : [],
+      })),
+    }));
+
+    expect(gated).toBe(2);
+  });
+
   it("terminates page pagination and de-duplicates canonical product URLs", async () => {
     const fixture = JSON.parse(await readFile(
       new URL("../fixtures/generic/discovery-api.json", import.meta.url),

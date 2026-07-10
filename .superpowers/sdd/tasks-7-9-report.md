@@ -188,3 +188,44 @@ Pending time-gated authority boundaries:
   14-day cutoff, and systemd scalar paths/arguments are context-escaped.
 - All backup, migration, and unit-install checks used disposable paths and
   `--dry-run`; this follow-up did not run collection or alter active timers.
+
+## Controller review fix wave
+
+- Focused RED evidence reproduced the controller findings before implementation:
+  API discovery had 2/9 failures because HTTP/JSON/drift errors resolved as an
+  empty iterator and the request gate was never called; collection had 4/11
+  failures for mixed-stage caps, networked dry-run, per-run replay state, and
+  concurrency below three. The scripted discovery regression had 6/8 failures,
+  and the final legacy-lock age regressions had 2/6 failures.
+- Discovery now throws a typed failure from API, sitemap, DOM-crawl, and scripted
+  HTTP/navigation/parser paths. The pipeline records the original category and
+  HTTP status in `run_failures`, finalizes the run as failed/partial, treats a
+  valid later empty page as completion, and treats missing/non-array items or a
+  nonempty page with no valid product references as parse drift.
+- The 2,000-attempt repository query is retailer/day-wide across discovery and
+  collection. Exhausted caps perform no discovery setup or request. Dry-run
+  returns only a persisted-data plan (`planned`) with zero attempts and never
+  invokes the discovery/extraction executor, robots fetch, or evidence writes.
+- Production discovery loads and passes real robots policies for sitemap and
+  DOM-crawl origins, fails closed when policy establishment fails, and applies
+  the retailer's randomized polite gate before robots/API/sitemap/DOM requests.
+  Scripted HTTP and page operations use the same request gate.
+- Replay sampling now keeps a private atomic `.reservoir.json` per retailer and
+  São Paulo day with the cumulative eligible population and at most 20 slots.
+  Standard online reservoir replacement remains unbiased across same-day runs;
+  selected gzip artifacts are content-addressed/private and evictions do not
+  mutate append-only database rows. Existing production replay/evidence was not
+  modified and no live collection was triggered during this fix wave.
+- Direct production collection clamps worker concurrency to 3–5; tests that
+  need sequential observation use an explicitly injected internal map runner.
+  Locks additionally retain a 24-hour age fallback for legacy/unreadable owner
+  records, preventing takeover during an incomplete legacy write while still
+  recovering old PID-reuse records.
+- Final GREEN evidence under Node `v24.18.0`: focused pipeline/discovery/ops/CLI
+  run, 18 files and 88/88 tests; `npm run typecheck`; full suite, 31 files and
+  188/188 tests. `bash -n ops/*.sh`, `bash ops/backup.sh --self-test`, and two
+  consecutive disposable `install-systemd.sh --dry-run` renders with identical
+  hashes all passed; the rendered units passed `systemd-analyze verify`.
+  Read-only checks confirmed all four existing production timers remain
+  `enabled` and `active`. No production run, observation, failure, heartbeat,
+  timer installation, or retailer request was made by the fix verification.

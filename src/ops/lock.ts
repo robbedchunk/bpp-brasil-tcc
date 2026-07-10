@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 type ProcessIdentityReader = (pid: number) => Promise<string | null> | string | null;
@@ -9,6 +9,7 @@ export interface ProcessLockOptions {
   now?: () => Date;
   isProcessAlive?: (pid: number) => boolean;
   getProcessIdentity?: ProcessIdentityReader;
+  staleAfterMs?: number;
 }
 
 export class ProcessLockError extends Error {
@@ -34,6 +35,8 @@ interface LockRecordV2 {
 }
 
 type LockRecord = LegacyLockRecord | LockRecordV2;
+
+const DEFAULT_LEGACY_STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
 
 class LockConflict extends Error {
   constructor(readonly observedText: string) {
@@ -91,11 +94,29 @@ async function recordIsActive(
   record: LockRecord,
   getProcessIdentity: ProcessIdentityReader,
   isProcessAlive: (pid: number) => boolean,
+  nowMs: number,
+  staleAfterMs: number,
 ): Promise<boolean> {
   if (record.version === 2) {
-    return await getProcessIdentity(record.pid) === record.processIdentity;
+    const identity = await getProcessIdentity(record.pid);
+    if (identity !== null) return identity === record.processIdentity;
   }
-  return isProcessAlive(record.pid);
+  const age = Math.max(0, nowMs - Date.parse(record.startedAt));
+  return isProcessAlive(record.pid) && age < staleAfterMs;
+}
+
+async function malformedLockIsFresh(
+  path: string,
+  nowMs: number,
+  staleAfterMs: number,
+): Promise<boolean> {
+  try {
+    const metadata = await stat(path);
+    return Math.max(0, nowMs - metadata.mtimeMs) < staleAfterMs;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function moveObservedStaleLock(path: string, observedText: string): Promise<void> {
@@ -156,6 +177,8 @@ async function acquireLock(
   serializedRecord: string,
   getProcessIdentity: ProcessIdentityReader,
   isProcessAlive: (pid: number) => boolean,
+  nowMs: number,
+  staleAfterMs: number,
 ): Promise<void> {
   while (true) {
     try {
@@ -166,7 +189,16 @@ async function acquireLock(
       const observedText = error.observedText;
       const observed = parseLockRecord(observedText);
       if (observed !== null
-        && await recordIsActive(observed, getProcessIdentity, isProcessAlive)) {
+        && await recordIsActive(
+          observed,
+          getProcessIdentity,
+          isProcessAlive,
+          nowMs,
+          staleAfterMs,
+        )) {
+        throw new ProcessLockError(path);
+      }
+      if (observed === null && await malformedLockIsFresh(path, nowMs, staleAfterMs)) {
         throw new ProcessLockError(path);
       }
       await moveObservedStaleLock(path, observedText);
@@ -187,9 +219,14 @@ export async function withProcessLock<T>(
     throw new Error(`Cannot determine process identity for PID ${pid}`);
   }
   const token = randomUUID();
+  const acquiredAt = (options.now ?? (() => new Date()))();
+  const staleAfterMs = options.staleAfterMs ?? DEFAULT_LEGACY_STALE_AFTER_MS;
+  if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs <= 0) {
+    throw new RangeError("staleAfterMs must be a positive safe integer");
+  }
   const commonRecord = {
     pid,
-    startedAt: (options.now ?? (() => new Date()))().toISOString(),
+    startedAt: acquiredAt.toISOString(),
     token,
   };
   const record: LockRecord = processIdentity === null
@@ -200,6 +237,8 @@ export async function withProcessLock<T>(
     `${JSON.stringify(record)}\n`,
     getProcessIdentity,
     options.isProcessAlive ?? processIsAlive,
+    acquiredAt.getTime(),
+    staleAfterMs,
   );
   try {
     return await operation();

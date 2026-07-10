@@ -19,6 +19,7 @@ import type {
 import type { ProductRef } from "../strategies/types.js";
 import { renderDiscoveryRequest } from "./api.js";
 import type { DiscoveryExecutionContext } from "./executor.js";
+import { DiscoveryFailureError } from "./failure.js";
 
 const MAX_OPERATIONS = 100;
 const MAX_TOTAL_RUNTIME_MS = 60_000;
@@ -42,6 +43,34 @@ interface SavedJson {
 interface DeadlineCancellation {
   controller: AbortController;
   cancel: () => Promise<void>;
+}
+
+function scriptFailure(error: unknown): DiscoveryFailureError {
+  if (error instanceof DiscoveryFailureError) return error;
+  const message = error instanceof Error ? error.message : String(error) || "Script discovery failed";
+  const timeout = error instanceof Error
+    && (error.name === "TimeoutError" || /exceeded|timeout|timed out/iu.test(error.message));
+  const denied = /not allowed|outside|denied|blocked/iu.test(message);
+  return new DiscoveryFailureError({
+    category: timeout ? "timeout" : denied ? "domain-denied" : "unknown",
+    message,
+    responded: false,
+  }, { cause: error });
+}
+
+function responseFailure(status: number): DiscoveryFailureError {
+  return new DiscoveryFailureError({
+    category: status === 403
+      ? "http-403"
+      : status === 429
+        ? "http-429"
+        : status === 408 || status === 504
+          ? "timeout"
+          : "unknown",
+    message: `Script discovery navigation returned HTTP ${status}`,
+    responded: true,
+    statusCode: status,
+  });
 }
 
 async function withDeadline<T>(
@@ -236,12 +265,21 @@ async function pageOperation(
     case "goto": {
       const rendered = renderDiscoveryString(operation.url);
       const target = assertNavigationAllowed(rendered, rendered, strategy.allowedDomains);
+      await context.beforeRequest?.();
       const response = await page.goto(target, { waitUntil: "domcontentloaded", timeout });
-      if (response === null || !response.ok()) throw new Error("Navigation failed");
+      if (response === null) {
+        throw new DiscoveryFailureError({
+          category: "network",
+          message: "Script discovery navigation returned no response",
+          responded: false,
+        });
+      }
+      if (!response.ok()) throw responseFailure(response.status());
       assertNavigationAllowed(page.url(), target, strategy.allowedDomains);
       return;
     }
     case "click":
+      await context.beforeRequest?.();
       await page.locator(operation.selector).first().click({ timeout });
       return;
     case "fill":
@@ -286,12 +324,27 @@ async function runDiscoveryProgram(
 
   try {
     for (const operation of strategy.operations) {
-      if (
-        session.deniedUrl !== null
-        || session.bodyLimitExceeded
-        || session.redirectLimitExceeded
-        || session.policyDenied
-      ) return [];
+      if (session.deniedUrl !== null || session.policyDenied) {
+        throw new DiscoveryFailureError({
+          category: "domain-denied",
+          message: "Script discovery request was denied before parsing",
+          responded: false,
+        });
+      }
+      if (session.bodyLimitExceeded) {
+        throw new DiscoveryFailureError({
+          category: "parse",
+          message: "Script discovery response exceeded the body limit",
+          responded: true,
+        });
+      }
+      if (session.redirectLimitExceeded) {
+        throw new DiscoveryFailureError({
+          category: "network",
+          message: "Script discovery exceeded the redirect limit",
+          responded: true,
+        });
+      }
 
       if (operation.op === "http") {
         const request = renderDiscoveryRequest(
@@ -301,15 +354,21 @@ async function runDiscoveryProgram(
         const requestContext = operation.timeoutMs === undefined
           ? context
           : { ...context, timeoutMs: operation.timeoutMs };
+        await context.beforeRequest?.();
         const fetched = await fetchBounded(request, strategy.allowedDomains, requestContext);
-        if (!fetched.ok) return [];
+        if (!fetched.ok) throw new DiscoveryFailureError(fetched.failure);
         try {
           savedJson.set(operation.saveAs, {
             document: JSON.parse(fetched.response.body),
             baseUrl: fetched.response.url,
           });
-        } catch {
-          return [];
+        } catch (error) {
+          throw new DiscoveryFailureError({
+            category: "parse",
+            message: "Script discovery HTTP response was not valid JSON",
+            responded: true,
+            statusCode: fetched.response.status,
+          }, { cause: error });
         }
         continue;
       }
@@ -343,7 +402,13 @@ async function runDiscoveryProgram(
           }
         } else {
           const saved = savedJson.get(operation.from);
-          if (saved === undefined) return [];
+          if (saved === undefined) {
+            throw new DiscoveryFailureError({
+              category: "parse",
+              message: `Script discovery JSON source ${operation.from} is missing`,
+              responded: false,
+            });
+          }
           const discovered = await withDeadline(
             async () => jsonRefs(saved, operation, strategy),
             timeout,
@@ -363,8 +428,8 @@ async function runDiscoveryProgram(
         session,
       );
     }
-  } catch {
-    return [];
+  } catch (error) {
+    throw scriptFailure(error);
   }
 
   return refs.slice(0, strategy.maxProducts);
@@ -402,7 +467,7 @@ export async function discoverScript(
         );
       },
     );
-  } catch {
-    return [];
+  } catch (error) {
+    throw scriptFailure(error);
   }
 }

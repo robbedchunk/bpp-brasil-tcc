@@ -5,7 +5,7 @@ import type Database from "better-sqlite3";
 
 import { executeExtraction } from "../collection/executor.js";
 import {
-  writeReplayHtml,
+  openDailyReplayReservoir,
 } from "../collection/replay.js";
 import {
   createRun,
@@ -19,7 +19,7 @@ import {
 } from "../db/repositories.js";
 import type { ExtractionStrategy } from "../strategies/schema.js";
 import type { ExtractionResult } from "../strategies/types.js";
-import { mapConcurrent } from "./concurrency.js";
+import { mapConcurrent, productionConcurrency } from "./concurrency.js";
 import { collectionDay, terminalStatus, type RunSummary } from "./discover.js";
 
 export interface CollectionPipelineDependencies {
@@ -38,6 +38,7 @@ export interface CollectionPipelineDependencies {
   politeDelayMs?: { min: number; max: number };
   sleep?: (milliseconds: number) => Promise<void>;
   clock?: () => number;
+  concurrentMap?: typeof mapConcurrent;
 }
 
 const MAX_DAILY_PAGES = 2_000;
@@ -101,7 +102,7 @@ export async function runCollection(
   const active = findActiveExtractionStrategy(dependencies.database, retailerId);
   const remainingDaily = Math.max(
     0,
-    MAX_DAILY_PAGES - attemptedForDay(dependencies.database, retailerId, "collect", day),
+    MAX_DAILY_PAGES - attemptedForDay(dependencies.database, retailerId, day),
   );
   const limit = Math.min(
     remainingDaily,
@@ -109,19 +110,33 @@ export async function runCollection(
   );
   const products = listCollectionProducts(dependencies.database, retailerId, limit);
   const runId = dependencies.dryRun === true ? `dry-run-${makeId()}` : makeId();
-  const counters = { attempted: products.length, ok: 0, failed: 0 };
-
-  if (dependencies.dryRun !== true) {
-    createRun(dependencies.database, {
+  if (dependencies.dryRun === true) {
+    return {
       id: runId,
       retailerId,
       stage: "collect",
-      collectionDay: day,
-      strategyId: active.id,
-      strategyVersion: active.version,
+      attempted: 0,
+      ok: 0,
+      failed: 0,
+      planned: products.length,
+      successRate: 0,
+      status: "completed",
       startedAt,
-    });
+      finishedAt: now().toISOString(),
+      dryRun: true,
+    };
   }
+  const counters = { attempted: products.length, ok: 0, failed: 0 };
+
+  createRun(dependencies.database, {
+    id: runId,
+    retailerId,
+    stage: "collect",
+    collectionDay: day,
+    strategyId: active.id,
+    strategyVersion: active.version,
+    startedAt,
+  });
 
   let finishedAt = startedAt;
   let status = terminalStatus(0, 0);
@@ -131,8 +146,13 @@ export async function runCollection(
     const random = dependencies.random ?? Math.random;
     const replayRoot = resolve(dependencies.rawHtmlRoot ?? "data/raw-html");
     const persistenceErrors: string[] = [];
-    const htmlReservoir: PendingHtmlAttempt[] = [];
-    let eligibleHtmlSeen = 0;
+    const replayReservoir = await openDailyReplayReservoir(
+      replayRoot,
+      day,
+      retailerId,
+      DAILY_REPLAY_SAMPLE,
+      random,
+    );
     const politeGate = createPoliteGate(
       dependencies.politeDelayMs,
       random,
@@ -143,32 +163,11 @@ export async function runCollection(
 
     const persistAttempt = async (
       pending: PendingHtmlAttempt,
-      withReplay: boolean,
+      replayArtifact?: { path: string; sha256: string },
     ): Promise<void> => {
       let { result } = pending;
-      let replayArtifact;
-      if (
-        dependencies.dryRun !== true
-        && withReplay
-        && result.html !== undefined
-      ) {
-        try {
-          replayArtifact = await writeReplayHtml(
-            result.html,
-            replayRoot,
-            day,
-            retailerId,
-          );
-        } catch (error) {
-          result = rejected(error);
-        }
-      }
 
       if (result.ok === true && result.fields !== undefined) {
-        if (dependencies.dryRun === true) {
-          counters.ok += 1;
-          return;
-        }
         try {
           insertObservation(dependencies.database, {
             product: pending.product,
@@ -188,7 +187,6 @@ export async function runCollection(
       }
 
       counters.failed += 1;
-      if (dependencies.dryRun === true) return;
       try {
         insertRunFailure(dependencies.database, {
           runId,
@@ -211,9 +209,9 @@ export async function runCollection(
       }
     };
 
-    await mapConcurrent(
+    await (dependencies.concurrentMap ?? mapConcurrent)(
       products,
-      dependencies.concurrency,
+      productionConcurrency(dependencies.concurrency),
       async (product): Promise<void> => {
         let result: ExtractionResult;
         try {
@@ -223,28 +221,17 @@ export async function runCollection(
           result = rejected(error);
         }
         const pending = { product, result };
-        if (dependencies.dryRun === true || result.html === undefined) {
-          await persistAttempt(pending, false);
+        if (result.html === undefined) {
+          await persistAttempt(pending);
           return;
         }
-        eligibleHtmlSeen += 1;
-        if (htmlReservoir.length < DAILY_REPLAY_SAMPLE) {
-          htmlReservoir.push(pending);
-          return;
+        try {
+          await persistAttempt(pending, await replayReservoir.consider(result.html));
+        } catch (error) {
+          await persistAttempt({ product, result: rejected(error) });
         }
-        const replacement = Math.floor(random() * eligibleHtmlSeen);
-        if (replacement < DAILY_REPLAY_SAMPLE) {
-          const evicted = htmlReservoir[replacement];
-          htmlReservoir[replacement] = pending;
-          if (evicted !== undefined) await persistAttempt(evicted, false);
-          return;
-        }
-        await persistAttempt(pending, false);
       },
     );
-    for (const pending of htmlReservoir) {
-      await persistAttempt(pending, true);
-    }
     if (persistenceErrors.length > 0) {
       finalError = { category: "unknown", message: persistenceErrors[0] ?? "Persistence failed" };
     }
@@ -261,33 +248,29 @@ export async function runCollection(
       counters.attempted = 1;
       counters.failed = 1;
     }
-    if (dependencies.dryRun !== true) {
-      try {
-        insertRunFailure(dependencies.database, {
-          runId,
-          retailerId,
-          failure,
-          occurredAt: now().toISOString(),
-          strategyId: active.id,
-          strategyVersion: active.version,
-        });
-      } catch {
-        // Finalizing the runs-first lifecycle remains the priority if evidence I/O failed.
-      }
+    try {
+      insertRunFailure(dependencies.database, {
+        runId,
+        retailerId,
+        failure,
+        occurredAt: now().toISOString(),
+        strategyId: active.id,
+        strategyVersion: active.version,
+      });
+    } catch {
+      // Finalizing the runs-first lifecycle remains the priority if evidence I/O failed.
     }
   } finally {
     finishedAt = now().toISOString();
     status = terminalStatus(counters.ok, counters.failed);
-    if (dependencies.dryRun !== true) {
-      finalizeRun(
-        dependencies.database,
-        runId,
-        counters,
-        status,
-        finishedAt,
-        finalError,
-      );
-    }
+    finalizeRun(
+      dependencies.database,
+      runId,
+      counters,
+      status,
+      finishedAt,
+      finalError,
+    );
   }
   return {
     id: runId,
@@ -298,6 +281,6 @@ export async function runCollection(
     status,
     startedAt,
     finishedAt,
-    dryRun: dependencies.dryRun === true,
+    dryRun: false,
   };
 }

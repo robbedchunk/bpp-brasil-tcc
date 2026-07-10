@@ -145,7 +145,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .description(description)
       .option("--retailer <id>", "run only one registered retailer")
       .option("--limit <count>", "maximum products/pages, capped at 2000", positiveLimit)
-      .option("--dry-run", "execute without writing pipeline evidence")
+      .option("--dry-run", "report a persisted-data plan without network or writes")
       .option("--json", "emit only JSON summaries")
       .action(async (options: {
         retailer?: string;
@@ -169,6 +169,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
                   ? await runDiscovery(retailerId, {
                       database,
                       ...pipelineOptions,
+                      ...retailerOptions(retailerId),
                     })
                   : await dependencies.runDiscovery(retailerId, pipelineOptions),
               );
@@ -208,7 +209,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .command("daily")
     .description("Run daily collection for every active retailer")
     .option("--limit <count>", "maximum products per retailer, capped at 2000", positiveLimit)
-    .option("--dry-run", "execute without writing pipeline evidence")
+    .option("--dry-run", "report a persisted-data plan without network or writes")
     .option("--json", "emit only the JSON summary")
     .action(async (options: { limit?: number; dryRun?: boolean; json?: boolean }) => {
       const result = await withProcessLock(

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -138,7 +138,7 @@ describe("collection pipeline", () => {
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
           status, attempted, ok, failed, started_at, finished_at)
        VALUES
-         ('prior', 'retailer-1', 'collect', '2026-07-10', ?, 1,
+         ('prior', 'retailer-1', 'discover', '2026-07-10', ?, 1,
           'failed', 1999, 0, 1999, '2026-07-10T03:00:00.000Z',
           '2026-07-10T03:10:00.000Z')`,
     ).run(strategyId);
@@ -190,11 +190,103 @@ describe("collection pipeline", () => {
       }),
     });
 
-    const files = await readdir(join(root, "2026-07-10", "retailer-1"));
+    const files = (await readdir(join(root, "2026-07-10", "retailer-1")))
+      .filter((file) => file.endsWith(".html.gz"));
     expect(files).toHaveLength(20);
     expect(files.every((file) => /^[a-f0-9]{64}\.html\.gz$/u.test(file))).toBe(true);
-    expect(database.prepare("SELECT COUNT(*) AS n FROM observations WHERE response_path IS NOT NULL").get()).toEqual({ n: 20 });
+    expect((database.prepare(
+      "SELECT COUNT(*) AS n FROM observations WHERE response_path IS NOT NULL",
+    ).get() as { n: number }).n).toBeGreaterThanOrEqual(20);
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations WHERE response_path LIKE '%<html>%'").get()).toEqual({ n: 0 });
+  });
+
+  it("keeps one persistent unbiased reservoir across same-day runs", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 30);
+    const root = await mkdtemp(join(tmpdir(), "precos-replay-daily-"));
+    directories.push(root);
+
+    for (let run = 0; run < 2; run += 1) {
+      await runCollection("retailer-1", {
+        database,
+        rawHtmlRoot: root,
+        random: () => 0,
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+        execute: async (_strategy, ref) => ({
+          ok: true,
+          fields: {
+            title: `Run ${run} product ${ref.externalId}`,
+            brand: null,
+            price: 2,
+            promoPrice: null,
+            unit: null,
+            available: true,
+          },
+          html: `<html><title>${run}-${ref.externalId}</title></html>`,
+        }),
+      });
+    }
+
+    const directory = join(root, "2026-07-10", "retailer-1");
+    const files = (await readdir(directory)).filter((file) => file.endsWith(".html.gz"));
+    const state = JSON.parse(await readFile(join(directory, ".reservoir.json"), "utf8")) as {
+      population: number;
+      slots: unknown[];
+    };
+    expect(files).toHaveLength(20);
+    expect(state).toMatchObject({ population: 60 });
+    expect(state.slots).toHaveLength(20);
+  });
+
+  it("performs no executor/network work and writes no evidence during dry-run", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 3);
+    let executions = 0;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      dryRun: true,
+      execute: async () => {
+        executions += 1;
+        return { ok: false, failure: { category: "network", message: "no", responded: false } };
+      },
+    });
+
+    expect(executions).toBe(0);
+    expect(summary).toMatchObject({ attempted: 0, ok: 0, failed: 0, planned: 3 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM observations").get()).toEqual({ n: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 0 });
+  });
+
+  it("clamps direct production collection concurrency to at least three", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 6);
+    let active = 0;
+    let maximum = 0;
+
+    await runCollection("retailer-1", {
+      database,
+      concurrency: 1,
+      execute: async () => {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise((resolve) => setImmediate(resolve));
+        active -= 1;
+        return { ok: false, failure: { category: "parse", message: "x", responded: true } };
+      },
+    });
+
+    expect(maximum).toBe(3);
   });
 
   it("paces live attempts through an injected polite start gate", async () => {
@@ -275,6 +367,13 @@ describe("collection pipeline", () => {
     await runCollection("retailer-1", {
       database,
       concurrency: 1,
+      concurrentMap: async (values, _concurrency, worker) => {
+        const results = [];
+        for (const [index, value] of values.entries()) {
+          results.push(await worker(value, index));
+        }
+        return results;
+      },
       execute: async () => {
         calls += 1;
         if (calls === 2) {

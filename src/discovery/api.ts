@@ -16,6 +16,7 @@ import {
   type BoundedHttpRequest,
 } from "../collection/http.js";
 import type { DiscoveryExecutionContext } from "./executor.js";
+import { DiscoveryFailureError } from "./failure.js";
 
 interface PaginationValues {
   page: string;
@@ -87,10 +88,17 @@ export function renderDiscoveryRequest(
   };
 }
 
-function jsonPathValues(document: unknown, path: string): unknown[] {
+function itemArray(document: unknown, path: string): unknown[] | null {
+  const wildcardMatch = /^(.*)\[\*\]$/u.exec(path);
+  if (wildcardMatch !== null) {
+    const containerPath = wildcardMatch[1];
+    if (containerPath === undefined || containerPath.length === 0) return null;
+    const container = safeJsonPathValue(document, containerPath);
+    return Array.isArray(container) ? container : null;
+  }
   const result = safeJsonPathValues(document, path);
-  if (result.length === 1 && Array.isArray(result[0])) return result[0] as unknown[];
-  return result;
+  if (result.length !== 1 || !Array.isArray(result[0])) return null;
+  return result[0] as unknown[];
 }
 
 function jsonPathValue(document: unknown, path: string | undefined): unknown {
@@ -194,8 +202,9 @@ export async function* discoverApi(
     const requestKey = requestFingerprint(request);
     if (seenRequests.has(requestKey)) return;
     seenRequests.add(requestKey);
+    await context.beforeRequest?.();
     const fetched = await fetchBounded(request, strategy.allowedDomains, context);
-    if (!fetched.ok) return;
+    if (!fetched.ok) throw new DiscoveryFailureError(fetched.failure);
     const responseKey = responseFingerprint(fetched.response.body);
     if (seenResponses.has(responseKey)) return;
     seenResponses.add(responseKey);
@@ -203,20 +212,43 @@ export async function* discoverApi(
     let document: unknown;
     try {
       document = JSON.parse(fetched.response.body);
-    } catch {
-      return;
+    } catch (error) {
+      throw new DiscoveryFailureError({
+        category: "parse",
+        message: "Discovery response was not valid JSON",
+        responded: true,
+        statusCode: fetched.response.status,
+      }, { cause: error });
     }
-    const items = jsonPathValues(document, strategy.itemsPath);
+    const items = itemArray(document, strategy.itemsPath);
+    if (items === null) {
+      throw new DiscoveryFailureError({
+        category: "parse",
+        message: `Discovery items path ${strategy.itemsPath} was missing or not an array`,
+        responded: true,
+        statusCode: fetched.response.status,
+      });
+    }
     if (items.length === 0) return;
 
+    let validItems = 0;
     for (const item of items) {
       const ref = productRef(item, strategy, fetched.response.url || request.url);
       if (ref === null) continue;
+      validItems += 1;
       if (seenProducts.has(ref.canonicalUrl)) continue;
       seenProducts.add(ref.canonicalUrl);
       yield ref;
       produced += 1;
       if (produced >= strategy.maxProducts) return;
+    }
+    if (validItems === 0) {
+      throw new DiscoveryFailureError({
+        category: "parse",
+        message: "Discovery page contained no valid product references",
+        responded: true,
+        statusCode: fetched.response.status,
+      });
     }
 
     if (strategy.pagination.kind === "cursor") {

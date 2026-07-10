@@ -54,6 +54,11 @@ describe("DOM crawl discovery", () => {
         ).join(""));
         return;
       }
+      if (request.url === "/throttled") {
+        response.statusCode = 429;
+        response.end("throttled");
+        return;
+      }
       response.end(request.url === "/categoria?page=2"
         ? `<a class="product" href="/produto/2">2</a>
            <a class="product" href="/produto/3">3</a>
@@ -85,12 +90,18 @@ describe("DOM crawl discovery", () => {
       "User-agent: *\nDisallow: /produto/2\n",
     );
 
-    const refs = await collect(executeDiscovery(strategy, { browser, robots }));
+    let gated = 0;
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots,
+      beforeRequest: async () => { gated += 1; },
+    }));
 
     expect(refs).toEqual([
       { canonicalUrl: `${server.origin}/produto/1`, externalId: null, sourceCategory: null },
       { canonicalUrl: `${server.origin}/produto/3`, externalId: null, sourceCategory: null },
     ]);
+    expect(gated).toBe(2);
   });
 
   it("applies product caps after canonical de-duplication", async () => {
@@ -150,12 +161,32 @@ describe("DOM crawl discovery", () => {
       maxProducts: 10,
     });
 
-    const refs = await collect(executeDiscovery(strategy, {
+    await expect(collect(executeDiscovery(strategy, {
       browser,
       robots: RobotsPolicy.allowAll(server.origin),
-    }));
+    }))).rejects.toMatchObject({ failure: { category: "domain-denied" } });
 
-    expect(refs).toEqual([]);
     expect(visibleSideEffects).toBe(0);
+  });
+
+  it("propagates HTTP failures and missing robots context as categorized failures", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/throttled`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 10,
+    });
+
+    await expect(collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+    }))).rejects.toMatchObject({ failure: { category: "http-429" } });
+
+    await expect(collect(executeDiscovery(strategy, { browser })))
+      .rejects.toMatchObject({ failure: { category: "domain-denied" } });
   });
 });
