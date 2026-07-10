@@ -10,7 +10,19 @@ import {
   buildReviewSample,
   classifyNewProducts,
 } from "./classify/classify.js";
-import { OpenAIProductClassifier } from "./classify/openai-provider.js";
+import {
+  createOpenAIBatchClient,
+  finalizeClassificationBatch,
+  pollClassificationBatch,
+  submitClassificationBatch,
+  type BatchFinalizeSummary,
+  type BatchPollSummary,
+  type OpenAIBatchClient,
+} from "./classify/batch.js";
+import {
+  classificationModelFromEnv,
+  OpenAIProductClassifier,
+} from "./classify/openai-provider.js";
 import type { ProductClassifier } from "./classify/provider.js";
 import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/database.js";
@@ -52,6 +64,8 @@ export interface CliDependencies {
   alertSink?: AlertSink;
   lockPath?: string;
   productClassifier?: ProductClassifier;
+  productClassifierFactory?: (model: string, apiKey: string) => ProductClassifier;
+  classificationBatchClient?: OpenAIBatchClient;
   budgetGuard?: BudgetGuard;
   runDiscovery?: (
     retailerId: string,
@@ -235,6 +249,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     }
     return Math.min(parsed, 200);
   };
+  const classificationLockPath = (): string =>
+    dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-classification.lock");
 
   command
     .command("classify")
@@ -259,27 +275,45 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       json?: boolean;
     }) => {
       const applicationConfig = config();
+      const classificationModel = classificationModelFromEnv(dependencies.env ?? process.env);
       const provider = dependencies.productClassifier ?? (
         applicationConfig.openaiApiKey === undefined
           ? undefined
-          : new OpenAIProductClassifier({
+          : dependencies.productClassifierFactory?.(
+              classificationModel,
+              applicationConfig.openaiApiKey,
+            ) ?? new OpenAIProductClassifier({
               apiKey: applicationConfig.openaiApiKey,
-              ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+              model: classificationModel,
             })
       );
-      const summary = await withDatabase((database) => classifyNewProducts({
-        batchSize: options.batchSize,
-        version: options.version,
-        confidenceThreshold: options.confidenceThreshold,
-        dryRun: options.dryRun === true,
-      }, {
-        database,
-        ...(provider === undefined ? {} : { provider }),
-        budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
-        classificationModel: dependencies.env?.OPENAI_CLASSIFICATION_MODEL?.trim()
-          || "gpt-5.6-luna",
-        now,
-      }));
+      const output = await withProcessLock(
+        classificationLockPath(),
+        () => withDatabase(async (database) => {
+          const summary = await classifyNewProducts({
+            batchSize: options.batchSize,
+            version: options.version,
+            confidenceThreshold: options.confidenceThreshold,
+            dryRun: options.dryRun === true,
+          }, {
+            database,
+            ...(provider === undefined ? {} : { provider }),
+            budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+            classificationModel,
+            now,
+          });
+          return options.reviewSample === undefined
+            ? summary
+            : {
+                ...summary,
+                reviewSample: buildReviewSample(database, {
+                  limit: options.reviewSample,
+                  version: options.version,
+                }),
+              };
+        }),
+      );
+      const summary = output;
 
       if (!summary.dryRun && summary.pending > 0) {
         const sink = dependencies.alertSink ?? createAlertSink({
@@ -296,19 +330,118 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         });
       }
 
-      const output = options.reviewSample === undefined
-        ? summary
-        : await withDatabase((database) => ({
-            ...summary,
-            reviewSample: buildReviewSample(database, {
-              limit: options.reviewSample ?? 200,
-              version: options.version,
-            }),
-          }));
       stdout(options.json === true || options.reviewSample !== undefined
         ? `${JSON.stringify(output)}\n`
         : `classify v${summary.version}: ${summary.classified}/${summary.eligible} evidence rows; ${summary.pending} pending (${summary.status})\n`);
     });
+
+  const batchLimit = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 50_000) {
+      throw new Error("--limit must be an integer from 1 to 50000");
+    }
+    return parsed;
+  };
+  const batchCommand = command
+    .command("classify-batch")
+    .description("Submit, poll, or finalize asynchronous OpenAI classification backfills");
+
+  batchCommand
+    .command("submit")
+    .description("Upload and submit an initial backfill or reclassification batch")
+    .option("--version <number>", "append-only classification version", classificationVersion, 1)
+    .option(
+      "--confidence-threshold <number>",
+      "minimum confidence for an assigned item",
+      classificationThreshold,
+      0.8,
+    )
+    .option("--limit <count>", "maximum requests, capped at 50000", batchLimit, 50_000)
+    .option("--json", "emit only JSON")
+    .action(async (options: {
+      version: number;
+      confidenceThreshold: number;
+      limit: number;
+      json?: boolean;
+    }) => {
+      const applicationConfig = config();
+      const model = classificationModelFromEnv(dependencies.env ?? process.env);
+      const client = dependencies.classificationBatchClient ?? (
+        applicationConfig.openaiApiKey === undefined
+          ? undefined
+          : createOpenAIBatchClient(applicationConfig.openaiApiKey)
+      );
+      const result = await withProcessLock(
+        classificationLockPath(),
+        () => withDatabase((database) => submitClassificationBatch({
+          version: options.version,
+          confidenceThreshold: options.confidenceThreshold,
+          limit: options.limit,
+        }, {
+          database,
+          ...(client === undefined ? {} : { client }),
+          budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+          model,
+          now,
+        })),
+      );
+      if (result.status === "provider_unavailable" && result.pending > 0) {
+        const sink = dependencies.alertSink ?? createAlertSink({
+          fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+          now,
+        });
+        await sink.send({
+          severity: "warning",
+          title: "IPCA batch classification pending",
+          message: "Batch classification credentials are not configured; products remain pending",
+          details: { pending: result.pending, version: options.version },
+        });
+      }
+      stdout(options.json === true
+        ? `${JSON.stringify(result)}\n`
+        : `classification batch: ${result.status}; ${result.submitted} submitted, ${result.pending} pending\n`);
+    });
+
+  const remoteBatchAction = (
+    name: "poll" | "finalize",
+    description: string,
+  ): void => {
+    batchCommand
+      .command(name)
+      .description(description)
+      .requiredOption("--job <id>", "local classification batch job ID")
+      .option("--json", "emit only JSON")
+      .action(async (options: { job: string; json?: boolean }) => {
+        const applicationConfig = config();
+        const model = classificationModelFromEnv(dependencies.env ?? process.env);
+        const client = dependencies.classificationBatchClient ?? (
+          applicationConfig.openaiApiKey === undefined
+            ? undefined
+            : createOpenAIBatchClient(applicationConfig.openaiApiKey)
+        );
+        if (client === undefined) throw new Error("OpenAI Batch credentials are not configured");
+        const result = await withProcessLock(
+          classificationLockPath(),
+          () => withDatabase<BatchPollSummary | BatchFinalizeSummary>((database) => {
+            const batchDependencies = {
+              database,
+              client,
+              budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+              model,
+              now,
+            };
+            return name === "poll"
+              ? pollClassificationBatch(options.job, batchDependencies)
+              : finalizeClassificationBatch(options.job, batchDependencies);
+          }),
+        );
+        stdout(options.json === true
+          ? `${JSON.stringify(result)}\n`
+          : `classification batch ${options.job}: ${result.status}\n`);
+      });
+  };
+  remoteBatchAction("poll", "Poll a submitted asynchronous classification batch");
+  remoteBatchAction("finalize", "Finalize terminal batch output and append evidence");
 
   command
     .command("daily")

@@ -5,8 +5,10 @@ import { Decimal } from "decimal.js";
 
 import { BudgetGuard } from "../ops/budget.js";
 import { DEFAULT_CLASSIFICATION_MODEL } from "./openai-provider.js";
+import { ClassificationProviderError } from "./provider.js";
 import type {
   AllowedIpcaItem,
+  ClassificationAttemptEvidence,
   ClassificationBatchResult,
   ClassificationInput,
   ClassificationResult,
@@ -51,7 +53,7 @@ export interface ClassificationRunSummary {
   estimatedCostUsd: number;
 }
 
-interface ProductRow {
+export interface ClassificationProduct {
   id: string;
   retailer_id: string;
   title: string;
@@ -92,7 +94,7 @@ function listItems(database: Database.Database): AllowedIpcaItem[] {
   }));
 }
 
-function listEligibleProducts(database: Database.Database, version: number): ProductRow[] {
+function listEligibleProducts(database: Database.Database, version: number): ClassificationProduct[] {
   return database.prepare(
     `SELECT p.id, p.retailer_id, p.title, p.brand, p.source_category
      FROM products p
@@ -103,10 +105,13 @@ function listEligibleProducts(database: Database.Database, version: number): Pro
          WHERE c.product_id = p.id AND c.version = ?
        )
      ORDER BY p.id`,
-  ).all(version) as ProductRow[];
+  ).all(version) as ClassificationProduct[];
 }
 
-function inputFor(product: ProductRow, allowedItems: readonly AllowedIpcaItem[]): ClassificationInput {
+function inputFor(
+  product: ClassificationProduct,
+  allowedItems: readonly AllowedIpcaItem[],
+): ClassificationInput {
   return {
     productId: product.id,
     title: product.title,
@@ -116,7 +121,7 @@ function inputFor(product: ProductRow, allowedItems: readonly AllowedIpcaItem[])
   };
 }
 
-function validateBatchResult(
+export function validateBatchResult(
   batch: readonly ClassificationInput[],
   result: ClassificationBatchResult,
 ): Map<string, ClassificationResult> {
@@ -175,10 +180,10 @@ function decimalShares(total: number, count: number): number[] {
     (index === count - 1 ? decimal.minus(base.mul(count - 1)) : base).toNumber());
 }
 
-function persistBatch(
+export function persistClassificationBatch(
   database: Database.Database,
   batch: readonly ClassificationInput[],
-  products: ReadonlyMap<string, ProductRow>,
+  products: ReadonlyMap<string, ClassificationProduct>,
   providerResult: ClassificationBatchResult,
   threshold: number,
   version: number,
@@ -214,70 +219,123 @@ function persistBatch(
       (?, 'classification', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let unclassified = 0;
-  const transaction = database.transaction(() => {
-    batch.forEach((input, index) => {
-      const raw = resultByProduct.get(input.productId);
-      const product = products.get(input.productId);
-      if (raw === undefined || product === undefined) {
-        throw new Error(`Missing validated product classification: ${input.productId}`);
-      }
-      const assignedId = raw.confidence >= threshold ? raw.ipcaItemId : null;
-      const assignedCode = assignedId === null
-        ? null
-        : input.allowedItems.find((item) => item.id === assignedId)?.code ?? null;
-      if (assignedId !== null && assignedCode === null) {
-        throw new Error(`Missing allowed SNIPC code for ${assignedId}`);
-      }
-      if (assignedId === null) unclassified += 1;
-      const classificationId = randomUUID();
-      const inputTokens = integerShare(providerResult.usage.inputTokens, batch.length, index);
-      const outputTokens = integerShare(providerResult.usage.outputTokens, batch.length, index);
-      const costUsd = costShares[index] ?? 0;
-      insertClassification.run({
-        id: classificationId,
+  batch.forEach((input, index) => {
+    const raw = resultByProduct.get(input.productId);
+    const product = products.get(input.productId);
+    if (raw === undefined || product === undefined) {
+      throw new Error(`Missing validated product classification: ${input.productId}`);
+    }
+    const assignedId = raw.confidence >= threshold ? raw.ipcaItemId : null;
+    const assignedCode = assignedId === null
+      ? null
+      : input.allowedItems.find((item) => item.id === assignedId)?.code ?? null;
+    if (assignedId !== null && assignedCode === null) {
+      throw new Error(`Missing allowed SNIPC code for ${assignedId}`);
+    }
+    if (assignedId === null) unclassified += 1;
+    const classificationId = randomUUID();
+    const inputTokens = integerShare(providerResult.usage.inputTokens, batch.length, index);
+    const outputTokens = integerShare(providerResult.usage.outputTokens, batch.length, index);
+    const costUsd = costShares[index] ?? 0;
+    insertClassification.run({
+      id: classificationId,
+      productId: input.productId,
+      ipcaItemId: assignedId,
+      version,
+      decision: assignedCode ?? "unclassified",
+      confidence: raw.confidence,
+      promptVersion: providerResult.promptVersion,
+      model: providerResult.model,
+      inputJson: JSON.stringify({
         productId: input.productId,
-        ipcaItemId: assignedId,
-        version,
-        decision: assignedCode ?? "unclassified",
-        confidence: raw.confidence,
-        promptVersion: providerResult.promptVersion,
-        model: providerResult.model,
-        inputJson: JSON.stringify({
-          productId: input.productId,
-          title: input.title,
-          brand: input.brand,
-          sourceCategory: input.sourceCategory,
-          allowedItems: input.allowedItems,
-          promptHash: providerResult.promptHash,
-        }),
-        outputJson: JSON.stringify(raw),
-        inputTokens,
-        outputTokens,
-        costUsd,
-        createdAt: occurredAt,
-      });
-      updatePointer.run(assignedId, occurredAt, input.productId, version);
-      insertCost.run(
-        randomUUID(),
-        product.retailer_id,
-        classificationId,
-        providerResult.provider,
-        providerResult.model,
-        inputTokens,
-        outputTokens,
-        costUsd,
-        occurredAt,
-        JSON.stringify({
-          estimated: true,
-          allocation: "batch_proportional",
-          promptHash: providerResult.promptHash,
-          promptVersion: providerResult.promptVersion,
-        }),
-      );
+        title: input.title,
+        brand: input.brand,
+        sourceCategory: input.sourceCategory,
+        allowedItems: input.allowedItems,
+        promptHash: providerResult.promptHash,
+      }),
+      outputJson: JSON.stringify(raw),
+      inputTokens,
+      outputTokens,
+      costUsd,
+      createdAt: occurredAt,
     });
+    updatePointer.run(assignedId, occurredAt, input.productId, version);
+    insertCost.run(
+      randomUUID(),
+      product.retailer_id,
+      classificationId,
+      providerResult.provider,
+      providerResult.model,
+      inputTokens,
+      outputTokens,
+      costUsd,
+      occurredAt,
+      JSON.stringify({
+        estimated: true,
+        allocation: "batch_proportional",
+        promptHash: providerResult.promptHash,
+        promptVersion: providerResult.promptVersion,
+      }),
+    );
   });
-  transaction.immediate();
   return unclassified;
+}
+
+export function persistFailureAttempts(
+  database: Database.Database,
+  attempts: readonly ClassificationAttemptEvidence[],
+  budgetGuard: BudgetGuard,
+  context: {
+    occurredAt: string;
+    productIds: readonly string[];
+    version: number;
+    batchJobId?: string;
+  },
+): number {
+  const insert = database.prepare(`
+    INSERT INTO cost_ledger
+      (id, category, provider, model, input_tokens, output_tokens,
+       cost_usd, occurred_at, details_json)
+    VALUES
+      (?, 'classification_failure', ?, ?, ?, ?, ?, ?, ?)
+  `);
+  let total = new Decimal(0);
+  for (const attempt of attempts) {
+    const cost = budgetGuard.estimateModelCost({
+      model: attempt.actualModel,
+      inputTokens: attempt.inputTokens,
+      outputTokens: attempt.outputTokens,
+    });
+    insert.run(
+      randomUUID(),
+      attempt.provider,
+      attempt.actualModel,
+      attempt.inputTokens,
+      attempt.outputTokens,
+      cost,
+      context.occurredAt,
+      JSON.stringify({
+        estimated: true,
+        requestedModel: attempt.requestedModel,
+        responseId: attempt.responseId,
+        attempt: attempt.attempt,
+        failureKind: attempt.failureKind,
+        productIds: context.productIds,
+        version: context.version,
+        ...(context.batchJobId === undefined ? {} : { batchJobId: context.batchJobId }),
+      }),
+    );
+    total = total.plus(cost);
+  }
+  return total.toDecimalPlaces(12).toNumber();
+}
+
+function uniqueClassificationConflict(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && typeof error.code === "string"
+    && error.code.startsWith("SQLITE_CONSTRAINT_UNIQUE");
 }
 
 function monthSpend(database: Database.Database, now: Date): number {
@@ -327,11 +385,11 @@ export async function classifyNewProducts(
     estimatedCostUsd: 0,
   };
   if (dryRun) return { ...base, status: "dry_run" };
+  if (products.length === 0) return { ...base, status: "completed" };
   if (allowedItems.length === 0) return { ...base, status: "no_ipca_items" };
   if (dependencies.provider === undefined) {
     return { ...base, status: "provider_unavailable" };
   }
-  if (products.length === 0) return { ...base, status: "completed" };
 
   const budgetGuard = dependencies.budgetGuard ?? new BudgetGuard();
   const model = dependencies.classificationModel ?? DEFAULT_CLASSIFICATION_MODEL;
@@ -359,27 +417,120 @@ export async function classifyNewProducts(
       break;
     }
 
-    const providerResult = await dependencies.provider.classify(inputBatch);
-    validateBatchResult(inputBatch, providerResult);
+    let providerResult: ClassificationBatchResult;
+    try {
+      providerResult = await dependencies.provider.classify(inputBatch);
+    } catch (error) {
+      if (error instanceof ClassificationProviderError && error.attempts.length > 0) {
+        const occurredAt = now().toISOString();
+        const transaction = dependencies.database.transaction(() =>
+          persistFailureAttempts(
+            dependencies.database,
+            error.attempts,
+            budgetGuard,
+            {
+              occurredAt,
+              productIds: inputBatch.map((input) => input.productId),
+              version,
+            },
+          ));
+        transaction.immediate();
+      }
+      throw error;
+    }
+    try {
+      validateBatchResult(inputBatch, providerResult);
+    } catch (error) {
+      const validationAttempt: ClassificationAttemptEvidence = {
+        provider: providerResult.provider,
+        requestedModel: model,
+        actualModel: providerResult.model,
+        responseId: null,
+        attempt: (providerResult.failedAttempts?.length ?? 0) + 1,
+        inputTokens: providerResult.usage.inputTokens,
+        outputTokens: providerResult.usage.outputTokens,
+        failureKind: "validation_failed",
+      };
+      const occurredAt = now().toISOString();
+      const transaction = dependencies.database.transaction(() =>
+        persistFailureAttempts(
+          dependencies.database,
+          [...(providerResult.failedAttempts ?? []), validationAttempt],
+          budgetGuard,
+          {
+            occurredAt,
+            productIds: inputBatch.map((input) => input.productId),
+            version,
+          },
+        ));
+      transaction.immediate();
+      throw error;
+    }
     const actualCost = budgetGuard.estimateModelCost({
       model: providerResult.model,
       inputTokens: providerResult.usage.inputTokens,
       outputTokens: providerResult.usage.outputTokens,
     });
-    unclassified += persistBatch(
-      dependencies.database,
-      inputBatch,
-      productById,
-      providerResult,
-      threshold,
-      version,
-      now().toISOString(),
-      actualCost,
-    );
+    const occurredAt = now().toISOString();
+    let batchUnclassified = 0;
+    let failedAttemptCost = 0;
+    try {
+      const transaction = dependencies.database.transaction(() => {
+        failedAttemptCost = persistFailureAttempts(
+          dependencies.database,
+          providerResult.failedAttempts ?? [],
+          budgetGuard,
+          {
+            occurredAt,
+            productIds: inputBatch.map((input) => input.productId),
+            version,
+          },
+        );
+        batchUnclassified = persistClassificationBatch(
+          dependencies.database,
+          inputBatch,
+          productById,
+          providerResult,
+          threshold,
+          version,
+          occurredAt,
+          actualCost,
+        );
+      });
+      transaction.immediate();
+    } catch (error) {
+      if (!uniqueClassificationConflict(error)) throw error;
+      const duplicateAttempt: ClassificationAttemptEvidence = {
+        provider: providerResult.provider,
+        requestedModel: model,
+        actualModel: providerResult.model,
+        responseId: null,
+        attempt: (providerResult.failedAttempts?.length ?? 0) + 1,
+        inputTokens: providerResult.usage.inputTokens,
+        outputTokens: providerResult.usage.outputTokens,
+        failureKind: "duplicate_conflict",
+      };
+      const transaction = dependencies.database.transaction(() =>
+        persistFailureAttempts(
+          dependencies.database,
+          [...(providerResult.failedAttempts ?? []), duplicateAttempt],
+          budgetGuard,
+          {
+            occurredAt,
+            productIds: inputBatch.map((input) => input.productId),
+            version,
+          },
+        ));
+      failedAttemptCost = transaction.immediate();
+      currentSpend += failedAttemptCost;
+      estimatedCostUsd = estimatedCostUsd.plus(failedAttemptCost);
+      continue;
+    }
+    unclassified += batchUnclassified;
     batches += 1;
     classified += inputBatch.length;
-    currentSpend += actualCost;
-    estimatedCostUsd = estimatedCostUsd.plus(actualCost);
+    currentSpend += actualCost + failedAttemptCost;
+    estimatedCostUsd = estimatedCostUsd.plus(actualCost).plus(failedAttemptCost);
   }
 
   return {

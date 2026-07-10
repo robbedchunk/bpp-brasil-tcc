@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+import { Decimal } from "decimal.js";
 import { describe, expect, it } from "vitest";
 
 import { buildCli, type CliDependencies } from "../../src/cli.js";
@@ -193,11 +198,12 @@ describe("official IPCA reference loader", () => {
       expect(second).toEqual(first);
       expect(database.prepare("SELECT COUNT(*) AS count FROM ipca_items").get()).toEqual({ count: 84 });
       expect(database.prepare(
-        `SELECT code, sidra_area_code, sidra_category_id, source_sheet,
+        `SELECT code, weight_text, sidra_area_code, sidra_category_id, source_sheet,
                 source_row, source_archive_sha256
          FROM ipca_items WHERE code = '1100001'`,
       ).get()).toEqual({
         code: "1100001",
+        weight_text: "12.1181",
         sidra_area_code: "35",
         sidra_category_id: "70001",
         source_sheet: "SP",
@@ -207,6 +213,37 @@ describe("official IPCA reference loader", () => {
     } finally {
       database.close();
     }
+  });
+
+  it("rejects higher-precision values instead of validating a rounded 84-row copy", () => {
+    const lines = validReferenceCsv().trimEnd().split("\n");
+    const adversarial = lines.map((line, index) => {
+      if (index === 0) return line;
+      const cells = line.split(",");
+      cells[10] = new Decimal(cells[10] ?? "0").plus("0.000049").toFixed(6);
+      return cells.join(",");
+    }).join("\n");
+
+    expect(() => loadItems(`${adversarial}\n`)).toThrow(/four decimal/iu);
+  });
+
+  it("hashes and loads the real committed 84-row official reference", () => {
+    const path = resolve("data/reference/ipca_pof2017_2018_sp_food_at_home_weights.csv");
+    const csv = readFileSync(path, "utf8");
+    expect(createHash("sha256").update(csv).digest("hex"))
+      .toBe("61698e58615d5bb37790cc5e0a3e8206866eeeb9895a1a941588d92b6f1b54fd");
+
+    const items = loadItems(csv);
+    expect(items).toHaveLength(84);
+    expect(items.map((item) => item.code)).toEqual(expect.arrayContaining([
+      "1101002",
+      "1101073",
+      "1116071",
+    ]));
+    expect(new Set(items.map((item) => item.areaCode))).toEqual(new Set(["3501"]));
+    expect(new Set(items.map((item) => item.categoryId)).size).toBe(84);
+    expect(items.reduce((sum, item) => sum.plus(item.weightText), new Decimal(0)).toFixed(4))
+      .toBe("12.1181");
   });
 });
 

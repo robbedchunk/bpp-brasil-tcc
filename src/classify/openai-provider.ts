@@ -1,4 +1,7 @@
-import OpenAI from "openai";
+import OpenAI, {
+  APIConnectionError,
+  APIConnectionTimeoutError,
+} from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
@@ -8,23 +11,25 @@ import {
   CLASSIFICATION_PROMPT_VERSION,
   buildClassificationPrompt,
 } from "./prompt.js";
+import { ClassificationProviderError } from "./provider.js";
 import type {
   ClassificationBatchResult,
+  ClassificationAttemptEvidence,
   ClassificationInput,
   ProductClassifier,
 } from "./provider.js";
 
 export const DEFAULT_CLASSIFICATION_MODEL = "gpt-5.6-luna";
 
-const ResultSchema = z.object({
+export const ClassificationResultSchema = z.object({
   productId: z.string().min(1),
   ipcaItemId: z.string().min(1).nullable(),
   confidence: z.number().min(0).max(1),
   rationaleCode: z.string().regex(/^[a-z0-9][a-z0-9_]{0,63}$/u),
 }).strict();
 
-const ClassificationResponseSchema = z.object({
-  results: z.array(ResultSchema),
+export const ClassificationResponseSchema = z.object({
+  results: z.array(ClassificationResultSchema),
 }).strict();
 
 interface ResponsesClient {
@@ -34,6 +39,10 @@ interface ResponsesClient {
 }
 
 interface ParsedResponse {
+  id?: unknown;
+  model?: unknown;
+  status?: unknown;
+  output?: unknown;
   output_parsed?: unknown;
   usage?: {
     input_tokens?: unknown;
@@ -55,7 +64,31 @@ function optional(value: string | undefined): string | undefined {
   return normalized === undefined || normalized.length === 0 ? undefined : normalized;
 }
 
+export function classificationModelFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return optional(env.OPENAI_CLASSIFICATION_MODEL) ?? DEFAULT_CLASSIFICATION_MODEL;
+}
+
+const TRANSIENT_NETWORK_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function nestedErrorCode(error: unknown, depth = 0): string | null {
+  if (depth > 4 || typeof error !== "object" || error === null) return null;
+  if ("code" in error && typeof error.code === "string") return error.code;
+  return "cause" in error ? nestedErrorCode(error.cause, depth + 1) : null;
+}
+
 function transientApiFailure(error: unknown): boolean {
+  if (error instanceof APIConnectionTimeoutError || error instanceof APIConnectionError) {
+    return true;
+  }
   if (typeof error !== "object" || error === null) return false;
   const status = "status" in error ? Number(error.status) : Number.NaN;
   if (
@@ -64,15 +97,7 @@ function transientApiFailure(error: unknown): boolean {
     || status === 429
     || (status >= 500 && status <= 599)
   ) return true;
-  const code = "code" in error && typeof error.code === "string" ? error.code : "";
-  return new Set([
-    "EAI_AGAIN",
-    "ECONNREFUSED",
-    "ECONNRESET",
-    "ENETUNREACH",
-    "ETIMEDOUT",
-    "UND_ERR_CONNECT_TIMEOUT",
-  ]).has(code);
+  return TRANSIENT_NETWORK_CODES.has(nestedErrorCode(error) ?? "");
 }
 
 function integerUsage(name: string, value: unknown): number {
@@ -80,6 +105,85 @@ function integerUsage(name: string, value: unknown): number {
     throw new Error(`OpenAI response usage.${name} must be a non-negative integer`);
   }
   return value;
+}
+
+function actualModel(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("OpenAI response model is required for auditable billing");
+  }
+  return value.trim();
+}
+
+function responseId(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+interface CustomAttemptShape {
+  actualModel?: unknown;
+  responseId?: unknown;
+  inputTokens?: unknown;
+  outputTokens?: unknown;
+  failureKind?: unknown;
+}
+
+function customAttemptEvidence(
+  error: unknown,
+  requestedModel: string,
+  attempt: number,
+): ClassificationAttemptEvidence | null {
+  if (
+    typeof error !== "object"
+    || error === null
+    || !("classificationAttempt" in error)
+    || typeof error.classificationAttempt !== "object"
+    || error.classificationAttempt === null
+  ) return null;
+  const value = error.classificationAttempt as CustomAttemptShape;
+  try {
+    const kind = typeof value.failureKind === "string" ? value.failureKind.trim() : "";
+    if (kind.length === 0) return null;
+    return {
+      provider: "openai",
+      requestedModel,
+      actualModel: actualModel(value.actualModel),
+      responseId: responseId(value.responseId),
+      attempt,
+      inputTokens: integerUsage("input_tokens", value.inputTokens),
+      outputTokens: integerUsage("output_tokens", value.outputTokens),
+      failureKind: kind,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function responseAttemptEvidence(
+  response: ParsedResponse,
+  requestedModel: string,
+  attempt: number,
+  failureKind: string,
+): ClassificationAttemptEvidence {
+  return {
+    provider: "openai",
+    requestedModel,
+    actualModel: actualModel(response.model),
+    responseId: responseId(response.id),
+    attempt,
+    inputTokens: integerUsage("input_tokens", response.usage?.input_tokens),
+    outputTokens: integerUsage("output_tokens", response.usage?.output_tokens),
+    failureKind,
+  };
+}
+
+function containsRefusal(output: unknown): boolean {
+  if (!Array.isArray(output)) return false;
+  return output.some((item) => {
+    if (typeof item !== "object" || item === null || !("content" in item)) return false;
+    return Array.isArray(item.content) && item.content.some(
+      (content: unknown) => typeof content === "object" && content !== null
+        && "type" in content && content.type === "refusal",
+    );
+  });
 }
 
 function validateResults(
@@ -119,8 +223,7 @@ export class OpenAIProductClassifier implements ProductClassifier {
   constructor(options: OpenAIProductClassifierOptions = {}) {
     const env = options.env ?? process.env;
     this.#model = optional(options.model)
-      ?? optional(env.OPENAI_CLASSIFICATION_MODEL)
-      ?? DEFAULT_CLASSIFICATION_MODEL;
+      ?? classificationModelFromEnv(env);
     this.#maxAttempts = options.maxAttempts ?? 3;
     if (!Number.isSafeInteger(this.#maxAttempts) || this.#maxAttempts < 1 || this.#maxAttempts > 5) {
       throw new RangeError("maxAttempts must be an integer from 1 to 5");
@@ -151,6 +254,8 @@ export class OpenAIProductClassifier implements ProductClassifier {
     }
 
     let response: ParsedResponse | undefined;
+    let completedAttempt = 0;
+    const failedAttempts: ClassificationAttemptEvidence[] = [];
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       try {
         response = await this.#client.responses.parse({
@@ -165,18 +270,55 @@ export class OpenAIProductClassifier implements ProductClassifier {
             ),
           },
         }) as ParsedResponse;
+        completedAttempt = attempt;
         break;
       } catch (error) {
-        if (!transientApiFailure(error) || attempt === this.#maxAttempts) throw error;
+        const billedAttempt = customAttemptEvidence(error, this.#model, attempt);
+        if (billedAttempt !== null) failedAttempts.push(billedAttempt);
+        if (!transientApiFailure(error) || attempt === this.#maxAttempts) {
+          throw new ClassificationProviderError(
+            error instanceof Error ? error.message : "OpenAI classification request failed",
+            failedAttempts,
+            { cause: error },
+          );
+        }
         await this.#sleep(250 * (2 ** (attempt - 1)));
       }
     }
     if (response === undefined) throw new Error("OpenAI response was not produced");
 
-    const results = validateResults(response.output_parsed, inputs);
+    let results: ReturnType<typeof validateResults>;
+    const status = typeof response.status === "string" ? response.status : "unknown";
+    if (status !== "completed") {
+      const evidence = responseAttemptEvidence(response, this.#model, completedAttempt, "incomplete");
+      throw new ClassificationProviderError(
+        `OpenAI classification response was ${status}`,
+        [...failedAttempts, evidence],
+      );
+    }
+    try {
+      results = validateResults(response.output_parsed, inputs);
+    } catch (error) {
+      const failureKind = response.output_parsed === null && containsRefusal(response.output)
+        ? "refusal"
+        : error instanceof z.ZodError
+          ? "schema_invalid"
+          : "validation_failed";
+      const evidence = responseAttemptEvidence(
+        response,
+        this.#model,
+        completedAttempt,
+        failureKind,
+      );
+      throw new ClassificationProviderError(
+        error instanceof Error ? error.message : "OpenAI classification validation failed",
+        [...failedAttempts, evidence],
+        { cause: error },
+      );
+    }
     return {
       provider: "openai",
-      model: this.#model,
+      model: actualModel(response.model),
       promptVersion: CLASSIFICATION_PROMPT_VERSION,
       promptHash: CLASSIFICATION_PROMPT_HASH,
       results,
@@ -184,6 +326,7 @@ export class OpenAIProductClassifier implements ProductClassifier {
         inputTokens: integerUsage("input_tokens", response.usage?.input_tokens),
         outputTokens: integerUsage("output_tokens", response.usage?.output_tokens),
       },
+      failedAttempts,
     };
   }
 }

@@ -258,7 +258,7 @@ describe("database foundation", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 3 });
+    ).toEqual({ count: 4 });
 
     database.exec("SELECT 1");
     expect(() => openMemoryDatabase()).not.toThrow();
@@ -280,7 +280,7 @@ describe("database foundation", () => {
     databases.push(database);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-    ).toEqual({ count: 3 });
+    ).toEqual({ count: 4 });
   });
 
   it("creates a private parent directory for a new production database", async () => {

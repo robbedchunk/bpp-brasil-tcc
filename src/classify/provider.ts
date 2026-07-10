@@ -19,6 +19,31 @@ export interface ClassificationResult {
   rationaleCode: string;
 }
 
+export interface ClassificationAttemptEvidence {
+  provider: string;
+  requestedModel: string;
+  actualModel: string;
+  responseId: string | null;
+  attempt: number;
+  inputTokens: number;
+  outputTokens: number;
+  failureKind: string;
+}
+
+export class ClassificationProviderError extends Error {
+  readonly attempts: ClassificationAttemptEvidence[];
+
+  constructor(
+    message: string,
+    attempts: readonly ClassificationAttemptEvidence[],
+    options: { cause?: unknown } = {},
+  ) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = "ClassificationProviderError";
+    this.attempts = attempts.map((attempt) => ({ ...attempt }));
+  }
+}
+
 export interface ClassificationBatchResult {
   provider: string;
   model: string;
@@ -29,6 +54,7 @@ export interface ClassificationBatchResult {
     inputTokens: number;
     outputTokens: number;
   };
+  failedAttempts?: ClassificationAttemptEvidence[];
 }
 
 export interface ProductClassifier {

@@ -99,6 +99,9 @@ export function loadItems(csv: string): IpcaReferenceItem[] {
     seenCodes.add(code);
 
     const weightText = requireText(row, "weight_pct_total_ipca", rowNumber);
+    if (!/^(?:0|[1-9]\d*)\.\d{4}$/u.test(weightText)) {
+      throw new Error(`Weight must use exactly four decimal places at CSV row ${rowNumber}`);
+    }
     let weight: Decimal;
     try {
       weight = new Decimal(weightText);
@@ -139,7 +142,7 @@ export function loadItems(csv: string): IpcaReferenceItem[] {
       name: requireText(row, "subitem_name", rowNumber),
       group: "alimentação no domicílio",
       weight: weight.toNumber(),
-      weightText: weight.toFixed(4),
+      weightText,
       sourceSheet,
       sourceRow,
       sourceUrl,
@@ -170,12 +173,12 @@ export function loadIpcaItems(
   const upsert = database.prepare(`
     INSERT INTO ipca_items
       (id, code, parent_code, name, item_group, weight, weight_period,
-       source_url, citation, in_scope, pof_vintage, effective_from,
+       source_url, citation, in_scope, pof_vintage, effective_from, weight_text,
        sidra_area_level, sidra_area_code, area_name, snipc_subgroup_code,
        sidra_category_id, source_sheet, source_row, source_archive_sha256)
     VALUES
       (@id, @code, @parentCode, @name, 'alimentacao_no_domicilio', @weight,
-       @weightPeriod, @sourceUrl, @citation, 1, @pofVintage, @effectiveFrom,
+       @weightPeriod, @sourceUrl, @citation, 1, @pofVintage, @effectiveFrom, @weightText,
        @areaLevel, @areaCode, @areaName, @subgroupCode, @categoryId,
        @sourceSheet, @sourceRow, @sourceArchiveSha256)
     ON CONFLICT (code) DO UPDATE SET
@@ -189,6 +192,7 @@ export function loadIpcaItems(
       in_scope = excluded.in_scope,
       pof_vintage = excluded.pof_vintage,
       effective_from = excluded.effective_from,
+      weight_text = excluded.weight_text,
       sidra_area_level = excluded.sidra_area_level,
       sidra_area_code = excluded.sidra_area_code,
       area_name = excluded.area_name,
@@ -207,6 +211,7 @@ export function loadIpcaItems(
         name: item.name,
         weight: item.weight,
         weightPeriod: item.weightReferenceMonth,
+        weightText: item.weightText,
         sourceUrl: item.sourceUrl,
         citation: `IBGE Estrutura_IPCA.xlsx, sheet ${item.sourceSheet}, row ${item.sourceRow}; archive SHA-256 ${item.sourceArchiveSha256}`,
         pofVintage: item.pofVintage,
