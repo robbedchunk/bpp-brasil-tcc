@@ -49,7 +49,7 @@ function run(
 }
 
 describe("production schedules", () => {
-  it("renders all four user timers with absolute runtime paths and São Paulo calendars", async () => {
+  it("renders all five user timers with absolute runtime paths and São Paulo calendars", async () => {
     const home = await temporaryDirectory("precos-systemd-home-");
     const destination = join(home, "units");
     const result = await run("bash", ["ops/install-systemd.sh", "--dry-run"], {
@@ -59,7 +59,7 @@ describe("production schedules", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    for (const name of ["daily", "weekly-discovery", "heartbeat", "backup"]) {
+    for (const name of ["daily", "healing", "weekly-discovery", "heartbeat", "backup"]) {
       expect(result.stdout).toContain(`precos-${name}.timer`);
       const timer = await readFile(join(destination, `precos-${name}.timer`), "utf8");
       expect(timer).toContain("Persistent=true");
@@ -72,6 +72,13 @@ describe("production schedules", () => {
     expect(service).toContain(`ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" daily --json`);
     expect(service).toContain("Environment=TZ=America/Sao_Paulo");
     expect(service).toContain(`EnvironmentFile=-${projectRoot}/.env`);
+    const healingService = await readFile(join(destination, "precos-healing.service"), "utf8");
+    expect(healingService).toContain(
+      `ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" heal --pending --json`,
+    );
+    const healingTimer = await readFile(join(destination, "precos-healing.timer"), "utf8");
+    expect(healingTimer).toContain("After=precos-daily.timer");
+    expect(healingTimer).toContain("OnCalendar=*-*-* 03:30:00 America/Sao_Paulo");
   });
 
   it("does not write the default user unit directory during a dry run", async () => {
@@ -124,7 +131,7 @@ describe("production schedules", () => {
       `Environment=${quote(`PATH=${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`)}`,
     );
 
-    const units = ["daily", "weekly-discovery", "heartbeat", "backup"]
+    const units = ["daily", "healing", "weekly-discovery", "heartbeat", "backup"]
       .flatMap((name) => ["service", "timer"].map((suffix) =>
         join(destination, `precos-${name}.${suffix}`)));
     const verification = await run("systemd-analyze", ["verify", ...units], process.env);

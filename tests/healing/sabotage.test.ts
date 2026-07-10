@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { executeDom } from "../../src/collection/dom.js";
 import { openDatabase } from "../../src/db/database.js";
 import type { GenerationRequest, StrategyGenerator } from "../../src/explorer/provider.js";
+import { healPendingEvents } from "../../src/healing/heal.js";
 import { monitorRun } from "../../src/healing/monitor.js";
 import { runCollection } from "../../src/pipeline/collect.js";
 import type { DomExtractionStrategy } from "../../src/strategies/schema.js";
@@ -122,12 +123,18 @@ describe("isolated staging sabotage", () => {
     };
     const decision = await monitorRun(sabotagedRun.id, {
       database,
+      now: () => new Date("2026-07-10T01:05:00.000Z"),
+    });
+
+    expect(decision).toMatchObject({ health: "drift", action: "queued" });
+    expect(generationCalls).toBe(0);
+    const worker = await healPendingEvents({
+      database,
       generator,
       execute,
       now: () => new Date("2026-07-10T01:05:00.000Z"),
     });
-
-    expect(decision).toMatchObject({ health: "drift", action: "healed" });
+    expect(worker).toMatchObject({ processed: 1, recovered: 1 });
     expect(generationCalls).toBe(1);
     expect(database.prepare(
       `SELECT version, active, retired_at

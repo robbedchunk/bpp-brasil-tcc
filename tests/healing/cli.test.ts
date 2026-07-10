@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { buildCli, type CliDependencies } from "../../src/cli.js";
 import { openDatabase } from "../../src/db/database.js";
+import { beginHealingEvent } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 
@@ -23,9 +27,9 @@ function seedDrift() {
   ).run();
   database.prepare(
     `INSERT INTO run_failures
-       (id, run_id, retailer_id, category, message, strategy_id,
+       (id, run_id, retailer_id, category, responded, message, strategy_id,
         strategy_version, occurred_at)
-     VALUES ('failure-1', 'drift-run', 'retailer-1', 'missing-fields',
+     VALUES ('failure-1', 'drift-run', 'retailer-1', 'missing-fields', 1,
              'fixture drift', 'retailer-1-extraction-v1', 1,
              '2026-07-10T00:00:30.000Z')`,
   ).run();
@@ -40,6 +44,7 @@ async function invoke(
   let stderr = "";
   const cli = buildCli({
     ...dependencies,
+    lockPath: dependencies.lockPath ?? join(tmpdir(), `healing-cli-${randomUUID()}.lock`),
     stdout: (value) => { stdout += value; },
     stderr: (value) => { stderr += value; },
   });
@@ -90,5 +95,30 @@ describe("heal CLI", () => {
       "SELECT id FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1",
     ).all()).toEqual([{ id: "retailer-1-extraction-v1" }]);
     expect(alerts).toHaveLength(1);
+  });
+
+  it("processes queued events through heal --pending", async () => {
+    const database = seedDrift();
+    beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "drift-run",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+
+    const result = await invoke(["heal", "--pending", "--json"], {
+      database,
+      env: {},
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      alertSink: { send: async () => {} },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      processed: 1,
+      providerUnavailable: 1,
+    });
+    expect(database.prepare("SELECT status FROM healing_events").get())
+      .toEqual({ status: "provider_unavailable" });
   });
 });

@@ -6,6 +6,7 @@ import {
   consecutiveFailedHealingEvents,
   findRunHealthEvidence,
   finishHealingEvent,
+  listOpenHealingEvents,
   setRetailerDegraded,
 } from "../db/repositories.js";
 import {
@@ -50,6 +51,7 @@ export type HealingStatus =
   | "failed"
   | "provider_unavailable"
   | "deferred"
+  | "superseded"
   | "in_progress";
 
 export interface HealingOutcome {
@@ -60,6 +62,22 @@ export interface HealingOutcome {
   degraded: boolean;
   strategyId?: string;
   explorationRunId?: string;
+}
+
+export type HealPendingEventsDependencies = Omit<
+  HealRetailerDependencies,
+  "onsetRunId"
+> & { retailerId?: string };
+
+export interface HealingWorkerSummary {
+  queued: number;
+  processed: number;
+  recovered: number;
+  failed: number;
+  deferred: number;
+  providerUnavailable: number;
+  superseded: number;
+  inProgress: number;
 }
 
 function isDegraded(database: Database.Database, retailerId: string): boolean {
@@ -90,6 +108,15 @@ export async function healRetailer(
     detectedAt: now().toISOString(),
   });
   if (!opened.created) {
+    if (opened.event.onsetRunId !== dependencies.onsetRunId) {
+      return {
+        healingEventId: opened.event.id,
+        status: "in_progress",
+        attempts: opened.event.attempts,
+        activated: false,
+        degraded: isDegraded(dependencies.database, retailerId),
+      };
+    }
     if (opened.event.status === "open") {
       const leaseMs = dependencies.openEventLeaseMs ?? 15 * 60 * 1_000;
       if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) {
@@ -121,6 +148,8 @@ export async function healRetailer(
           ? "provider_unavailable"
           : opened.event.status === "deferred"
             ? "deferred"
+            : opened.event.status === "superseded"
+              ? "superseded"
             : "failed",
       attempts: opened.event.attempts,
       activated: opened.event.status === "recovered",
@@ -128,6 +157,33 @@ export async function healRetailer(
       ...(opened.event.successorStrategyId === null
         ? {}
         : { strategyId: opened.event.successorStrategyId }),
+    };
+  }
+
+  const active = dependencies.database.prepare(
+    `SELECT id FROM strategies
+     WHERE retailer_id = ? AND purpose = ? AND active = 1`,
+  ).get(retailerId, purpose) as { id: string } | undefined;
+  if (active?.id !== opened.event.previousStrategyId) {
+    const finishedAt = now().toISOString();
+    finishHealingEvent(dependencies.database, {
+      healingEventId: opened.event.id,
+      status: "superseded",
+      attempts: opened.event.attempts,
+      finishedAt,
+      details: {
+        reason: "onset strategy is no longer active",
+        onsetRunId: opened.event.onsetRunId,
+        previousStrategyId: opened.event.previousStrategyId,
+        activeStrategyId: active?.id ?? null,
+      },
+    });
+    return {
+      healingEventId: opened.event.id,
+      status: "superseded",
+      attempts: opened.event.attempts,
+      activated: false,
+      degraded: isDegraded(dependencies.database, retailerId),
     };
   }
 
@@ -150,6 +206,10 @@ export async function healRetailer(
         ...(dependencies.execute === undefined ? {} : { execute: dependencies.execute }),
         failureSamples,
         trigger: "healing",
+        healingEventId: opened.event.id,
+        ...(dependencies.alertSink === undefined
+          ? {}
+          : { alertSink: dependencies.alertSink }),
         ...(dependencies.maxAttempts === undefined
           ? {}
           : { maxAttempts: dependencies.maxAttempts }),
@@ -214,7 +274,7 @@ export async function healRetailer(
       retailerId,
       purpose,
     );
-    if (consecutive >= 3) {
+    if (consecutive >= 3 && !degraded) {
       setRetailerDegraded(
         dependencies.database,
         retailerId,
@@ -255,4 +315,65 @@ export async function healRetailer(
     explorationRunId: exploration.explorationRunId,
     ...(exploration.strategyId === undefined ? {} : { strategyId: exploration.strategyId }),
   };
+}
+
+export async function healPendingEvents(
+  dependencies: HealPendingEventsDependencies,
+): Promise<HealingWorkerSummary> {
+  const events = listOpenHealingEvents(dependencies.database, dependencies.retailerId);
+  const summary: HealingWorkerSummary = {
+    queued: events.length,
+    processed: 0,
+    recovered: 0,
+    failed: 0,
+    deferred: 0,
+    providerUnavailable: 0,
+    superseded: 0,
+    inProgress: 0,
+  };
+  for (const event of events) {
+    if (event.onsetRunId === null) {
+      finishHealingEvent(dependencies.database, {
+        healingEventId: event.id,
+        status: "superseded",
+        attempts: event.attempts,
+        finishedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+        details: { reason: "queued event has no onset run" },
+      });
+      summary.processed += 1;
+      summary.superseded += 1;
+      continue;
+    }
+    const outcome = await healRetailer(event.retailerId, event.purpose, {
+      database: dependencies.database,
+      onsetRunId: event.onsetRunId,
+      ...(dependencies.generator === undefined ? {} : { generator: dependencies.generator }),
+      ...(dependencies.execute === undefined ? {} : { execute: dependencies.execute }),
+      ...(dependencies.explore === undefined ? {} : { explore: dependencies.explore }),
+      ...(dependencies.alertSink === undefined ? {} : { alertSink: dependencies.alertSink }),
+      ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+      ...(dependencies.maxAttempts === undefined ? {} : { maxAttempts: dependencies.maxAttempts }),
+      ...(dependencies.eventBudgetUsd === undefined
+        ? {}
+        : { eventBudgetUsd: dependencies.eventBudgetUsd }),
+      ...(dependencies.monthlyBudgetUsd === undefined
+        ? {}
+        : { monthlyBudgetUsd: dependencies.monthlyBudgetUsd }),
+      ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+      ...(dependencies.openEventLeaseMs === undefined
+        ? {}
+        : { openEventLeaseMs: dependencies.openEventLeaseMs }),
+    });
+    if (outcome.status === "in_progress") {
+      summary.inProgress += 1;
+      continue;
+    }
+    summary.processed += 1;
+    if (outcome.status === "recovered") summary.recovered += 1;
+    else if (outcome.status === "provider_unavailable") summary.providerUnavailable += 1;
+    else if (outcome.status === "deferred") summary.deferred += 1;
+    else if (outcome.status === "superseded") summary.superseded += 1;
+    else summary.failed += 1;
+  }
+  return summary;
 }

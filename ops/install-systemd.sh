@@ -83,7 +83,7 @@ const replacements = new Map([
   ["@ENV_FILE@", `-${systemdPath(join(projectRoot, ".env"))}`],
   ["@RUNTIME_PATH@", systemdQuote(`PATH=${dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`)],
 ]);
-const names = ["daily", "weekly-discovery", "heartbeat", "backup"];
+const names = ["daily", "healing", "weekly-discovery", "heartbeat", "backup"];
 for (const name of names) {
   for (const suffix of ["service", "timer"]) {
     const unit = `precos-${name}.${suffix}`;
@@ -99,7 +99,7 @@ for (const name of names) {
 NODE
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  for timer in daily weekly-discovery heartbeat backup; do
+  for timer in daily healing weekly-discovery heartbeat backup; do
     printf 'rendered precos-%s.timer\n' "$timer"
   done
   exit 0
@@ -110,6 +110,7 @@ systemctl --user daemon-reload
 systemctl --user disable --now precos-status.timer >/dev/null 2>&1 || true
 systemctl --user enable --now \
   precos-daily.timer \
+  precos-healing.timer \
   precos-weekly-discovery.timer \
   precos-heartbeat.timer \
   precos-backup.timer

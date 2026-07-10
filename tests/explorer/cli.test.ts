@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { buildCli, type CliDependencies } from "../../src/cli.js";
 import { openDatabase } from "../../src/db/database.js";
@@ -24,6 +27,7 @@ async function invoke(
   let stderr = "";
   const cli = buildCli({
     ...dependencies,
+    lockPath: dependencies.lockPath ?? join(tmpdir(), `explore-cli-${randomUUID()}.lock`),
     stdout: (value) => { stdout += value; },
     stderr: (value) => { stderr += value; },
   });

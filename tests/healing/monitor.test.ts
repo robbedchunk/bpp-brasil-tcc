@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/db/database.js";
 import { beginHealingEvent } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
-import { healRetailer } from "../../src/healing/heal.js";
+import { healPendingEvents, healRetailer } from "../../src/healing/heal.js";
 import { monitorRun } from "../../src/healing/monitor.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 
@@ -40,13 +40,13 @@ function insertRun(
   }));
   const statement = database.prepare(
     `INSERT INTO run_failures
-       (id, run_id, retailer_id, category, message, strategy_id,
+       (id, run_id, retailer_id, category, responded, message, strategy_id,
         strategy_version, occurred_at)
-     VALUES (?, ?, 'retailer-1', ?, 'fixture failure',
+     VALUES (?, ?, 'retailer-1', ?, ?, 'fixture failure',
              'retailer-1-extraction-v1', 1, '2026-07-10T00:00:30.000Z')`,
   );
   failures.forEach((failure, index) => {
-    statement.run(`${id}-failure-${index}`, id, failure.category);
+    statement.run(`${id}-failure-${index}`, id, failure.category, failure.responded ? 1 : 0);
   });
 }
 
@@ -76,30 +76,57 @@ describe("drift monitor state machine", () => {
       .toEqual({ n: 0 });
   });
 
-  it("invokes healing only after a terminal drift run", async () => {
+  it("only queues healing after a terminal drift run", async () => {
     const database = seed();
     insertRun(database, "drift-run", [
       { category: "missing-fields", responded: true },
       { category: "parse", responded: true },
     ]);
-    let onsetRunId = "";
+    let healingCalls = 0;
 
     const decision = await monitorRun("drift-run", {
       database,
-      heal: async (_retailerId, _purpose, dependencies) => {
-        onsetRunId = dependencies.onsetRunId;
-        return {
-          healingEventId: "healing-1",
-          status: "recovered",
-          attempts: 1,
-          activated: true,
-          degraded: false,
-        };
+      heal: async () => {
+        healingCalls += 1;
+        throw new Error("daily monitor must not generate");
       },
     });
 
-    expect(onsetRunId).toBe("drift-run");
-    expect(decision).toMatchObject({ health: "drift", action: "healed" });
+    expect(healingCalls).toBe(0);
+    expect(decision).toMatchObject({ health: "drift", action: "queued" });
+    expect(database.prepare(
+      "SELECT onset_run_id, previous_strategy_id, status FROM healing_events",
+    ).get()).toEqual({
+      onset_run_id: "drift-run",
+      previous_strategy_id: "retailer-1-extraction-v1",
+      status: "open",
+    });
+  });
+
+  it("anchors a queued event to the onset run strategy, not a newer active strategy", async () => {
+    const database = seed();
+    insertRun(database, "onset-v1", [{ category: "missing-fields", responded: true }]);
+    database.prepare(
+      "UPDATE strategies SET active = 0, retired_at = '2026-07-10T00:02:00.000Z' WHERE id = ?",
+    ).run("retailer-1-extraction-v1");
+    database.prepare(
+      `INSERT INTO strategies
+         (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+          validation_sample_size, validation_successes, validation_rate,
+          active, validated_at, activated_at)
+       VALUES ('retailer-1-extraction-v2', 'retailer-1', 'extraction', 4, 2, ?,
+               'fixture successor', 30, 30, 1, 1,
+               '2026-07-10T00:02:00.000Z', '2026-07-10T00:02:00.000Z')`,
+    ).run(JSON.stringify({ ...extractionStrategy, tier: "script", script: "return {};" }));
+
+    await monitorRun("onset-v1", { database });
+
+    expect(database.prepare(
+      "SELECT previous_strategy_id, tier_from FROM healing_events",
+    ).get()).toEqual({
+      previous_strategy_id: "retailer-1-extraction-v1",
+      tier_from: 1,
+    });
   });
 
   it("defers a non-terminal run and never calls healing", async () => {
@@ -163,6 +190,19 @@ describe("drift monitor state machine", () => {
     expect(database.prepare("SELECT COUNT(*) AS n FROM healing_events").get())
       .toEqual({ n: 3 });
     expect(alerts.at(-1)).toMatchObject({ severity: "error" });
+
+    insertRun(database, "drift-4", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const fourth = await healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "drift-4",
+      explore,
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+    expect(fourth).toMatchObject({ status: "failed", degraded: true });
+    expect(alerts.filter(({ title }) => title === "Retailer strategy healing degraded"))
+      .toHaveLength(1);
   });
 
   it("records a provider-unavailable healing event and never retires the strategy", async () => {
@@ -285,5 +325,74 @@ describe("drift monitor state machine", () => {
       healingEventId: opened.event.id,
       status: "failed",
     });
+  });
+
+  it("never reclaims onset A while asked to heal onset B", async () => {
+    const database = seed();
+    insertRun(database, "drift-a", [{ category: "missing-fields", responded: true }]);
+    insertRun(database, "drift-b", [{ category: "missing-fields", responded: true }]);
+    const opened = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "drift-a",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    let explorationCalls = 0;
+
+    const outcome = await healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "drift-b",
+      now: () => new Date("2026-07-10T00:30:00.000Z"),
+      explore: async () => {
+        explorationCalls += 1;
+        throw new Error("onset B must wait for A");
+      },
+    });
+
+    expect(outcome).toMatchObject({ healingEventId: opened.event.id, status: "in_progress" });
+    expect(explorationCalls).toBe(0);
+    expect(database.prepare("SELECT onset_run_id, status FROM healing_events").all())
+      .toEqual([{ onset_run_id: "drift-a", status: "open" }]);
+  });
+
+  it("supersedes queued healing when the onset strategy is no longer active", async () => {
+    const database = seed();
+    insertRun(database, "old-drift", [{ category: "missing-fields", responded: true }]);
+    const opened = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "old-drift",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    database.prepare(
+      "UPDATE strategies SET active = 0, retired_at = '2026-07-10T00:05:00.000Z' WHERE id = ?",
+    ).run("retailer-1-extraction-v1");
+    database.prepare(
+      `INSERT INTO strategies
+         (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+          validation_sample_size, validation_successes, validation_rate,
+          active, validated_at, activated_at)
+       VALUES ('retailer-1-extraction-v2', 'retailer-1', 'extraction', 3, 2, ?,
+               'fixture successor', 30, 30, 1, 1,
+               '2026-07-10T00:05:00.000Z', '2026-07-10T00:05:00.000Z')`,
+    ).run(JSON.stringify(extractionStrategy));
+    let explorationCalls = 0;
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:30:00.000Z"),
+      explore: async () => {
+        explorationCalls += 1;
+        throw new Error("superseded work must not spend");
+      },
+    });
+
+    expect(explorationCalls).toBe(0);
+    expect(summary).toMatchObject({ processed: 1, superseded: 1 });
+    expect(database.prepare("SELECT status FROM healing_events WHERE id = ?").get(opened.event.id))
+      .toEqual({ status: "superseded" });
+    expect(database.prepare(
+      "SELECT id FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1",
+    ).get()).toEqual({ id: "retailer-1-extraction-v2" });
   });
 });

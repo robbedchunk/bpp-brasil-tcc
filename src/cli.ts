@@ -63,8 +63,11 @@ import type {
   StrategyPurpose,
 } from "./explorer/provider.js";
 import {
+  healPendingEvents as runHealPendingEvents,
   healRetailer as runHealRetailer,
+  type HealingWorkerSummary,
   type HealingOutcome,
+  type HealPendingEventsDependencies,
   type HealRetailerDependencies,
 } from "./healing/heal.js";
 import { monitorRun } from "./healing/monitor.js";
@@ -98,6 +101,9 @@ export interface CliDependencies {
     purpose: StrategyPurpose,
     dependencies: HealRetailerDependencies,
   ) => Promise<HealingOutcome>;
+  healPendingEvents?: (
+    dependencies: HealPendingEventsDependencies,
+  ) => Promise<HealingWorkerSummary>;
   runDiscovery?: (
     retailerId: string,
     options: PipelineCliOptions,
@@ -339,8 +345,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   command
     .command("heal")
     .description("Regenerate a drifted strategy through trusted exploration")
-    .requiredOption("--retailer <id>", "registered retailer ID")
+    .option("--retailer <id>", "registered retailer ID or pending-event filter")
     .option("--run <id>", "terminal collection run that detected drift")
+    .option("--pending", "process queued healing events")
     .option(
       "--purpose <purpose>",
       "strategy purpose: discovery or extraction",
@@ -349,11 +356,18 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     )
     .option("--json", "emit only JSON")
     .action(async (options: {
-      retailer: string;
+      retailer?: string;
       run?: string;
+      pending?: boolean;
       purpose: StrategyPurpose;
       json?: boolean;
     }) => {
+      if (options.pending === true && options.run !== undefined) {
+        throw new Error("--run cannot be combined with --pending");
+      }
+      if (options.pending !== true && options.retailer === undefined) {
+        throw new Error("--retailer is required unless --pending is used");
+      }
       const applicationConfig = config();
       const environment = dependencies.env ?? process.env;
       const apiKey = resolveExplorerApiKey(environment);
@@ -369,16 +383,27 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
         now,
       });
-      const outcome = await withProcessLock(
+      const outcome: HealingOutcome | HealingWorkerSummary = await withProcessLock(
         dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-explorer.lock"),
-        () => withDatabase((database) => {
+        () => withDatabase<HealingOutcome | HealingWorkerSummary>((database) => {
+          if (options.pending === true) {
+            return (dependencies.healPendingEvents ?? runHealPendingEvents)({
+              database,
+              ...(options.retailer === undefined ? {} : { retailerId: options.retailer }),
+              ...(generator === undefined ? {} : { generator }),
+              alertSink: sink,
+              env: environment,
+              now,
+            });
+          }
+          const retailerId = options.retailer!;
           const onsetRunId = options.run
-            ?? latestTerminalCollectionRunId(database, options.retailer);
+            ?? latestTerminalCollectionRunId(database, retailerId);
           if (onsetRunId === null) {
-            throw new Error(`No terminal collection run exists for ${options.retailer}`);
+            throw new Error(`No terminal collection run exists for ${retailerId}`);
           }
           return (dependencies.healRetailer ?? runHealRetailer)(
-            options.retailer,
+            retailerId,
             options.purpose,
             {
               database,
@@ -393,7 +418,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       );
       stdout(options.json === true
         ? `${JSON.stringify(outcome)}\n`
-        : `heal ${options.retailer}/${options.purpose}: ${outcome.status}; ${outcome.attempts} attempt(s)\n`);
+        : options.pending === true
+          ? `heal pending: ${(outcome as HealingWorkerSummary).processed} event(s) processed\n`
+          : `heal ${options.retailer}/${options.purpose}: ${(outcome as HealingOutcome).status}; ${(outcome as HealingOutcome).attempts} attempt(s)\n`);
     });
 
   const classificationVersion = (value: string): number => {
@@ -620,12 +647,6 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .action(async (options: { limit?: number; dryRun?: boolean; json?: boolean }) => {
       const applicationConfig = config();
       const environment = dependencies.env ?? process.env;
-      const apiKey = resolveExplorerApiKey(environment);
-      const generator = dependencies.strategyGenerator ?? (
-        apiKey === undefined
-          ? undefined
-          : new CodexStrategyGenerator({ apiKey, env: environment })
-      );
       const sink = dependencies.alertSink ?? createAlertSink({
         ...(applicationConfig.ntfyTopic === undefined
           ? {}
@@ -645,7 +666,6 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           now,
           monitor: (runId) => monitorRun(runId, {
             database,
-            ...(generator === undefined ? {} : { generator }),
             alertSink: sink,
             env: environment,
             now,

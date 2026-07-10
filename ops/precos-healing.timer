@@ -1,0 +1,12 @@
+[Unit]
+Description=Process queued strategy healing after daily collection
+After=precos-daily.timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/Sao_Paulo
+RandomizedDelaySec=10m
+Persistent=true
+Unit=precos-healing.service
+
+[Install]
+WantedBy=timers.target
