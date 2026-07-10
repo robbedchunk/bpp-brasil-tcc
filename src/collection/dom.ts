@@ -101,6 +101,15 @@ export async function executeDom(
             timeout: executionContext.timeoutMs ?? 10_000,
           });
           if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
+          if (session.policyDenied) {
+            return failure("domain-denied", "Navigation denied by robots policy", false);
+          }
+          if (session.redirectLimitExceeded) {
+            return failure("network", "Browser redirect limit exceeded", true);
+          }
+          if (session.bodyLimitExceeded) {
+            return failure("parse", "Browser response exceeded maxBodyBytes", true);
+          }
           assertNavigationAllowed(session.page.url(), target, strategy.allowedDomains);
           if (response === null) return failure("network", "Navigation produced no response", false);
           if (response.status() === 403) {
@@ -119,6 +128,9 @@ export async function executeDom(
           }
           if (session.bodyLimitExceeded) {
             return failure("parse", "Browser response exceeded maxBodyBytes", true);
+          }
+          if (session.redirectLimitExceeded) {
+            return failure("network", "Browser redirect limit exceeded", true);
           }
           return failure(
             errorCategory(error),

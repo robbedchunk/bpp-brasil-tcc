@@ -21,6 +21,7 @@ async function collect(iterable: AsyncIterable<ProductRef>): Promise<ProductRef[
 describe("DOM crawl discovery", () => {
   let browser: Browser;
   let server: LocalHttpServer;
+  let visibleSideEffects = 0;
 
   beforeAll(async () => {
     const firstPage = await readFile(
@@ -36,7 +37,14 @@ describe("DOM crawl discovery", () => {
         return;
       }
       if (request.url === "/final-origin") {
-        response.end(`<a class="product" href="http://127.0.0.1:${server.origin.split(":").at(-1)}/produto/1">1</a>`);
+        response.end(`<script src="/visible-side-effect.js"></script>
+          <a class="product" href="http://127.0.0.1:${server.origin.split(":").at(-1)}/produto/1">1</a>`);
+        return;
+      }
+      if (request.url === "/visible-side-effect.js") {
+        visibleSideEffects += 1;
+        response.setHeader("content-type", "text/javascript");
+        response.end("document.body.dataset.executed = 'true'");
         return;
       }
       if (request.url === "/many") {
@@ -129,7 +137,8 @@ describe("DOM crawl discovery", () => {
     expect(refs).toHaveLength(2);
   });
 
-  it("requires robots for the final allowed redirect origin before parsing", async () => {
+  it("blocks the final-origin visible side effect before parsing", async () => {
+    visibleSideEffects = 0;
     const strategy = DomCrawlDiscoveryStrategySchema.parse({
       schemaVersion: 1,
       purpose: "discovery",
@@ -147,5 +156,6 @@ describe("DOM crawl discovery", () => {
     }));
 
     expect(refs).toEqual([]);
+    expect(visibleSideEffects).toBe(0);
   });
 });

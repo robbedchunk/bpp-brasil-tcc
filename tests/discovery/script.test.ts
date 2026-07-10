@@ -171,4 +171,44 @@ describe("script discovery", () => {
     expect(aborted).toBe(true);
     expect(active).toBe(0);
   });
+
+  it("cancels a timed-out discovery goto fetch before returning", async () => {
+    const strategy = ScriptDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        { op: "goto", url: "https://shop.test/pending", timeoutMs: 2_000 },
+        { op: "extract", source: "dom", linkSelectors: [{ selector: "a" }] },
+      ],
+    });
+    let active = 0;
+    let aborted = false;
+    const startedAt = Date.now();
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      totalTimeoutMs: 200,
+      fetch: async (_input, init) => {
+        active += 1;
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(init.signal?.reason);
+            }, { once: true });
+          });
+        } finally {
+          active -= 1;
+        }
+        throw new Error("unreachable");
+      },
+    }));
+
+    expect(refs).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(aborted).toBe(true);
+    expect(active).toBe(0);
+  });
 });

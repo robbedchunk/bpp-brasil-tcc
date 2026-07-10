@@ -41,7 +41,11 @@ export async function discoverDomCrawl(
   strategy: DomCrawlDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): Promise<ProductRef[]> {
-  return withRestrictedPage(strategy.allowedDomains, context, async (session) => {
+  const restrictedContext: DiscoveryExecutionContext = {
+    ...context,
+    allowDocumentUrl: (url) => robotsCanFetch(context, url),
+  };
+  return withRestrictedPage(strategy.allowedDomains, restrictedContext, async (session) => {
     const refs: ProductRef[] = [];
     const seenProducts = new Set<string>();
     const queued = [...strategy.startUrls];
@@ -60,15 +64,26 @@ export async function discoverDomCrawl(
       if (seenPages.has(pageUrl) || !robotsCanFetch(context, pageUrl)) continue;
       seenPages.add(pageUrl);
       session.deniedUrl = null;
+      session.policyDenied = false;
 
       try {
         const response = await session.page.goto(pageUrl, {
           waitUntil: "domcontentloaded",
           timeout: context.timeoutMs ?? 10_000,
         });
-        if (session.deniedUrl !== null || response === null || !response.ok()) continue;
+        if (
+          session.deniedUrl !== null
+          || session.policyDenied
+          || session.redirectLimitExceeded
+          || session.bodyLimitExceeded
+          || response === null
+          || !response.ok()
+        ) continue;
         assertNavigationAllowed(session.page.url(), pageUrl, strategy.allowedDomains);
-        if (!robotsCanFetch(context, session.page.url())) continue;
+        if (!robotsCanFetch(
+          context,
+          session.finalDocumentUrl ?? session.page.url(),
+        )) continue;
       } catch {
         continue;
       }
@@ -84,7 +99,7 @@ export async function discoverDomCrawl(
         try {
           canonicalUrl = canonicalizeRetailerUrl(
             link,
-            session.page.url(),
+            session.finalDocumentUrl ?? session.page.url(),
             strategy.allowedDomains,
           );
         } catch {
@@ -108,7 +123,7 @@ export async function discoverDomCrawl(
           try {
             const nextUrl = canonicalizeRetailerUrl(
               next,
-              session.page.url(),
+              session.finalDocumentUrl ?? session.page.url(),
               strategy.allowedDomains,
             );
             if (!seenPages.has(nextUrl) && robotsCanFetch(context, nextUrl)) {

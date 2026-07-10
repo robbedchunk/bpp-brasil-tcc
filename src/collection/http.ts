@@ -35,6 +35,7 @@ export interface ExtractionExecutionContext {
   maxDomMatches?: number;
   maxRedirects?: number;
   userAgent?: string;
+  allowDocumentUrl?: (url: string) => boolean;
 }
 
 export interface BoundedHttpRequest {

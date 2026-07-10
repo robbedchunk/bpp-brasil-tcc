@@ -8,6 +8,8 @@ import {
 
 import { canonicalizeRetailerUrl } from "../normalize/url.js";
 import {
+  DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_MAX_REDIRECTS,
   DEFAULT_RESEARCH_USER_AGENT,
   type ExtractionExecutionContext,
 } from "./http.js";
@@ -28,6 +30,9 @@ export interface RestrictedPageSession {
   page: Page;
   deniedUrl: string | null;
   bodyLimitExceeded: boolean;
+  redirectLimitExceeded: boolean;
+  policyDenied: boolean;
+  finalDocumentUrl: string | null;
 }
 
 interface BrowserResources {
@@ -46,7 +51,7 @@ async function createResources(
   const ownsBrowser = executionContext.browser === undefined;
   const browser = executionContext.browser ?? await chromium.launch({ headless: true });
   try {
-  const browserContext = await browser.newContext({
+    const browserContext = await browser.newContext({
       userAgent: executionContext.userAgent?.trim() || DEFAULT_RESEARCH_USER_AGENT,
       serviceWorkers: "block",
     });
@@ -101,15 +106,29 @@ function responseHeaders(response: Response): Record<string, string> {
   return headers;
 }
 
-async function handleNavigation(
+interface RequestBudget {
+  bytes: number;
+  redirects: number;
+}
+
+async function handleRequest(
   route: Route,
   session: RestrictedPageSession,
   allowedDomains: string[],
   executionContext: ExtractionExecutionContext,
-  navigationBudget: { bytes: number },
+  budget: RequestBudget,
 ): Promise<void> {
   const request = route.request();
-  if (request.redirectedFrom() === null) navigationBudget.bytes = 0;
+  const isMainDocument = request.isNavigationRequest()
+    && request.frame() === session.page.mainFrame();
+  if (
+    request.isNavigationRequest()
+    && executionContext.allowDocumentUrl?.(request.url()) === false
+  ) {
+    if (isMainDocument) session.policyDenied = true;
+    await route.abort("blockedbyclient");
+    return;
+  }
   const headers = new Headers(request.headers());
   headers.delete("host");
   headers.delete("connection");
@@ -118,52 +137,115 @@ async function handleNavigation(
   const signal = executionContext.signal === undefined
     ? timeout
     : AbortSignal.any([timeout, executionContext.signal]);
-  const init: RequestInit = {
-    method: request.method(),
-    headers,
-    redirect: "manual",
-    signal,
-  };
+  if (signal.aborted) {
+    await route.abort("failed").catch(() => undefined);
+    return;
+  }
+  const maximumRedirects = Math.max(
+    0,
+    executionContext.maxRedirects ?? DEFAULT_MAX_REDIRECTS,
+  );
+  const maximumBytes = executionContext.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  let currentUrl = request.url();
+  let currentMethod = request.method();
   const postData = request.postDataBuffer();
-  if (postData !== null) init.body = postData;
+  let currentBody: Buffer | null = postData;
 
-  let response: Response;
-  try {
-    response = await (executionContext.fetch ?? globalThis.fetch)(request.url(), init);
-  } catch {
-    await route.abort("failed");
-    return;
-  }
+  while (true) {
+    const init: RequestInit = {
+      method: currentMethod,
+      headers,
+      redirect: "manual",
+      signal,
+    };
+    if (currentBody !== null) init.body = currentBody;
 
-  try {
-    assertAllowedUrl(response.url || request.url(), allowedDomains);
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (location !== null) {
-        const redirectUrl = new URL(location, request.url()).toString();
-        assertAllowedUrl(redirectUrl, allowedDomains);
-      }
+    let response: Response;
+    try {
+      response = await (executionContext.fetch ?? globalThis.fetch)(currentUrl, init);
+    } catch {
+      await route.abort("failed").catch(() => undefined);
+      return;
     }
-  } catch {
-    session.deniedUrl = response.headers.get("location") ?? response.url ?? request.url();
-    await response.body?.cancel().catch(() => undefined);
-    await route.abort("blockedbyclient");
-    return;
-  }
 
-  const maximum = executionContext.maxBodyBytes ?? 2_000_000;
-  const body = await readNavigationBody(response, maximum - navigationBudget.bytes);
-  if (body === null) {
-    session.bodyLimitExceeded = true;
-    await route.abort("blockedbyclient");
+    const responseUrl = response.url || currentUrl;
+    let redirectUrl: string | null = null;
+    try {
+      assertAllowedUrl(responseUrl, allowedDomains);
+      if (
+        request.isNavigationRequest()
+        && responseUrl !== currentUrl
+        && executionContext.allowDocumentUrl?.(responseUrl) === false
+      ) {
+        if (isMainDocument) session.policyDenied = true;
+        await response.body?.cancel().catch(() => undefined);
+        await route.abort("blockedbyclient");
+        return;
+      }
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (location !== null) {
+          redirectUrl = new URL(location, responseUrl).toString();
+          assertAllowedUrl(redirectUrl, allowedDomains);
+          if (
+            request.isNavigationRequest()
+            && executionContext.allowDocumentUrl?.(redirectUrl) === false
+          ) {
+            if (isMainDocument) session.policyDenied = true;
+            await response.body?.cancel().catch(() => undefined);
+            await route.abort("blockedbyclient");
+            return;
+          }
+          if (budget.redirects >= maximumRedirects) {
+            session.redirectLimitExceeded = true;
+            await response.body?.cancel().catch(() => undefined);
+            await route.abort("blockedbyclient");
+            return;
+          }
+        }
+      }
+    } catch {
+      if (isMainDocument) session.deniedUrl = redirectUrl ?? responseUrl;
+      await response.body?.cancel().catch(() => undefined);
+      await route.abort("blockedbyclient");
+      return;
+    }
+
+    const body = await readNavigationBody(response, maximumBytes - budget.bytes);
+    if (body === null) {
+      session.bodyLimitExceeded = true;
+      await route.abort("blockedbyclient");
+      return;
+    }
+    budget.bytes += body.byteLength;
+
+    if (redirectUrl !== null) {
+      budget.redirects += 1;
+      if (new URL(redirectUrl).origin !== new URL(currentUrl).origin) {
+        headers.delete("authorization");
+        headers.delete("cookie");
+        headers.delete("proxy-authorization");
+      }
+      if (
+        response.status === 303
+        || ((response.status === 301 || response.status === 302) && currentMethod === "POST")
+      ) {
+        currentMethod = "GET";
+        currentBody = null;
+        headers.delete("content-type");
+      }
+      currentUrl = redirectUrl;
+      continue;
+    }
+
+    if (isMainDocument) session.finalDocumentUrl = responseUrl;
+    await route.fulfill({
+      status: response.status,
+      headers: responseHeaders(response),
+      body: Buffer.from(body),
+    });
     return;
   }
-  navigationBudget.bytes += body.byteLength;
-  await route.fulfill({
-    status: response.status,
-    headers: responseHeaders(response),
-    body: Buffer.from(body),
-  });
 }
 
 export async function withRestrictedPage<T>(
@@ -179,8 +261,12 @@ export async function withRestrictedPage<T>(
       page,
       deniedUrl: null,
       bodyLimitExceeded: false,
+      redirectLimitExceeded: false,
+      policyDenied: false,
+      finalDocumentUrl: null,
     };
-    const navigationBudget = { bytes: 0 };
+    const requestBudget: RequestBudget = { bytes: 0, redirects: 0 };
+    let requestQueue = Promise.resolve();
 
     await resources.browserContext.routeWebSocket(/.*/u, async (webSocket) => {
       await webSocket.close({ code: 1008, reason: "WebSockets are disabled" });
@@ -207,22 +293,27 @@ export async function withRestrictedPage<T>(
         return;
       }
 
-      if (request.isNavigationRequest()) {
-        await handleNavigation(
-          route,
-          session,
-          allowedDomains,
-          executionContext,
-          navigationBudget,
-        );
-        return;
-      }
-
       if (BLOCKED_RESOURCE_TYPES.has(request.resourceType())) {
         await route.abort("blockedbyclient");
         return;
       }
-      await route.continue();
+      const previousRequest = requestQueue;
+      let releaseRequest = (): void => undefined;
+      requestQueue = new Promise<void>((resolve) => {
+        releaseRequest = resolve;
+      });
+      await previousRequest;
+      try {
+        await handleRequest(
+          route,
+          session,
+          allowedDomains,
+          executionContext,
+          requestBudget,
+        );
+      } finally {
+        releaseRequest();
+      }
     });
 
     return await run(session);

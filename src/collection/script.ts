@@ -13,6 +13,7 @@ import type {
 import {
   assertNavigationAllowed,
   DomainDeniedError,
+  type RestrictedPageSession,
   withRestrictedPage,
 } from "./browser.js";
 import {
@@ -93,15 +94,11 @@ async function withDeadline<T>(
 }
 
 async function withTotalDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
+  operation: () => Promise<T>,
   timeoutMs: number,
-  parentSignal: AbortSignal | undefined,
+  controller: AbortController,
   cancel: () => Promise<void>,
 ): Promise<T> {
-  const controller = new AbortController();
-  const signal = parentSignal === undefined
-    ? controller.signal
-    : AbortSignal.any([controller.signal, parentSignal]);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancellation = Promise.resolve();
   let timeoutError: Error | undefined;
@@ -114,7 +111,7 @@ async function withTotalDeadline<T>(
       reject(timeoutError);
     }, timeoutMs);
   });
-  const work = Promise.resolve().then(() => operation(signal));
+  const work = Promise.resolve().then(operation);
 
   try {
     return await Promise.race([work, timeout]);
@@ -232,6 +229,115 @@ async function executePageOperation(
   }
 }
 
+async function runRestrictedProgram(
+  strategy: ScriptExtractionStrategy,
+  ref: ProductRef,
+  executionContext: ExtractionExecutionContext,
+  session: RestrictedPageSession,
+): Promise<ExtractionResult> {
+  const savedJson = new Map<string, unknown>();
+  let result: ExtractionResult | null = null;
+
+  try {
+    for (const operation of strategy.operations) {
+      if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
+      if (session.bodyLimitExceeded) {
+        return failure("parse", "Browser response exceeded maxBodyBytes", true);
+      }
+      if (session.redirectLimitExceeded) {
+        return failure("network", "Browser redirect limit exceeded", true);
+      }
+      if (session.policyDenied) {
+        return failure("domain-denied", "Navigation denied by policy", false);
+      }
+
+      if (operation.op === "http") {
+        const request = renderRequestTemplate(
+          operation.request as ExtractionRequestTemplate,
+          ref,
+        );
+        const httpContext = operation.timeoutMs === undefined
+          ? executionContext
+          : { ...executionContext, timeoutMs: operation.timeoutMs };
+        const fetched = await fetchBounded(request, strategy.allowedDomains, httpContext);
+        if (!fetched.ok) throw new OperationFailure(fetched.failure);
+        try {
+          savedJson.set(operation.saveAs, JSON.parse(fetched.response.body));
+        } catch {
+          throw new OperationFailure({
+            category: "parse",
+            message: `HTTP operation ${operation.saveAs} did not return valid JSON`,
+            responded: true,
+            statusCode: fetched.response.status,
+          });
+        }
+        continue;
+      }
+
+      if (operation.op === "extract") {
+        const timeout = operation.timeoutMs ?? executionContext.timeoutMs ?? 10_000;
+        if (operation.source === "dom") {
+          result = await withDeadline(
+            async () => mapExtractionFields(
+              await extractDom(session.page, operation.selectors, timeout),
+            ),
+            timeout,
+          );
+        } else {
+          if (!savedJson.has(operation.from)) {
+            throw new OperationFailure({
+              category: "parse",
+              message: `Unknown saved HTTP result: ${operation.from}`,
+              responded: false,
+            });
+          }
+          result = await withDeadline(
+            async () => mapJsonExtractionFields(
+              savedJson.get(operation.from),
+              operation.fields,
+            ),
+            timeout,
+          );
+        }
+        continue;
+      }
+
+      await withDeadline(
+        async () => executePageOperation(
+          operation,
+          session.page,
+          strategy,
+          ref,
+          executionContext,
+        ),
+        operation.timeoutMs ?? executionContext.timeoutMs ?? 10_000,
+      );
+    }
+    if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
+    if (session.bodyLimitExceeded) {
+      return failure("parse", "Browser response exceeded maxBodyBytes", true);
+    }
+    if (session.redirectLimitExceeded) {
+      return failure("network", "Browser redirect limit exceeded", true);
+    }
+    return result ?? failure("missing-fields", "Script did not extract product fields", false);
+  } catch (error) {
+    if (session.deniedUrl !== null) {
+      return failure("domain-denied", `URL domain is not allowed: ${session.deniedUrl}`, false);
+    }
+    if (session.bodyLimitExceeded) {
+      return failure("parse", "Browser response exceeded maxBodyBytes", true);
+    }
+    if (session.redirectLimitExceeded) {
+      return failure("network", "Browser redirect limit exceeded", true);
+    }
+    if (session.policyDenied) {
+      return failure("domain-denied", "Navigation denied by policy", false);
+    }
+    return asFailure(error);
+  }
+}
+
 export async function executeRestrictedScript(
   strategy: ScriptExtractionStrategy,
   ref: ProductRef,
@@ -241,106 +347,28 @@ export async function executeRestrictedScript(
     return failure("parse", `Operation limit exceeds ${MAX_OPERATIONS}`, false);
   }
 
+  const totalController = new AbortController();
+  const totalSignal = executionContext.signal === undefined
+    ? totalController.signal
+    : AbortSignal.any([totalController.signal, executionContext.signal]);
+  const programContext: ExtractionExecutionContext = {
+    ...executionContext,
+    signal: totalSignal,
+  };
+
   try {
     return await withRestrictedPage(
       strategy.allowedDomains,
-      executionContext,
-      async (session) => withTotalDeadline(async (totalSignal) => {
-        const programContext: ExtractionExecutionContext = {
-          ...executionContext,
-          signal: totalSignal,
-        };
-        const savedJson = new Map<string, unknown>();
-        let result: ExtractionResult | null = null;
-
-        try {
-          for (const operation of strategy.operations) {
-            if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
-
-            if (operation.op === "http") {
-              const request = renderRequestTemplate(
-                operation.request as ExtractionRequestTemplate,
-                ref,
-              );
-              const httpContext = operation.timeoutMs === undefined
-                ? programContext
-                : { ...programContext, timeoutMs: operation.timeoutMs };
-              const fetched = await fetchBounded(
-                request,
-                strategy.allowedDomains,
-                httpContext,
-              );
-              if (!fetched.ok) throw new OperationFailure(fetched.failure);
-              try {
-                savedJson.set(operation.saveAs, JSON.parse(fetched.response.body));
-              } catch {
-                throw new OperationFailure({
-                  category: "parse",
-                  message: `HTTP operation ${operation.saveAs} did not return valid JSON`,
-                  responded: true,
-                  statusCode: fetched.response.status,
-                });
-              }
-              if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
-              continue;
-            }
-
-            if (operation.op === "extract") {
-              const timeout = operation.timeoutMs ?? executionContext.timeoutMs ?? 10_000;
-              if (operation.source === "dom") {
-                result = await withDeadline(
-                  async () => mapExtractionFields(
-                    await extractDom(session.page, operation.selectors, timeout),
-                  ),
-                  timeout,
-                );
-              } else {
-                if (!savedJson.has(operation.from)) {
-                  throw new OperationFailure({
-                    category: "parse",
-                    message: `Unknown saved HTTP result: ${operation.from}`,
-                    responded: false,
-                  });
-                }
-                result = await withDeadline(
-                  async () => mapJsonExtractionFields(
-                    savedJson.get(operation.from),
-                    operation.fields,
-                  ),
-                  timeout,
-                );
-              }
-              if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
-              continue;
-            }
-
-            await withDeadline(
-              async () => executePageOperation(
-                operation,
-                session.page,
-                strategy,
-                ref,
-                executionContext,
-              ),
-              operation.timeoutMs ?? executionContext.timeoutMs ?? 10_000,
-            );
-            if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
-          }
-          if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
-          return result ?? failure("missing-fields", "Script did not extract product fields", false);
-        } catch (error) {
-          if (session.deniedUrl !== null) {
-            return failure("domain-denied", `URL domain is not allowed: ${session.deniedUrl}`, false);
-          }
-          if (session.bodyLimitExceeded) {
-            return failure("parse", "Browser response exceeded maxBodyBytes", true);
-          }
-          return asFailure(error);
-        }
+      programContext,
+      async (session) => {
+        totalSignal.throwIfAborted();
+        return withTotalDeadline(
+          async () => runRestrictedProgram(strategy, ref, programContext, session),
+          executionContext.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
+          totalController,
+          async () => session.page.close(),
+        );
       },
-      executionContext.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
-      executionContext.signal,
-      async () => session.page.close()),
     );
   } catch (error) {
     return asFailure(error);

@@ -35,6 +35,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function expandedJsonLdNodes(values: unknown[]): unknown[] {
+  if (values.length > MAX_JSON_LD_NODES) {
+    throw new Error(`Embedded JSON-LD exceeds ${MAX_JSON_LD_NODES} nodes before enqueue`);
+  }
   const stack = values
     .map((value) => ({ value, depth: 0 }))
     .reverse();
@@ -52,6 +55,11 @@ function expandedJsonLdNodes(values: unknown[]): unknown[] {
       throw new Error(`Embedded JSON-LD exceeds depth ${MAX_JSON_LD_DEPTH}`);
     }
     if (Array.isArray(current.value)) {
+      if (visited + stack.length + current.value.length > MAX_JSON_LD_NODES) {
+        throw new Error(
+          `Embedded JSON-LD exceeds ${MAX_JSON_LD_NODES} nodes before enqueue`,
+        );
+      }
       for (let index = current.value.length - 1; index >= 0; index -= 1) {
         stack.push({ value: current.value[index], depth: current.depth + 1 });
       }
@@ -63,6 +71,11 @@ function expandedJsonLdNodes(values: unknown[]): unknown[] {
     if (graph === undefined) {
       expanded.push(current.value);
     } else {
+      if (visited + stack.length + 1 > MAX_JSON_LD_NODES) {
+        throw new Error(
+          `Embedded JSON-LD exceeds ${MAX_JSON_LD_NODES} nodes before enqueue`,
+        );
+      }
       stack.push({ value: graph, depth: current.depth + 1 });
     }
   }

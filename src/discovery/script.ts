@@ -2,6 +2,7 @@ import type { Page } from "playwright";
 
 import {
   assertNavigationAllowed,
+  type RestrictedPageSession,
   withRestrictedPage,
 } from "../collection/browser.js";
 import { fetchBounded } from "../collection/http.js";
@@ -54,15 +55,11 @@ async function withDeadline<T>(
 }
 
 async function withTotalDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
+  operation: () => Promise<T>,
   timeoutMs: number,
-  parentSignal: AbortSignal | undefined,
+  controller: AbortController,
   cancel: () => Promise<void>,
 ): Promise<T> {
-  const controller = new AbortController();
-  const signal = parentSignal === undefined
-    ? controller.signal
-    : AbortSignal.any([controller.signal, parentSignal]);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cancellation = Promise.resolve();
   let timedOut = false;
@@ -75,7 +72,7 @@ async function withTotalDeadline<T>(
       reject(error);
     }, timeoutMs);
   });
-  const work = Promise.resolve().then(() => operation(signal));
+  const work = Promise.resolve().then(operation);
   try {
     return await Promise.race([work, timeout]);
   } catch (error) {
@@ -208,117 +205,135 @@ async function pageOperation(
   }
 }
 
+async function runDiscoveryProgram(
+  strategy: ScriptDiscoveryStrategy,
+  context: DiscoveryExecutionContext,
+  session: RestrictedPageSession,
+): Promise<ProductRef[]> {
+  const refs: ProductRef[] = [];
+  const seenRefs = new Set<string>();
+  const savedJson = new Map<string, SavedJson>();
+
+  const appendRef = (ref: ProductRef): boolean => {
+    if (seenRefs.has(ref.canonicalUrl)) return false;
+    seenRefs.add(ref.canonicalUrl);
+    refs.push(ref);
+    return refs.length >= strategy.maxProducts;
+  };
+
+  try {
+    for (const operation of strategy.operations) {
+      if (
+        session.deniedUrl !== null
+        || session.bodyLimitExceeded
+        || session.redirectLimitExceeded
+        || session.policyDenied
+      ) return [];
+
+      if (operation.op === "http") {
+        const request = renderDiscoveryRequest(
+          operation.request as DiscoveryRequestTemplate,
+          EMPTY_PAGINATION,
+        );
+        const requestContext = operation.timeoutMs === undefined
+          ? context
+          : { ...context, timeoutMs: operation.timeoutMs };
+        const fetched = await fetchBounded(request, strategy.allowedDomains, requestContext);
+        if (!fetched.ok) return [];
+        try {
+          savedJson.set(operation.saveAs, {
+            document: JSON.parse(fetched.response.body),
+            baseUrl: fetched.response.url,
+          });
+        } catch {
+          return [];
+        }
+        continue;
+      }
+
+      if (operation.op === "extract") {
+        const timeout = operation.timeoutMs ?? context.timeoutMs ?? 10_000;
+        if (operation.source === "dom") {
+          const links = await withDeadline(
+            async () => selectorLinks(
+              session.page,
+              operation.linkSelectors,
+              timeout,
+              context.maxDomMatches ?? 1_000,
+            ),
+            timeout,
+          );
+          for (const link of links) {
+            try {
+              if (appendRef({
+                canonicalUrl: canonicalizeRetailerUrl(
+                  link,
+                  session.finalDocumentUrl ?? session.page.url(),
+                  strategy.allowedDomains,
+                ),
+                externalId: null,
+                sourceCategory: null,
+              })) return refs;
+            } catch {
+              // Ignore malformed or cross-domain discovered URLs.
+            }
+          }
+        } else {
+          const saved = savedJson.get(operation.from);
+          if (saved === undefined) return [];
+          const discovered = await withDeadline(
+            async () => jsonRefs(saved, operation, strategy),
+            timeout,
+          );
+          for (const ref of discovered) {
+            if (appendRef(ref)) return refs;
+          }
+        }
+        continue;
+      }
+
+      session.deniedUrl = null;
+      await withDeadline(
+        async () => pageOperation(operation, session.page, strategy, context),
+        operation.timeoutMs ?? context.timeoutMs ?? 10_000,
+      );
+    }
+  } catch {
+    return [];
+  }
+
+  return refs.slice(0, strategy.maxProducts);
+}
+
 export async function discoverScript(
   strategy: ScriptDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): Promise<ProductRef[]> {
   if (strategy.operations.length > MAX_OPERATIONS) return [];
 
+  const totalController = new AbortController();
+  const totalSignal = context.signal === undefined
+    ? totalController.signal
+    : AbortSignal.any([totalController.signal, context.signal]);
+  const programContext: DiscoveryExecutionContext = {
+    ...context,
+    signal: totalSignal,
+  };
+
   try {
-    return await withRestrictedPage(strategy.allowedDomains, context, async (session) => withTotalDeadline(async (totalSignal) => {
-      const programContext: DiscoveryExecutionContext = {
-        ...context,
-        signal: totalSignal,
-      };
-      const refs: ProductRef[] = [];
-      const seenRefs = new Set<string>();
-      const savedJson = new Map<string, SavedJson>();
-
-      const appendRef = (ref: ProductRef): boolean => {
-        if (seenRefs.has(ref.canonicalUrl)) return false;
-        seenRefs.add(ref.canonicalUrl);
-        refs.push(ref);
-        return refs.length >= strategy.maxProducts;
-      };
-
-      try {
-        for (const operation of strategy.operations) {
-          if (session.deniedUrl !== null || session.bodyLimitExceeded) return [];
-
-          if (operation.op === "http") {
-            const request = renderDiscoveryRequest(
-              operation.request as DiscoveryRequestTemplate,
-              EMPTY_PAGINATION,
-            );
-            const requestContext = operation.timeoutMs === undefined
-              ? programContext
-              : { ...programContext, timeoutMs: operation.timeoutMs };
-            const fetched = await fetchBounded(
-              request,
-              strategy.allowedDomains,
-              requestContext,
-            );
-            if (!fetched.ok) return [];
-            try {
-              savedJson.set(operation.saveAs, {
-                document: JSON.parse(fetched.response.body),
-                baseUrl: fetched.response.url,
-              });
-            } catch {
-              return [];
-            }
-            if (session.deniedUrl !== null) return [];
-            continue;
-          }
-
-          if (operation.op === "extract") {
-            const timeout = operation.timeoutMs ?? context.timeoutMs ?? 10_000;
-            if (operation.source === "dom") {
-              const links = await withDeadline(
-                async () => selectorLinks(
-                  session.page,
-                  operation.linkSelectors,
-                  timeout,
-                  context.maxDomMatches ?? 1_000,
-                ),
-                timeout,
-              );
-              for (const link of links) {
-                try {
-                  if (appendRef({
-                    canonicalUrl: canonicalizeRetailerUrl(
-                      link,
-                      session.page.url(),
-                      strategy.allowedDomains,
-                    ),
-                    externalId: null,
-                    sourceCategory: null,
-                  })) return refs;
-                } catch {
-                  // Ignore malformed or cross-domain discovered URLs.
-                }
-              }
-            } else {
-              const saved = savedJson.get(operation.from);
-              if (saved === undefined) return [];
-              const discovered = await withDeadline(
-                async () => jsonRefs(saved, operation, strategy),
-                timeout,
-              );
-              for (const ref of discovered) {
-                if (appendRef(ref)) return refs;
-              }
-            }
-            if (session.deniedUrl !== null) return [];
-            continue;
-          }
-
-          session.deniedUrl = null;
-          await withDeadline(
-            async () => pageOperation(operation, session.page, strategy, programContext),
-            operation.timeoutMs ?? context.timeoutMs ?? 10_000,
-          );
-          if (session.deniedUrl !== null) return [];
-        }
-      } catch {
-        return [];
-      }
-
-      return refs.slice(0, strategy.maxProducts);
-    },
-    context.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
-    context.signal,
-    async () => session.page.close()));
+    return await withRestrictedPage(
+      strategy.allowedDomains,
+      programContext,
+      async (session) => {
+        totalSignal.throwIfAborted();
+        return withTotalDeadline(
+          async () => runDiscoveryProgram(strategy, programContext, session),
+          context.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
+          totalController,
+          async () => session.page.close(),
+        );
+      },
+    );
   } catch {
     return [];
   }

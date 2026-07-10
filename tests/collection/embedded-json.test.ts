@@ -189,4 +189,34 @@ describe("embedded JSON extraction", () => {
       failure: { category: "parse", responded: true },
     });
   });
+
+  it("rejects a graph wider than the node budget before enqueueing children", async () => {
+    const nodes = Array.from({ length: 10_001 }, () => "{}").join(",");
+    const extractionStrategy = strategy(
+      { kind: "json-ld" },
+      {
+        title: "$.name",
+        brand: "$.brand",
+        price: "$.price",
+        promoPrice: "$.promo",
+        unit: "$.unit",
+        availability: "$.available",
+      },
+    );
+
+    const result = await executeExtraction(extractionStrategy, productRef, {
+      fetch: async () => new Response(
+        `<script type="application/ld+json">{"@graph":[${nodes}]}</script>`,
+        { headers: { "content-type": "text/html" } },
+      ),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      failure: {
+        category: "parse",
+        message: expect.stringMatching(/before enqueue/iu),
+      },
+    });
+  });
 });

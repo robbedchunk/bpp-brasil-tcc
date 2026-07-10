@@ -55,6 +55,7 @@ describe("browser network boundaries", () => {
   let deniedHits = 0;
   let serviceWorkerHits = 0;
   let webSocketConnections = 0;
+  let budgetFinalHits = 0;
 
   beforeAll(async () => {
     tcp = await startTcp(() => {
@@ -74,6 +75,30 @@ describe("browser network boundaries", () => {
       }
       if (request.url === "/click") {
         response.end(`<a id="leave" href="${deniedViaDifferentHost}/contacted">leave</a>${productMarkup}`);
+        return;
+      }
+      if (request.url === "/subresource") {
+        response.end(`${productMarkup}<script src="/script-redirect"></script>`);
+        return;
+      }
+      if (request.url === "/script-redirect") {
+        response.writeHead(302, { location: `${denied.origin}/subresource-contacted` });
+        response.end();
+        return;
+      }
+      if (request.url === "/budget-hop-1") {
+        response.writeHead(302, { location: "/budget-hop-2" });
+        response.end("a".repeat(120));
+        return;
+      }
+      if (request.url === "/budget-hop-2") {
+        response.writeHead(302, { location: "/budget-final" });
+        response.end("b".repeat(120));
+        return;
+      }
+      if (request.url === "/budget-final") {
+        budgetFinalHits += 1;
+        response.end(productMarkup);
         return;
       }
       if (request.url === "/sw.js") {
@@ -182,6 +207,27 @@ describe("browser network boundaries", () => {
     expect(serviceWorkerHits).toBe(0);
   });
 
+  it("prevents denied redirects from every browser subresource", async () => {
+    deniedHits = 0;
+    const strategy = DomExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "dom",
+      allowedDomains: ["localhost"],
+      url: "{productUrl}",
+      selectors: fields,
+    });
+
+    const result = await executeDom(strategy, {
+      canonicalUrl: `${allowed.origin.replace("127.0.0.1", "localhost")}/subresource`,
+      externalId: null,
+      sourceCategory: null,
+    }, { browser });
+
+    expect(result.ok).toBe(true);
+    expect(deniedHits).toBe(0);
+  });
+
   it("blocks WebSockets before a TCP connection is made", async () => {
     const strategy = ScriptStrategySchema.parse({
       schemaVersion: 1,
@@ -225,5 +271,89 @@ describe("browser network boundaries", () => {
       ok: false,
       failure: { category: "parse" },
     });
+  });
+
+  it("uses one aggregate body budget across a multi-hop redirect chain", async () => {
+    const strategy = DomExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "dom",
+      allowedDomains: ["127.0.0.1"],
+      url: "{productUrl}",
+      selectors: fields,
+    });
+
+    const result = await executeDom(strategy, {
+      canonicalUrl: `${allowed.origin}/budget-hop-1`,
+      externalId: null,
+      sourceCategory: null,
+    }, { browser, maxBodyBytes: 350, maxRedirects: 5 });
+
+    expect(result).toMatchObject({ ok: false, failure: { category: "parse" } });
+  });
+
+  it("enforces maxRedirects across manually fulfilled redirects", async () => {
+    budgetFinalHits = 0;
+    const strategy = DomExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "dom",
+      allowedDomains: ["127.0.0.1"],
+      url: "{productUrl}",
+      selectors: fields,
+    });
+
+    const result = await executeDom(strategy, {
+      canonicalUrl: `${allowed.origin}/budget-hop-1`,
+      externalId: null,
+      sourceCategory: null,
+    }, { browser, maxBodyBytes: 10_000, maxRedirects: 1 });
+
+    expect(result.ok).toBe(false);
+    expect(budgetFinalHits).toBe(0);
+  });
+
+  it("cancels a timed-out extraction goto fetch before returning", async () => {
+    const strategy = ScriptStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        { op: "goto", url: "https://shop.test/pending", timeoutMs: 2_000 },
+        { op: "extract", source: "dom", selectors: fields },
+      ],
+    });
+    let active = 0;
+    let aborted = false;
+    const startedAt = Date.now();
+
+    const result = await executeRestrictedScript(strategy, {
+      canonicalUrl: "https://shop.test/product/1",
+      externalId: null,
+      sourceCategory: null,
+    }, {
+      browser,
+      totalTimeoutMs: 200,
+      fetch: async (_input, init) => {
+        active += 1;
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(init.signal?.reason);
+            }, { once: true });
+          });
+        } finally {
+          active -= 1;
+        }
+        throw new Error("unreachable");
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, failure: { category: "timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(aborted).toBe(true);
+    expect(active).toBe(0);
   });
 });
