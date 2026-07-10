@@ -44,7 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   return {
     projectRoot,
-    databasePath: resolve(projectRoot, configuredDatabasePath ?? "var/precos.sqlite"),
+    databasePath: resolve(projectRoot, configuredDatabasePath ?? "data/precos.sqlite"),
     timezone: "America/Sao_Paulo",
     pageConcurrency: integerInRange("PAGE_CONCURRENCY", env.PAGE_CONCURRENCY, 4, 3, 5),
     dailyPageCap: integerInRange("DAILY_PAGE_CAP", env.DAILY_PAGE_CAP, 2_000, 1, 2_000),

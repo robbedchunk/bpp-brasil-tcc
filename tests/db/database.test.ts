@@ -432,6 +432,7 @@ describe("configuration", () => {
       pageConcurrency: 4,
       dailyPageCap: 2_000,
     });
+    expect(defaults.databasePath).toBe(resolve(defaults.projectRoot, "data/precos.sqlite"));
 
     expect(
       loadConfig({
