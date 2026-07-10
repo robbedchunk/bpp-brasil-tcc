@@ -60,6 +60,90 @@ describe("process lock", () => {
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("serializes three contenders before any stale lock recovery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-contended-stale-lock-"));
+    directories.push(directory);
+    const path = join(directory, "daily.lock");
+    const stalePid = 90_000;
+    await writeFile(path, JSON.stringify({
+      version: 2,
+      pid: stalePid,
+      processIdentity: "boot-old:10",
+      startedAt: "2026-07-09T12:00:00.000Z",
+      token: "dead-owner",
+    }));
+
+    const initialized = Promise.withResolvers<void>();
+    let initializedCount = 0;
+    const allObservedStale = Promise.withResolvers<void>();
+    let staleObservationCount = 0;
+    const staleReleases = Array.from({ length: 3 }, () => Promise.withResolvers<void>());
+    const firstEntered = Promise.withResolvers<void>();
+    const secondEntered = Promise.withResolvers<void>();
+    const releaseOperations = Promise.withResolvers<void>();
+    const twoSettled = Promise.withResolvers<void>();
+    const entered: number[] = [];
+    let settledCount = 0;
+
+    const attempts = [101, 102, 103].map((pid, index) =>
+      withProcessLock(path, async () => {
+        entered.push(index);
+        if (entered.length === 1) firstEntered.resolve();
+        if (entered.length === 2) secondEntered.resolve();
+        await releaseOperations.promise;
+        return index;
+      }, {
+        pid,
+        getProcessIdentity: async (observedPid) => {
+          if (observedPid === pid) {
+            initializedCount += 1;
+            if (initializedCount === 3) initialized.resolve();
+            await initialized.promise;
+            return `boot-new:${pid}`;
+          }
+          if (observedPid === stalePid) {
+            staleObservationCount += 1;
+            if (staleObservationCount === 3) allObservedStale.resolve();
+            await staleReleases[index]!.promise;
+            return "boot-new:reused-stale-pid";
+          }
+          return `boot-new:${observedPid}`;
+        },
+      }).then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      ).finally(() => {
+        settledCount += 1;
+        if (settledCount === 2) twoSettled.resolve();
+      }),
+    );
+
+    await initialized.promise;
+    const acquisitionMode = await Promise.race([
+      allObservedStale.promise.then(() => "unguarded" as const),
+      twoSettled.promise.then(() => "serialized" as const),
+    ]);
+    if (acquisitionMode === "unguarded") {
+      staleReleases[0]!.resolve();
+      await firstEntered.promise;
+      staleReleases[1]!.resolve();
+      staleReleases[2]!.resolve();
+      await Promise.race([secondEntered.promise, twoSettled.promise]);
+    } else {
+      for (const release of staleReleases) release.resolve();
+      await firstEntered.promise;
+    }
+    releaseOperations.resolve();
+
+    const results = await Promise.all(attempts);
+    expect(acquisitionMode).toBe("serialized");
+    expect(staleObservationCount).toBe(1);
+    expect(entered).toHaveLength(1);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(2);
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("publishes a complete identity and recovers a reused PID", async () => {
     const directory = await mkdtemp(join(tmpdir(), "precos-reused-pid-lock-"));
     directories.push(directory);

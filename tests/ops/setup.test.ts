@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -57,6 +57,81 @@ function run(
 }
 
 describe("operations setup", () => {
+  it("does not publish or mark a migrated database whose backup fails integrity", async () => {
+    const directory = await temporaryDirectory("precos-corrupt-migration-");
+    const source = join(directory, "var", "precos.sqlite");
+    const destination = join(directory, "data", "precos.sqlite");
+    const fakeBin = join(directory, "bin");
+    await mkdir(dirname(source), { recursive: true });
+    await mkdir(fakeBin);
+    expect((await run("sqlite3", [
+      source,
+      "CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES ('preserve-me');",
+    ])).exitCode).toBe(0);
+
+    const sqliteWrapper = join(fakeBin, "sqlite3");
+    await writeFile(sqliteWrapper, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${2:-}" == .backup\\ * ]]; then
+  command="\$2"
+  target="\${command#.backup \\'}"
+  target="\${target%\\'}"
+  cp -- "\$1" "\$target"
+  printf 'corrupt-page' | dd of="\$target" bs=1 seek=100 conv=notrunc status=none
+  exit 0
+fi
+exec "\${REAL_SQLITE3:?}" "\$@"
+`);
+    await chmod(sqliteWrapper, 0o755);
+
+    const result = await run("bash", [
+      "-c",
+      'set -euo pipefail; source "$1"; migrate_legacy_database "$2" "$3"',
+      "bash",
+      "ops/lib.sh",
+      source,
+      destination,
+    ], {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      REAL_SQLITE3: "/usr/bin/sqlite3",
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/integrity/i);
+    expect(await readdir(dirname(destination))).toEqual([]);
+  });
+
+  it("keeps a populated legacy migration unchanged when setup repeats", async () => {
+    const directory = await temporaryDirectory("precos-repeat-migration-");
+    const source = join(directory, "var", "precos.sqlite");
+    const destination = join(directory, "data", "precos.sqlite");
+    await mkdir(dirname(source), { recursive: true });
+    expect((await run("sqlite3", [
+      source,
+      "CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES ('preserve-me');",
+    ])).exitCode).toBe(0);
+    const migrate = () => run("bash", [
+      "-c",
+      'set -euo pipefail; source "$1"; migrate_legacy_database "$2" "$3"',
+      "bash",
+      "ops/lib.sh",
+      source,
+      destination,
+    ]);
+
+    expect(await migrate()).toEqual({ exitCode: 0, stderr: "", stdout: "" });
+    const firstIdentity = `${(await stat(destination)).dev}:${(await stat(destination)).ino}`;
+    const firstMarker = await readFile(`${destination}.legacy-migration`, "utf8");
+
+    expect(await migrate()).toEqual({ exitCode: 0, stderr: "", stdout: "" });
+    const secondMetadata = await stat(destination);
+    expect(`${secondMetadata.dev}:${secondMetadata.ino}`).toBe(firstIdentity);
+    expect(await readFile(`${destination}.legacy-migration`, "utf8")).toBe(firstMarker);
+    expect((await run("sqlite3", [destination, "SELECT value FROM evidence;"])).stdout)
+      .toBe("preserve-me\n");
+  });
+
   it("renders a harmless status-only user timer with absolute runtime paths", async () => {
     const destination = await temporaryDirectory("precos-units-");
     const result = await run("bash", ["ops/install-status-timer.sh"], {

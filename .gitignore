@@ -12,6 +12,8 @@ coverage/
 var/
 replay/
 data/raw-html/
+data/*.sqlite.legacy-migration*
+data/*.sqlite.migration-*
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

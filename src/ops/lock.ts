@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, openSync } from "node:fs";
 import { link, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+
+import Database from "better-sqlite3";
 
 type ProcessIdentityReader = (pid: number) => Promise<string | null> | string | null;
 
@@ -41,6 +44,53 @@ const DEFAULT_LEGACY_STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
 class LockConflict extends Error {
   constructor(readonly observedText: string) {
     super("Lock path already exists");
+  }
+}
+
+function isSqliteContention(error: unknown): boolean {
+  return error instanceof Error
+    && "code" in error
+    && (error.code === "SQLITE_BUSY" || error.code === "SQLITE_LOCKED");
+}
+
+async function withAcquisitionLease<T>(
+  lockPath: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const leasePath = `${lockPath}.acquire-lease.sqlite`;
+  const descriptor = openSync(leasePath, "a", 0o600);
+  closeSync(descriptor);
+  chmodSync(leasePath, 0o600);
+
+  const lease = new Database(leasePath, { timeout: 0 });
+  let acquired = false;
+  try {
+    lease.pragma("busy_timeout = 0");
+    try {
+      // SQLite's write lease is atomic across processes and is released by the
+      // kernel if this process exits, so stale-lock recovery has one contender.
+      lease.exec("BEGIN IMMEDIATE");
+      acquired = true;
+    } catch (error) {
+      if (isSqliteContention(error)) throw new ProcessLockError(lockPath);
+      throw error;
+    }
+
+    try {
+      return await operation();
+    } finally {
+      lease.exec("ROLLBACK");
+      acquired = false;
+    }
+  } finally {
+    if (acquired) {
+      try {
+        lease.exec("ROLLBACK");
+      } catch {
+        // Closing the connection below is the final lease release guarantee.
+      }
+    }
+    lease.close();
   }
 }
 
@@ -232,14 +282,14 @@ export async function withProcessLock<T>(
   const record: LockRecord = processIdentity === null
     ? commonRecord
     : { version: 2, processIdentity, ...commonRecord };
-  await acquireLock(
+  await withAcquisitionLease(path, async () => acquireLock(
     path,
     `${JSON.stringify(record)}\n`,
     getProcessIdentity,
     options.isProcessAlive ?? processIsAlive,
     acquiredAt.getTime(),
     staleAfterMs,
-  );
+  ));
   try {
     return await operation();
   } finally {

@@ -81,8 +81,30 @@ migrate_legacy_database() {
   install -d -m 0700 "$(dirname "$destination")"
   local temporary_destination="${destination}.migration-$$-${RANDOM}"
   local escaped_temporary="${temporary_destination//\'/\'\'}"
-  sqlite3 "$source" ".backup '$escaped_temporary'"
-  chmod 0600 "$temporary_destination"
+  if ! sqlite3 "$source" ".backup '$escaped_temporary'"; then
+    rm -f -- "$temporary_destination"
+    printf 'database-migration: backup failed for legacy database %s.\n' "$source" >&2
+    return 1
+  fi
+  if ! chmod 0600 "$temporary_destination"; then
+    rm -f -- "$temporary_destination"
+    return 1
+  fi
+
+  local integrity
+  if ! integrity="$(sqlite3 "$temporary_destination" 'PRAGMA integrity_check;')"; then
+    rm -f -- "$temporary_destination"
+    printf 'database-migration: integrity check failed for legacy database copy %s.\n' \
+      "$source" >&2
+    return 1
+  fi
+  if [[ "$integrity" != "ok" ]]; then
+    rm -f -- "$temporary_destination"
+    printf 'database-migration: integrity check did not return ok for legacy database copy %s.\n' \
+      "$source" >&2
+    return 1
+  fi
+
   if ! ln -- "$temporary_destination" "$destination" 2>/dev/null; then
     rm -f -- "$temporary_destination"
     if [[ -e "$destination" ]]; then
