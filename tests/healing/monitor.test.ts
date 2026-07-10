@@ -4,6 +4,7 @@ import { openDatabase } from "../../src/db/database.js";
 import { beginHealingEvent } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
 import { healPendingEvents, healRetailer } from "../../src/healing/heal.js";
+import { ExplorationEvidenceError } from "../../src/explorer/explore.js";
 import { monitorRun } from "../../src/healing/monitor.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 
@@ -24,29 +25,39 @@ function insertRun(
   failures: Array<{ category: string; responded: boolean }>,
   ok = 0,
   status = "failed",
+  retailerId = "retailer-1",
 ): void {
+  const strategyId = `${retailerId}-extraction-v1`;
   const attempted = ok + failures.length;
   database.prepare(
     `INSERT INTO runs
        (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
         status, attempted, ok, failed, started_at, finished_at, metadata_json)
-     VALUES (?, 'retailer-1', 'collect', '2026-07-10',
-             'retailer-1-extraction-v1', 1, ?, ?, ?, ?,
+     VALUES (?, ?, 'collect', '2026-07-10',
+             ?, 1, ?, ?, ?, ?,
              '2026-07-10T00:00:00.000Z',
              CASE WHEN ? = 'running' THEN NULL ELSE '2026-07-10T00:01:00.000Z' END,
              ?)`,
-  ).run(id, status, attempted, ok, failures.length, status, JSON.stringify({
+  ).run(id, retailerId, strategyId, status, attempted, ok, failures.length, status, JSON.stringify({
     failureResponses: failures.map(({ responded }) => responded),
   }));
   const statement = database.prepare(
     `INSERT INTO run_failures
        (id, run_id, retailer_id, category, responded, message, strategy_id,
         strategy_version, occurred_at)
-     VALUES (?, ?, 'retailer-1', ?, ?, 'fixture failure',
-             'retailer-1-extraction-v1', 1, '2026-07-10T00:00:30.000Z')`,
+     VALUES (?, ?, ?, ?, ?, ?,
+             ?, 1, '2026-07-10T00:00:30.000Z')`,
   );
   failures.forEach((failure, index) => {
-    statement.run(`${id}-failure-${index}`, id, failure.category, failure.responded ? 1 : 0);
+    statement.run(
+      `${id}-failure-${index}`,
+      id,
+      retailerId,
+      failure.category,
+      failure.responded ? 1 : 0,
+      `${id} fixture failure`,
+      strategyId,
+    );
   });
 }
 
@@ -289,6 +300,32 @@ describe("drift monitor state machine", () => {
     ).get()).toEqual({ degraded: 0 });
   });
 
+  it("does not duplicate a specific budget-overrun alert with a pending alert", async () => {
+    const database = seed();
+    insertRun(database, "alerted-overrun", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const alerts: AlertEvent[] = [];
+
+    const outcome = await healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "alerted-overrun",
+      explore: async () => ({
+        explorationRunId: "alerted-exploration",
+        activated: false,
+        attempts: 1,
+        externalScore: null,
+        outcome: "budget_exhausted",
+        costUsd: 5.1,
+        alerted: true,
+      }),
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(outcome.status).toBe("deferred");
+    expect(alerts).toHaveLength(0);
+  });
+
   it("reclaims a stale open event after a crashed healing worker", async () => {
     const database = seed();
     insertRun(database, "stale-drift", [
@@ -349,10 +386,199 @@ describe("drift monitor state machine", () => {
       },
     });
 
-    expect(outcome).toMatchObject({ healingEventId: opened.event.id, status: "in_progress" });
+    expect(outcome).toMatchObject({ status: "in_progress" });
     expect(explorationCalls).toBe(0);
     expect(database.prepare("SELECT onset_run_id, status FROM healing_events").all())
-      .toEqual([{ onset_run_id: "drift-a", status: "open" }]);
+      .toEqual([
+        { onset_run_id: "drift-a", status: "open" },
+        { onset_run_id: "drift-b", status: "queued" },
+      ]);
+    expect(outcome.healingEventId).not.toBe(opened.event.id);
+  });
+
+  it("durably queues onset B behind A and processes both with their own evidence", async () => {
+    const database = seed();
+    insertRun(database, "queued-a", [{ category: "missing-fields", responded: true }]);
+    insertRun(database, "queued-b", [{ category: "parse", responded: true }]);
+    beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "queued-a",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+      queued: true,
+    });
+
+    const decision = await monitorRun("queued-b", {
+      database,
+      now: () => new Date("2026-07-10T00:01:00.000Z"),
+    });
+    expect(decision).toMatchObject({ action: "queued", healingEventId: expect.any(String) });
+    expect(database.prepare(
+      "SELECT onset_run_id, status FROM healing_events ORDER BY detected_at",
+    ).all()).toEqual([
+      { onset_run_id: "queued-a", status: "open" },
+      { onset_run_id: "queued-b", status: "queued" },
+    ]);
+
+    const evidence: string[] = [];
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async (_retailerId, _purpose, dependencies) => {
+        evidence.push(dependencies.failureSamples?.[0]?.message ?? "missing");
+        return {
+          explorationRunId: `failure-${evidence.length}`,
+          activated: false,
+          attempts: 1,
+          externalScore: 0.8,
+          outcome: "validation_failed",
+          costUsd: 0.1,
+        };
+      },
+    });
+
+    expect(summary).toMatchObject({ processed: 2, failed: 2 });
+    expect(evidence).toEqual([
+      "queued-a fixture failure",
+      "queued-b fixture failure",
+    ]);
+    expect(database.prepare(
+      "SELECT onset_run_id, status FROM healing_events ORDER BY detected_at",
+    ).all()).toEqual([
+      { onset_run_id: "queued-a", status: "failed" },
+      { onset_run_id: "queued-b", status: "failed" },
+    ]);
+  });
+
+  it("uses authoritative exploration evidence when an outer call throws", async () => {
+    const database = seed();
+    insertRun(database, "paid-throw", [{ category: "missing-fields", responded: true }]);
+    const authoritative = {
+      explorationRunId: "paid-exploration",
+      activated: false,
+      attempts: 2,
+      externalScore: 0.4,
+      outcome: "provider_failed" as const,
+      costUsd: 0.75,
+    };
+
+    const result = await healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "paid-throw",
+      explore: async () => {
+        throw new ExplorationEvidenceError("fixture outer failure", authoritative);
+      },
+    });
+
+    expect(result).toMatchObject({ attempts: 2, status: "failed", explorationRunId: "paid-exploration" });
+    const event = database.prepare(
+      "SELECT attempts, status, details_json FROM healing_events",
+    ).get() as { attempts: number; status: string; details_json: string };
+    expect(event).toMatchObject({ attempts: 2, status: "failed" });
+    expect(JSON.parse(event.details_json)).toMatchObject({
+      explorationRunId: "paid-exploration",
+      costUsd: 0.75,
+    });
+  });
+
+  it("never closes a healing event separately after its atomic terminal commit fails", async () => {
+    const database = seed();
+    insertRun(database, "atomic-terminal-throw", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const authoritative = {
+      explorationRunId: "atomic-terminal-exploration",
+      activated: false,
+      attempts: 1,
+      externalScore: 0.5,
+      outcome: "validation_failed" as const,
+      costUsd: 0.01,
+    };
+
+    await expect(healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "atomic-terminal-throw",
+      explore: async () => {
+        throw new ExplorationEvidenceError(
+          "atomic terminal transaction failed",
+          authoritative,
+          { terminalCommitFailed: true },
+        );
+      },
+    })).rejects.toMatchObject({
+      name: "ExplorationEvidenceError",
+      outcome: authoritative,
+    });
+    expect(database.prepare("SELECT status FROM healing_events").get())
+      .toEqual({ status: "open" });
+  });
+
+  it("isolates each pending retailer and persists a sanitized worker error", async () => {
+    const database = seed();
+    seedRetailer(database, "retailer-2");
+    seedStrategy(database, "extraction", extractionStrategy, "retailer-2");
+    insertRun(database, "isolation-1", [
+      { category: "missing-fields", responded: true },
+    ]);
+    insertRun(database, "isolation-2", [
+      { category: "missing-fields", responded: true },
+    ], 0, "failed", "retailer-2");
+    for (const [index, [retailerId, onsetRunId]] of [
+      ["retailer-1", "isolation-1"],
+      ["retailer-2", "isolation-2"],
+    ].entries()) {
+      beginHealingEvent(database, {
+        retailerId,
+        purpose: "extraction",
+        onsetRunId,
+        detectedAt: `2026-07-10T00:0${index}:00.000Z`,
+        queued: true,
+      });
+    }
+    let firstAlert = true;
+    const alerts: AlertEvent[] = [];
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async (retailerId) => ({
+        explorationRunId: `provider-${retailerId}`,
+        activated: false,
+        attempts: 1,
+        externalScore: null,
+        outcome: "provider_unavailable",
+        costUsd: 0,
+      }),
+      alertSink: {
+        send: async (event) => {
+          if (firstAlert) {
+            firstAlert = false;
+            throw new Error("Bearer should-not-persist");
+          }
+          alerts.push(event);
+        },
+      },
+    });
+
+    expect(summary).toMatchObject({
+      processed: 2,
+      providerUnavailable: 2,
+      workerErrors: 1,
+    });
+    expect(database.prepare(
+      "SELECT retailer_id, status FROM healing_events ORDER BY retailer_id",
+    ).all()).toEqual([
+      { retailer_id: "retailer-1", status: "provider_unavailable" },
+      { retailer_id: "retailer-2", status: "provider_unavailable" },
+    ]);
+    const firstDetails = database.prepare(
+      "SELECT details_json FROM healing_events WHERE retailer_id = 'retailer-1'",
+    ).get() as { details_json: string };
+    expect(JSON.parse(firstDetails.details_json)).toMatchObject({
+      workerError: expect.stringContaining("[REDACTED]"),
+    });
+    expect(firstDetails.details_json).not.toContain("should-not-persist");
+    expect(alerts.some(({ title }) => title === "Healing worker event failed")).toBe(true);
   });
 
   it("supersedes queued healing when the onset strategy is no longer active", async () => {

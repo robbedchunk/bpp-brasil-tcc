@@ -129,11 +129,17 @@ export interface ExplorationOutcome {
 
 export class ExplorationEvidenceError extends Error {
   readonly outcome: ExplorationOutcome;
+  readonly terminalCommitFailed: boolean;
 
-  constructor(message: string, outcome: ExplorationOutcome, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    outcome: ExplorationOutcome,
+    options?: ErrorOptions & { terminalCommitFailed?: boolean },
+  ) {
     super(message, options);
     this.name = "ExplorationEvidenceError";
     this.outcome = outcome;
+    this.terminalCommitFailed = options?.terminalCommitFailed === true;
   }
 }
 
@@ -752,6 +758,7 @@ export async function exploreRetailer(
           } catch (error) {
             throw new ExplorationEvidenceError(safeError(error), outcomeEvidence(), {
               cause: error,
+              terminalCommitFailed: true,
             });
           }
         }

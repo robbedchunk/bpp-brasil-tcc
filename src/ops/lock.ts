@@ -16,6 +16,8 @@ export interface ProcessLockOptions {
 }
 
 export class ProcessLockError extends Error {
+  readonly exitCode = 75;
+
   constructor(path: string) {
     super(`Process lock is already held: ${path}`);
     this.name = "ProcessLockError";

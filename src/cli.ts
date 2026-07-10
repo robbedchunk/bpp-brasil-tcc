@@ -47,7 +47,7 @@ import {
   checkHeartbeat,
   latestSuccessfulHeartbeat,
 } from "./ops/heartbeat.js";
-import { withProcessLock } from "./ops/lock.js";
+import { ProcessLockError, withProcessLock } from "./ops/lock.js";
 import { BudgetGuard } from "./ops/budget.js";
 import {
   CodexStrategyGenerator,
@@ -156,6 +156,18 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   const databasePath = (): string =>
     dependencies.databasePath ?? loadConfig(dependencies.env).databasePath;
   const config = () => loadConfig(dependencies.env);
+  const pipelineLockPath = (): string =>
+    dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock");
+  const explorerLockPath = (): string =>
+    dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-explorer.lock");
+  const withHealingLocks = async <T>(operation: () => Promise<T>): Promise<T> => {
+    const pipelinePath = pipelineLockPath();
+    const explorerPath = explorerLockPath();
+    return withProcessLock(pipelinePath, () =>
+      pipelinePath === explorerPath
+        ? operation()
+        : withProcessLock(explorerPath, operation));
+  };
   const retailerOptions = (retailerId: string): { politeDelayMs?: { min: number; max: number } } => {
     const retailer = loadRetailerConfigs(resolve(config().projectRoot, "retailers"))
       .find(({ id }) => id === retailerId);
@@ -315,7 +327,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         || outcome.outcome === "budget_paused"
         || outcome.outcome === "budget_exhausted"
         || outcome.outcome === "provider_failed"
-      )) {
+        || outcome.outcome === "unauditable_spend"
+      ) && outcome.alerted !== true) {
         const sink = dependencies.alertSink ?? createAlertSink({
           ...(applicationConfig.ntfyTopic === undefined
             ? {}
@@ -344,22 +357,15 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   command
     .command("heal")
-    .description("Regenerate a drifted strategy through trusted exploration")
+    .description("Regenerate a drifted extraction strategy through trusted exploration")
     .option("--retailer <id>", "registered retailer ID or pending-event filter")
     .option("--run <id>", "terminal collection run that detected drift")
     .option("--pending", "process queued healing events")
-    .option(
-      "--purpose <purpose>",
-      "strategy purpose: discovery or extraction",
-      strategyPurpose,
-      "extraction",
-    )
     .option("--json", "emit only JSON")
     .action(async (options: {
       retailer?: string;
       run?: string;
       pending?: boolean;
-      purpose: StrategyPurpose;
       json?: boolean;
     }) => {
       if (options.pending === true && options.run !== undefined) {
@@ -383,8 +389,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
         now,
       });
-      const outcome: HealingOutcome | HealingWorkerSummary = await withProcessLock(
-        dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-explorer.lock"),
+      const outcome: HealingOutcome | HealingWorkerSummary = await withHealingLocks(
         () => withDatabase<HealingOutcome | HealingWorkerSummary>((database) => {
           if (options.pending === true) {
             return (dependencies.healPendingEvents ?? runHealPendingEvents)({
@@ -404,7 +409,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           }
           return (dependencies.healRetailer ?? runHealRetailer)(
             retailerId,
-            options.purpose,
+            "extraction",
             {
               database,
               onsetRunId,
@@ -420,7 +425,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         ? `${JSON.stringify(outcome)}\n`
         : options.pending === true
           ? `heal pending: ${(outcome as HealingWorkerSummary).processed} event(s) processed\n`
-          : `heal ${options.retailer}/${options.purpose}: ${(outcome as HealingOutcome).status}; ${(outcome as HealingOutcome).attempts} attempt(s)\n`);
+          : `heal ${options.retailer}/extraction: ${(outcome as HealingOutcome).status}; ${(outcome as HealingOutcome).attempts} attempt(s)\n`);
     });
 
   const classificationVersion = (value: string): number => {
@@ -655,7 +660,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         now,
       });
       const result = await withProcessLock(
-        dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-pipeline.lock"),
+        pipelineLockPath(),
         () => withDatabase((database) => runDaily({
           database,
           limit: Math.min(options.limit ?? applicationConfig.dailyPageCap, 2_000),
@@ -746,6 +751,6 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`precos: ${message}\n`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof ProcessLockError ? error.exitCode : 1;
   }
 }

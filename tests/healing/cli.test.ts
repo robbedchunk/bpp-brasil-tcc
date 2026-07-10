@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,10 +8,16 @@ import { buildCli, type CliDependencies } from "../../src/cli.js";
 import { openDatabase } from "../../src/db/database.js";
 import { beginHealingEvent } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
+import { withProcessLock } from "../../src/ops/lock.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
-afterEach(() => databases.splice(0).forEach((database) => database.close()));
+const directories: string[] = [];
+afterEach(async () => {
+  databases.splice(0).forEach((database) => database.close());
+  await Promise.all(directories.splice(0).map((directory) =>
+    rm(directory, { recursive: true, force: true })));
+});
 
 function seedDrift() {
   const database = openDatabase(":memory:");
@@ -39,12 +46,15 @@ function seedDrift() {
 async function invoke(
   arguments_: string[],
   dependencies: CliDependencies,
+  useDefaultLock = false,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   let stdout = "";
   let stderr = "";
   const cli = buildCli({
     ...dependencies,
-    lockPath: dependencies.lockPath ?? join(tmpdir(), `healing-cli-${randomUUID()}.lock`),
+    ...(useDefaultLock
+      ? {}
+      : { lockPath: dependencies.lockPath ?? join(tmpdir(), `healing-cli-${randomUUID()}.lock`) }),
     stdout: (value) => { stdout += value; },
     stderr: (value) => { stderr += value; },
   });
@@ -64,6 +74,66 @@ async function invoke(
 }
 
 describe("heal CLI", () => {
+  it("defers behind the real daily lock with TEMPFAIL and succeeds on retry", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "healing-shared-lock-"));
+    directories.push(projectRoot);
+    const pipelineLock = join(projectRoot, "var", "precos-pipeline.lock");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const owner = withProcessLock(pipelineLock, async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    let workerCalls = 0;
+    const database = seedDrift();
+    const dependencies: CliDependencies = {
+      database,
+      env: { PROJECT_ROOT: projectRoot },
+      healPendingEvents: async () => {
+        workerCalls += 1;
+        return {
+          queued: 0,
+          processed: 0,
+          recovered: 0,
+          failed: 0,
+          deferred: 0,
+          providerUnavailable: 0,
+          superseded: 0,
+          inProgress: 0,
+          workerErrors: 0,
+        };
+      },
+    };
+
+    const blocked = await invoke(["heal", "--pending", "--json"], dependencies, true);
+    expect(blocked.exitCode).toBe(75);
+    expect(workerCalls).toBe(0);
+
+    release.resolve();
+    await owner;
+    const retried = await invoke(["heal", "--pending", "--json"], dependencies, true);
+    expect(retried.exitCode).toBe(0);
+    expect(workerCalls).toBe(1);
+  });
+
+  it("documents extraction-only healing and rejects the discovery option", async () => {
+    const cli = buildCli();
+    const heal = cli.commands.find((command) => command.name() === "heal");
+    expect(heal?.helpInformation()).toContain("extraction");
+    expect(heal?.helpInformation()).not.toContain("--purpose");
+
+    const result = await invoke([
+      "heal",
+      "--retailer",
+      "retailer-1",
+      "--purpose",
+      "discovery",
+    ], { database: seedDrift() });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/unknown option.*--purpose/iu);
+  });
+
   it("records provider-unavailable attempt/event/alert evidence without retiring active strategy", async () => {
     const database = seedDrift();
     const alerts: AlertEvent[] = [];

@@ -803,7 +803,6 @@ export function beginHealingEvent(
       input.retailerId,
       input.purpose,
     );
-    if (open !== null) return { event: open, created: false };
     const run = database.prepare(
       `SELECT runs.started_at, runs.strategy_id, strategies.tier,
               strategies.purpose
@@ -826,17 +825,21 @@ export function beginHealingEvent(
          (id, retailer_id, purpose, onset_run_id, previous_strategy_id,
           category, status, attempts, tier_from, drift_started_at,
           detected_at, details_json)
-       VALUES (?, ?, ?, ?, ?, 'drift', 'open', 0, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, 'drift', ?, 0, ?, ?, ?, ?)`,
     ).run(
       id,
       input.retailerId,
       input.purpose,
       input.onsetRunId,
       run.strategy_id,
+      open === null ? "open" : "queued",
       run.tier,
       run.started_at,
       input.detectedAt,
-      JSON.stringify({ leaseStartedAt: input.queued === true ? null : input.detectedAt }),
+      JSON.stringify({
+        leaseStartedAt: open !== null || input.queued === true ? null : input.detectedAt,
+        ...(open === null ? {} : { blockedByHealingEventId: open.id }),
+      }),
     );
     const event = findHealingEvent(database, "id = ?", id);
     if (event === null) throw new Error("Healing event insert was not visible");
@@ -845,13 +848,13 @@ export function beginHealingEvent(
   return begin.immediate();
 }
 
-export function listOpenHealingEvents(
+export function listPendingHealingEvents(
   database: Database.Database,
   retailerId?: string,
 ): HealingEventRecord[] {
   const predicate = retailerId === undefined
-    ? "status = 'open'"
-    : "status = 'open' AND retailer_id = ?";
+    ? "status IN ('open', 'queued')"
+    : "status IN ('open', 'queued') AND retailer_id = ?";
   const rows = database.prepare(
     `SELECT id, retailer_id, purpose, onset_run_id, previous_strategy_id,
             successor_strategy_id, status, attempts, tier_from, tier_to,
@@ -862,6 +865,55 @@ export function listOpenHealingEvents(
     Parameters<typeof healingEventFromRow>[0]
   >;
   return rows.map(healingEventFromRow);
+}
+
+export function promoteQueuedHealingEvent(
+  database: Database.Database,
+  healingEventId: string,
+): boolean {
+  const promote = database.transaction(() => {
+    const event = findHealingEvent(database, "id = ?", healingEventId);
+    if (event === null) throw new Error(`Healing event ${healingEventId} was not found`);
+    if (event.status === "open") return true;
+    if (event.status !== "queued") return false;
+    const open = findHealingEvent(
+      database,
+      "retailer_id = ? AND purpose = ? AND status = 'open'",
+      event.retailerId,
+      event.purpose,
+    );
+    if (open !== null) return false;
+    const result = database.prepare(
+      `UPDATE healing_events
+       SET status = 'open',
+           details_json = json_set(details_json, '$.leaseStartedAt', NULL)
+       WHERE id = ? AND status = 'queued'`,
+    ).run(healingEventId);
+    return result.changes === 1;
+  });
+  return promote.immediate();
+}
+
+export function findHealingEventById(
+  database: Database.Database,
+  healingEventId: string,
+): HealingEventRecord | null {
+  return findHealingEvent(database, "id = ?", healingEventId);
+}
+
+export function recordHealingWorkerError(
+  database: Database.Database,
+  healingEventId: string,
+  errorMessage: string,
+): void {
+  const result = database.prepare(
+    `UPDATE healing_events
+     SET details_json = json_set(details_json, '$.workerError', ?)
+     WHERE id = ?`,
+  ).run(errorMessage, healingEventId);
+  if (result.changes !== 1) {
+    throw new Error(`Healing event ${healingEventId} was not found`);
+  }
 }
 
 export function claimStaleHealingEvent(

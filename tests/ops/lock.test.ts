@@ -34,8 +34,11 @@ describe("process lock", () => {
     await expect(withProcessLock(path, async () => "second", {
       pid: 456,
       getProcessIdentity: async (pid) => pid === process.pid ? "boot-a:10" : "boot-a:20",
-    }))
-      .rejects.toThrow(/already held/i);
+    })).rejects.toMatchObject({
+      name: "ProcessLockError",
+      exitCode: 75,
+      message: expect.stringMatching(/already held/i),
+    });
     expect((await stat(path)).isFile()).toBe(true);
     release();
     await expect(first).resolves.toBe("done");

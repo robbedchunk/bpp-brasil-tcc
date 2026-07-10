@@ -117,4 +117,31 @@ describe("explore CLI", () => {
     expect(result.exitCode).toBe(0);
     expect(receivedGenerator).toBe(generator);
   });
+
+  it("does not duplicate a specific exploration safety alert", async () => {
+    const database = databaseFixture();
+    const alerts: AlertEvent[] = [];
+
+    const result = await invoke([
+      "explore",
+      "--retailer",
+      "retailer-1",
+      "--json",
+    ], {
+      database,
+      alertSink: { send: async (event) => { alerts.push(event); } },
+      exploreRetailer: async () => ({
+        explorationRunId: "overrun",
+        activated: false,
+        attempts: 1,
+        externalScore: null,
+        outcome: "budget_exhausted",
+        costUsd: 5.1,
+        alerted: true,
+      }),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(alerts).toHaveLength(0);
+  });
 });

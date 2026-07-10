@@ -338,13 +338,16 @@ export class CodexStrategyGenerator implements StrategyGenerator {
       let finalResponse = "";
       let completedUsage: CodexUsageLike | null = null;
       let streamError: string | undefined;
+      let turnStarted = false;
       try {
         const streamed = await thread.runStreamed(request.prompt, {
           outputSchema: STRATEGY_OUTPUT_SCHEMA,
           signal: controller.signal,
         });
         for await (const event of streamed.events) {
-          if (event.type === "item.completed") {
+          if (event.type === "turn.started") {
+            turnStarted = true;
+          } else if (event.type === "item.completed") {
             if (event.item.type === "agent_message" && typeof event.item.text === "string") {
               finalResponse = event.item.text;
             }
@@ -368,8 +371,8 @@ export class CodexStrategyGenerator implements StrategyGenerator {
           model: this.#model,
           usage,
           error: streamError === undefined
-            ? "Codex turn completed without auditable token usage"
-            : `Codex spend is unauditable: ${streamError}`,
+            ? `${turnStarted ? "Started Codex turn" : "Codex stream"} completed without auditable token usage`
+            : `Codex spend is unauditable${turnStarted ? " after turn start" : ""}: ${streamError}`,
         };
       }
       if (streamError !== undefined) {

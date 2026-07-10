@@ -4,9 +4,12 @@ import {
   beginHealingEvent,
   claimStaleHealingEvent,
   consecutiveFailedHealingEvents,
+  findHealingEventById,
   findRunHealthEvidence,
   finishHealingEvent,
-  listOpenHealingEvents,
+  listPendingHealingEvents,
+  promoteQueuedHealingEvent,
+  recordHealingWorkerError,
   setRetailerDegraded,
 } from "../db/repositories.js";
 import {
@@ -79,6 +82,7 @@ export interface HealingWorkerSummary {
   providerUnavailable: number;
   superseded: number;
   inProgress: number;
+  workerErrors: number;
 }
 
 function isDegraded(database: Database.Database, retailerId: string): boolean {
@@ -108,8 +112,26 @@ export async function healRetailer(
     onsetRunId: dependencies.onsetRunId,
     detectedAt: now().toISOString(),
   });
+  if (opened.created && opened.event.status === "queued") {
+    return {
+      healingEventId: opened.event.id,
+      status: "in_progress",
+      attempts: 0,
+      activated: false,
+      degraded: isDegraded(dependencies.database, retailerId),
+    };
+  }
   if (!opened.created) {
     if (opened.event.onsetRunId !== dependencies.onsetRunId) {
+      return {
+        healingEventId: opened.event.id,
+        status: "in_progress",
+        attempts: opened.event.attempts,
+        activated: false,
+        degraded: isDegraded(dependencies.database, retailerId),
+      };
+    }
+    if (opened.event.status === "queued") {
       return {
         healingEventId: opened.event.id,
         status: "in_progress",
@@ -225,6 +247,9 @@ export async function healRetailer(
       },
     );
   } catch (error) {
+    if (error instanceof ExplorationEvidenceError && error.terminalCommitFailed) {
+      throw error;
+    }
     explorationError = redactSandboxText(
       error instanceof Error ? error.message : String(error) || "Unknown error",
     );
@@ -293,7 +318,7 @@ export async function healRetailer(
         details: { retailerId, purpose, consecutiveEvents: consecutive },
       });
     }
-  } else {
+  } else if (exploration.alerted !== true) {
     await dependencies.alertSink?.send({
       severity: "warning",
       title: "Retailer strategy healing pending",
@@ -323,7 +348,7 @@ export async function healRetailer(
 export async function healPendingEvents(
   dependencies: HealPendingEventsDependencies,
 ): Promise<HealingWorkerSummary> {
-  const events = listOpenHealingEvents(dependencies.database, dependencies.retailerId);
+  const events = listPendingHealingEvents(dependencies.database, dependencies.retailerId);
   const summary: HealingWorkerSummary = {
     queued: events.length,
     processed: 0,
@@ -333,50 +358,117 @@ export async function healPendingEvents(
     providerUnavailable: 0,
     superseded: 0,
     inProgress: 0,
+    workerErrors: 0,
+  };
+  const countOutcome = (status: HealingStatus): void => {
+    if (status === "in_progress") summary.inProgress += 1;
+    else {
+      summary.processed += 1;
+      if (status === "recovered") summary.recovered += 1;
+      else if (status === "provider_unavailable") summary.providerUnavailable += 1;
+      else if (status === "deferred") summary.deferred += 1;
+      else if (status === "superseded") summary.superseded += 1;
+      else summary.failed += 1;
+    }
   };
   for (const event of events) {
-    if (event.onsetRunId === null) {
-      finishHealingEvent(dependencies.database, {
-        healingEventId: event.id,
-        status: "superseded",
-        attempts: event.attempts,
-        finishedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-        details: { reason: "queued event has no onset run" },
+    try {
+      if (event.status === "queued" && !promoteQueuedHealingEvent(
+        dependencies.database,
+        event.id,
+      )) {
+        countOutcome("in_progress");
+        continue;
+      }
+      if (event.onsetRunId === null) {
+        finishHealingEvent(dependencies.database, {
+          healingEventId: event.id,
+          status: "superseded",
+          attempts: event.attempts,
+          finishedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+          details: { reason: "queued event has no onset run" },
+        });
+        countOutcome("superseded");
+        continue;
+      }
+      const outcome = await healRetailer(event.retailerId, event.purpose, {
+        database: dependencies.database,
+        onsetRunId: event.onsetRunId,
+        ...(dependencies.generator === undefined ? {} : { generator: dependencies.generator }),
+        ...(dependencies.execute === undefined ? {} : { execute: dependencies.execute }),
+        ...(dependencies.explore === undefined ? {} : { explore: dependencies.explore }),
+        ...(dependencies.alertSink === undefined ? {} : { alertSink: dependencies.alertSink }),
+        ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+        ...(dependencies.maxAttempts === undefined ? {} : { maxAttempts: dependencies.maxAttempts }),
+        ...(dependencies.eventBudgetUsd === undefined
+          ? {}
+          : { eventBudgetUsd: dependencies.eventBudgetUsd }),
+        ...(dependencies.monthlyBudgetUsd === undefined
+          ? {}
+          : { monthlyBudgetUsd: dependencies.monthlyBudgetUsd }),
+        ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+        ...(dependencies.openEventLeaseMs === undefined
+          ? {}
+          : { openEventLeaseMs: dependencies.openEventLeaseMs }),
       });
-      summary.processed += 1;
-      summary.superseded += 1;
-      continue;
+      countOutcome(outcome.status);
+    } catch (error) {
+      summary.workerErrors += 1;
+      const message = redactSandboxText(
+        error instanceof Error ? error.message : String(error) || "Unknown worker error",
+      ).slice(0, 2_000);
+      try {
+        recordHealingWorkerError(dependencies.database, event.id, message);
+      } catch {
+        // Continue to later retailers even if this event's evidence store is unavailable.
+      }
+      let current = null;
+      try {
+        current = findHealingEventById(dependencies.database, event.id);
+      } catch {
+        // Continue and count the isolated failure even if this evidence read fails.
+      }
+      if (current?.status === "open") {
+        try {
+          finishHealingEvent(dependencies.database, {
+            healingEventId: event.id,
+            status: "failed",
+            attempts: current.attempts,
+            finishedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+            details: { workerError: message },
+          });
+        } catch {
+          // The worker error count remains truthful even if lifecycle storage fails.
+        }
+      }
+      let completed = null;
+      try {
+        completed = findHealingEventById(dependencies.database, event.id);
+      } catch {
+        // The isolated failure is counted below and later retailers still run.
+      }
+      countOutcome(
+        completed?.status === "recovered"
+          ? "recovered"
+          : completed?.status === "provider_unavailable"
+            ? "provider_unavailable"
+            : completed?.status === "deferred"
+              ? "deferred"
+              : completed?.status === "superseded"
+                ? "superseded"
+                : "failed",
+      );
+      try {
+        await dependencies.alertSink?.send({
+          severity: "error",
+          title: "Healing worker event failed",
+          message: "One queued healing event failed in isolation; later retailers continued",
+          details: { healingEventId: event.id, retailerId: event.retailerId, error: message },
+        });
+      } catch {
+        // Persisted evidence and later retailer processing take precedence.
+      }
     }
-    const outcome = await healRetailer(event.retailerId, event.purpose, {
-      database: dependencies.database,
-      onsetRunId: event.onsetRunId,
-      ...(dependencies.generator === undefined ? {} : { generator: dependencies.generator }),
-      ...(dependencies.execute === undefined ? {} : { execute: dependencies.execute }),
-      ...(dependencies.explore === undefined ? {} : { explore: dependencies.explore }),
-      ...(dependencies.alertSink === undefined ? {} : { alertSink: dependencies.alertSink }),
-      ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
-      ...(dependencies.maxAttempts === undefined ? {} : { maxAttempts: dependencies.maxAttempts }),
-      ...(dependencies.eventBudgetUsd === undefined
-        ? {}
-        : { eventBudgetUsd: dependencies.eventBudgetUsd }),
-      ...(dependencies.monthlyBudgetUsd === undefined
-        ? {}
-        : { monthlyBudgetUsd: dependencies.monthlyBudgetUsd }),
-      ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
-      ...(dependencies.openEventLeaseMs === undefined
-        ? {}
-        : { openEventLeaseMs: dependencies.openEventLeaseMs }),
-    });
-    if (outcome.status === "in_progress") {
-      summary.inProgress += 1;
-      continue;
-    }
-    summary.processed += 1;
-    if (outcome.status === "recovered") summary.recovered += 1;
-    else if (outcome.status === "provider_unavailable") summary.providerUnavailable += 1;
-    else if (outcome.status === "deferred") summary.deferred += 1;
-    else if (outcome.status === "superseded") summary.superseded += 1;
-    else summary.failed += 1;
   }
   return summary;
 }

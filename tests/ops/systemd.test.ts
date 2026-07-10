@@ -76,6 +76,10 @@ describe("production schedules", () => {
     expect(healingService).toContain(
       `ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" heal --pending --json`,
     );
+    expect(healingService).toContain("After=network-online.target precos-daily.service");
+    expect(healingService).toContain("RestartForceExitStatus=TEMPFAIL");
+    expect(healingService).toContain("RestartSec=5m");
+    expect(healingService).toContain("StartLimitIntervalSec=0");
     const healingTimer = await readFile(join(destination, "precos-healing.timer"), "utf8");
     expect(healingTimer).toContain("After=precos-daily.timer");
     expect(healingTimer).toContain("OnCalendar=*-*-* 03:30:00 America/Sao_Paulo");
