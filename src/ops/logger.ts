@@ -4,18 +4,54 @@ import { join } from "node:path";
 const SECRET_KEY =
   /(?:api[_-]?key|authorization|cookie|credential|ntfy[_-]?topic|password|private[_-]?key|secret|session[_-]?id|token)/iu;
 
+const SECRET_LABEL =
+  String.raw`[\p{L}\p{N}_-]*(?:api[_-]?key|authorization|cookie|credential|ntfy[_-]?topic|password|private[_-]?key|secret|session[_-]?id|token)[\p{L}\p{N}_-]*`;
+const SECRET_ASSIGNMENT = new RegExp(
+  `(${SECRET_LABEL}\\s*(?:=|:)\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s,;&}\\]]+)`,
+  "giu",
+);
+const SECRET_HEADER =
+  /\b(authorization|proxy-authorization|cookie|set-cookie)\s*:\s*[^\r\n]*/giu;
+const AUTHORIZATION_SCHEME = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/giu;
+const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/)([^:/\s]+):([^@/\s]+)@/giu;
+const OPENAI_TOKEN = /\bsk-(?:proj-)?[A-Za-z0-9_-]{8,}\b/gu;
+const JWT = /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu;
+const PRIVATE_KEY =
+  /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gu;
+
+function redactString(value: string): string {
+  let sanitized = value;
+  for (const [key, secret] of Object.entries(process.env)) {
+    if (SECRET_KEY.test(key) && secret !== undefined && secret.length > 0) {
+      sanitized = sanitized.replaceAll(secret, "[REDACTED]");
+    }
+  }
+  return sanitized
+    .replace(PRIVATE_KEY, "[REDACTED]")
+    .replace(SECRET_HEADER, "$1: [REDACTED]")
+    .replace(AUTHORIZATION_SCHEME, "$1 [REDACTED]")
+    .replace(URL_CREDENTIALS, "$1[REDACTED]@")
+    .replace(SECRET_ASSIGNMENT, "$1[REDACTED]")
+    .replace(OPENAI_TOKEN, "[REDACTED]")
+    .replace(JWT, "[REDACTED]");
+}
+
 function redactValue(value: unknown, seen: WeakSet<object>): unknown {
-  if (value === null || typeof value === "string" || typeof value === "number"
-    || typeof value === "boolean") {
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
     return value;
   }
+  if (typeof value === "string") return redactString(value);
   if (typeof value === "bigint") return value.toString();
   if (typeof value === "undefined") return null;
   if (value instanceof Date) return value.toISOString();
   if (value instanceof Error) {
-    return { name: value.name, message: value.message, stack: value.stack ?? null };
+    return {
+      name: redactString(value.name),
+      message: redactString(value.message),
+      stack: value.stack === undefined ? null : redactString(value.stack),
+    };
   }
-  if (typeof value !== "object") return String(value);
+  if (typeof value !== "object") return redactString(String(value));
   if (seen.has(value)) return "[CIRCULAR]";
   seen.add(value);
 
@@ -86,7 +122,7 @@ export class JsonlLogger {
       const line = `${JSON.stringify({
         timestamp: timestamp.toISOString(),
         level,
-        event,
+        event: redactString(event),
         fields: redact(fields),
       })}\n`;
       await mkdir(this.#directory, { recursive: true, mode: 0o700 });

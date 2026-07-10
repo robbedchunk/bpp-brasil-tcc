@@ -1,7 +1,16 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import {
+  cp,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -60,12 +69,9 @@ describe("production schedules", () => {
 
     const service = await readFile(join(destination, "precos-daily.service"), "utf8");
     expect(service).toContain(`WorkingDirectory=${projectRoot}`);
-    expect(service).toContain(`ExecStart=${process.execPath} ${projectRoot}/dist/cli.js daily --json`);
+    expect(service).toContain(`ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" daily --json`);
     expect(service).toContain("Environment=TZ=America/Sao_Paulo");
-    const expectedEnv = projectRoot.startsWith(`${process.env.HOME}/`)
-      ? `%h/${relative(process.env.HOME ?? "", projectRoot)}/.env`
-      : `${projectRoot}/.env`;
-    expect(service).toContain(`EnvironmentFile=-${expectedEnv}`);
+    expect(service).toContain(`EnvironmentFile=-${projectRoot}/.env`);
   });
 
   it("does not write the default user unit directory during a dry run", async () => {
@@ -80,10 +86,81 @@ describe("production schedules", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("quotes paths containing systemd syntax characters", async () => {
+    const directory = await temporaryDirectory("precos-systemd-special-");
+    const copiedRoot = join(directory, 'project % $ "quoted" \\ path');
+    const destination = join(directory, "rendered units");
+    const home = join(directory, 'home % $ "quoted" \\ path');
+    await mkdir(copiedRoot, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await cp(join(projectRoot, "ops"), join(copiedRoot, "ops"), { recursive: true });
+
+    const result = await run("bash", [join(copiedRoot, "ops", "install-systemd.sh"), "--dry-run"], {
+      ...process.env,
+      HOME: home,
+      SYSTEMD_UNIT_DIR: destination,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ exitCode: 0, stderr: "" }));
+    const quote = (value: string, escapeDollar = false): string => `"${value
+      .replaceAll("\\", "\\\\")
+      .replaceAll('"', '\\"')
+      .replaceAll("%", "%%")
+      .replaceAll("$", () => escapeDollar ? "$$" : "$")}"`;
+    const systemdPath = (value: string): string => [...value].map((character) => {
+      if (/^[A-Za-z0-9/_.:+-]$/u.test(character)) return character;
+      if (character === "%") return "%%";
+      return [...Buffer.from(character)]
+        .map((byte) => `\\x${byte.toString(16).padStart(2, "0")}`)
+        .join("");
+    }).join("");
+    const service = await readFile(join(destination, "precos-daily.service"), "utf8");
+    expect(service).toContain(`WorkingDirectory=${systemdPath(copiedRoot)}`);
+    expect(service).toContain(
+      `ExecStart=${quote(process.execPath, true)} ${quote(join(copiedRoot, "dist", "cli.js"), true)} daily --json`,
+    );
+    expect(service).toContain(`EnvironmentFile=-${systemdPath(join(copiedRoot, ".env"))}`);
+    expect(service).toContain(
+      `Environment=${quote(`PATH=${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`)}`,
+    );
+
+    const units = ["daily", "weekly-discovery", "heartbeat", "backup"]
+      .flatMap((name) => ["service", "timer"].map((suffix) =>
+        join(destination, `precos-${name}.${suffix}`)));
+    const verification = await run("systemd-analyze", ["verify", ...units], process.env);
+    expect(verification.exitCode, verification.stderr).toBe(0);
+  });
+
   it("backs up and integrity-checks a disposable database", async () => {
     const result = await run("bash", ["ops/backup.sh", "--self-test"]);
 
     expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "backup: self-test ok\n" });
+  });
+
+  it("deletes backups immediately after the exact 14-day retention boundary", async () => {
+    const directory = await temporaryDirectory("precos-backup-retention-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    await mkdir(backups, { recursive: true });
+    expect((await run("sqlite3", [database, "CREATE TABLE evidence(value TEXT);"])).exitCode).toBe(0);
+    const expired = join(backups, "precos-expired.sqlite");
+    const retained = join(backups, "precos-retained.sqlite");
+    await writeFile(expired, "expired");
+    await writeFile(retained, "retained");
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1_000;
+    await utimes(expired, new Date(now - 15 * day), new Date(now - 14 * day - 60 * 60 * 1_000));
+    await utimes(retained, new Date(now - 13 * day), new Date(now - 14 * day + 60 * 60 * 1_000));
+
+    const result = await run("bash", ["ops/backup.sh"], {
+      ...process.env,
+      DATABASE_PATH: database,
+      BACKUP_DIRECTORY: backups,
+    });
+
+    expect(result.exitCode).toBe(0);
+    await expect(stat(expired)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(retained, "utf8")).resolves.toBe("retained");
   });
 
   it("copies an empty legacy database but refuses to overwrite a populated destination", async () => {
@@ -131,5 +208,32 @@ describe("production schedules", () => {
     expect((await run("stat", ["-c", "%a", destination])).stdout).toBe("600\n");
     expect((await run("sqlite3", [source, "SELECT version FROM schema_migrations"])).stdout)
       .toBe("1\n");
+  });
+
+  it("repeats a populated legacy migration without overwriting later destination data", async () => {
+    const directory = await temporaryDirectory("precos-repeat-migrate-");
+    const source = join(directory, "var", "precos.sqlite");
+    const destination = join(directory, "data", "precos.sqlite");
+    await mkdir(dirname(source), { recursive: true });
+    expect((await run("sqlite3", [
+      source,
+      "CREATE TABLE evidence(value TEXT); INSERT INTO evidence VALUES ('legacy');",
+    ])).exitCode).toBe(0);
+    const migrate = () => run("bash", [
+      "-c",
+      'source ops/lib.sh; migrate_legacy_database "$1" "$2"',
+      "bash",
+      source,
+      destination,
+    ]);
+
+    expect(await migrate()).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect((await run("sqlite3", [destination, "INSERT INTO evidence VALUES ('new');"])).exitCode)
+      .toBe(0);
+    expect(await migrate()).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    expect((await run("sqlite3", [destination, "SELECT value FROM evidence ORDER BY rowid;"])).stdout)
+      .toBe("legacy\nnew\n");
+    expect((await run("sqlite3", [source, "SELECT value FROM evidence;"])).stdout)
+      .toBe("legacy\n");
   });
 });

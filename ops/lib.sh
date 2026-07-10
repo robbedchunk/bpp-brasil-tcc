@@ -32,13 +32,45 @@ database_has_evidence() {
   return 1
 }
 
+database_fingerprint() {
+  sqlite3 "$1" '.sha3sum --schema'
+}
+
+database_file_identity() {
+  stat -Lc '%d:%i' "$1"
+}
+
+write_legacy_migration_marker() {
+  local marker="$1"
+  local source_fingerprint="$2"
+  local destination_identity="$3"
+  local temporary_marker="${marker}.tmp-$$-${RANDOM}"
+  (umask 077; printf '%s %s\n' "$source_fingerprint" "$destination_identity" > "$temporary_marker")
+  chmod 0600 "$temporary_marker"
+  mv -f -- "$temporary_marker" "$marker"
+}
+
 migrate_legacy_database() {
   local source="$1"
   local destination="$2"
+  local marker="${destination}.legacy-migration"
 
   [[ -e "$source" ]] || return 0
   if [[ -e "$destination" ]]; then
     if database_has_evidence "$source"; then
+      local source_fingerprint destination_identity marked_source marked_destination
+      source_fingerprint="$(database_fingerprint "$source")"
+      destination_identity="$(database_file_identity "$destination")"
+      if [[ -f "$marker" ]]; then
+        read -r marked_source marked_destination < "$marker" || true
+        if [[ "$marked_source" == "$source_fingerprint" \
+          && "$marked_destination" == "$destination_identity" ]]; then
+          return 0
+        fi
+      elif [[ "$(database_fingerprint "$destination")" == "$source_fingerprint" ]]; then
+        write_legacy_migration_marker "$marker" "$source_fingerprint" "$destination_identity"
+        return 0
+      fi
       printf 'database-migration: refusing to overwrite %s with populated legacy database %s.\n' \
         "$destination" "$source" >&2
       return 1
@@ -47,7 +79,21 @@ migrate_legacy_database() {
   fi
 
   install -d -m 0700 "$(dirname "$destination")"
-  local escaped_destination="${destination//\'/\'\'}"
-  sqlite3 "$source" ".backup '$escaped_destination'"
-  chmod 0600 "$destination"
+  local temporary_destination="${destination}.migration-$$-${RANDOM}"
+  local escaped_temporary="${temporary_destination//\'/\'\'}"
+  sqlite3 "$source" ".backup '$escaped_temporary'"
+  chmod 0600 "$temporary_destination"
+  if ! ln -- "$temporary_destination" "$destination" 2>/dev/null; then
+    rm -f -- "$temporary_destination"
+    if [[ -e "$destination" ]]; then
+      migrate_legacy_database "$source" "$destination"
+      return
+    fi
+    return 1
+  fi
+  rm -f -- "$temporary_destination"
+  write_legacy_migration_marker \
+    "$marker" \
+    "$(database_fingerprint "$source")" \
+    "$(database_file_identity "$destination")"
 }

@@ -6,6 +6,6 @@ Type=oneshot
 WorkingDirectory=@PROJECT_ROOT@
 Environment=@RUNTIME_PATH@
 Environment=TZ=America/Sao_Paulo
-EnvironmentFile=-@ENV_FILE@
+EnvironmentFile=@ENV_FILE@
 UMask=0077
-ExecStart=@NODE_PATH@ @PROJECT_ROOT@/dist/cli.js heartbeat check --json
+ExecStart=@NODE_PATH@ @CLI_PATH@ heartbeat check --json

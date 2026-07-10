@@ -46,5 +46,7 @@ install -d -m 0700 "$BACKUP_DIRECTORY"
 timestamp="$(TZ=America/Sao_Paulo date +%Y%m%dT%H%M%S)"
 destination="$BACKUP_DIRECTORY/precos-$timestamp-$$.sqlite"
 backup_database "$DATABASE_PATH" "$destination"
-find "$BACKUP_DIRECTORY" -type f -name 'precos-*.sqlite' -mtime +14 -delete
+retention_cutoff="$(date -d '14 days ago' +%s)"
+find "$BACKUP_DIRECTORY" -type f -name 'precos-*.sqlite' \
+  ! -newermt "@${retention_cutoff}" -delete
 printf 'backup: %s\n' "$destination"

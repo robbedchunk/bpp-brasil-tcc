@@ -169,3 +169,22 @@ Pending time-gated authority boundaries:
 - The host emitted `inotify` watch-capacity (`ENOSPC`) warnings when starting
   one-shot services. Both services succeeded; changing the host kernel limit is
   outside this task's authority and remains an operator concern.
+
+## Operations hardening follow-up
+
+- RED (`Node 24`, focused lock/logger/systemd tests): 7 of 17 tests failed,
+  reproducing incomplete/PID-reused locks, malformed-lock blocking, secrets in
+  arbitrary strings, unescaped systemd paths, 15-day-effective retention, and
+  non-repeatable populated legacy migration.
+- GREEN: `npm run typecheck`; `npm test -- tests/ops` (7 files, 25/25 tests);
+  and `bash -n ops/lib.sh ops/backup.sh ops/install-systemd.sh` all pass.
+  The systemd regression renders from a disposable project path containing
+  spaces, `%`, `$`, quotes, and backslashes, then passes `systemd-analyze verify`.
+- Locks now publish a fully synced record by atomic hard link, compare Linux
+  boot ID plus PID start ticks, and recover malformed legacy records. Legacy
+  database migration is repeatable through a source-fingerprint/destination-
+  identity marker without overwriting later destination evidence. String
+  values and errors sanitize embedded credentials, retention uses an exact
+  14-day cutoff, and systemd scalar paths/arguments are context-escaped.
+- All backup, migration, and unit-install checks used disposable paths and
+  `--dry-run`; this follow-up did not run collection or alter active timers.
