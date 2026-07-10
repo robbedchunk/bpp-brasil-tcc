@@ -121,7 +121,13 @@ export async function* discoverSitemap(
         responded: false,
       });
     }
-    if (!robotsCanFetch(context, sitemapUrl)) continue;
+    if (!robotsCanFetch(context, sitemapUrl)) {
+      throw new DiscoveryFailureError({
+        category: "domain-denied",
+        message: "Sitemap entry point is denied by robots policy",
+        responded: false,
+      });
+    }
     seenSitemaps.add(sitemapUrl);
 
     await context.beforeRequest?.();

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
+import { openDailyReplayReservoir } from "../../src/collection/replay.js";
 import { runCollection } from "../../src/pipeline/collect.js";
 import type { ProductRef } from "../../src/strategies/types.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "./helpers.js";
@@ -194,9 +195,9 @@ describe("collection pipeline", () => {
       .filter((file) => file.endsWith(".html.gz"));
     expect(files).toHaveLength(20);
     expect(files.every((file) => /^[a-f0-9]{64}\.html\.gz$/u.test(file))).toBe(true);
-    expect((database.prepare(
+    expect(database.prepare(
       "SELECT COUNT(*) AS n FROM observations WHERE response_path IS NOT NULL",
-    ).get() as { n: number }).n).toBeGreaterThanOrEqual(20);
+    ).get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations WHERE response_path LIKE '%<html>%'").get()).toEqual({ n: 0 });
   });
 
@@ -239,6 +240,122 @@ describe("collection pipeline", () => {
     expect(files).toHaveLength(20);
     expect(state).toMatchObject({ population: 60 });
     expect(state.slots).toHaveLength(20);
+    expect(state.slots.every((slot) => {
+      const candidate = slot as { evidence?: { kind?: string; id?: string } };
+      return candidate.evidence?.kind === "observation"
+        && typeof candidate.evidence.id === "string";
+    })).toBe(true);
+    const observationIds = new Set((database.prepare("SELECT id FROM observations").all() as Array<{
+      id: string;
+    }>).map(({ id }) => id));
+    expect(state.slots.every((slot) => {
+      const candidate = slot as { evidence: { id: string } };
+      return observationIds.has(candidate.evidence.id);
+    })).toBe(true);
+  });
+
+  it("rolls back file and manifest replacement atomically when publication fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "precos-replay-atomic-"));
+    directories.push(root);
+    const initial = await openDailyReplayReservoir(root, "2026-07-10", "retailer-1", {
+      size: 20,
+      random: () => 0,
+    });
+    for (let index = 0; index < 20; index += 1) {
+      await initial.consider(`<html>${index}</html>`, {
+        kind: "observation",
+        id: `observation-${index}`,
+      });
+    }
+    const directory = join(root, "2026-07-10", "retailer-1");
+    const beforeFiles = (await readdir(directory))
+      .filter((file) => file.endsWith(".html.gz"))
+      .sort();
+
+    const failing = await openDailyReplayReservoir(root, "2026-07-10", "retailer-1", {
+      size: 20,
+      random: () => 0,
+      beforeStatePublish: (state) => {
+        if (state.population === 21) throw new Error("state sink unavailable");
+      },
+    });
+    await expect(failing.consider("<html>replacement</html>", {
+      kind: "observation",
+      id: "replacement-observation",
+    })).rejects.toThrow(/state sink unavailable/u);
+
+    const afterFiles = (await readdir(directory))
+      .filter((file) => file.endsWith(".html.gz"))
+      .sort();
+    const state = JSON.parse(await readFile(join(directory, ".reservoir.json"), "utf8")) as {
+      population: number;
+      slots: unknown[];
+    };
+    expect(afterFiles).toEqual(beforeFiles);
+    expect(state).toMatchObject({ population: 20 });
+    expect(state.slots).toHaveLength(20);
+  });
+
+  it("stays at twenty samples when transaction cleanup cannot unlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "precos-replay-cleanup-"));
+    directories.push(root);
+    const initial = await openDailyReplayReservoir(root, "2026-07-10", "retailer-1", {
+      size: 20,
+      random: () => 0,
+    });
+    for (let index = 0; index < 20; index += 1) {
+      await initial.consider(`<html>${index}</html>`, {
+        kind: "observation",
+        id: `observation-${index}`,
+      });
+    }
+    const replacing = await openDailyReplayReservoir(root, "2026-07-10", "retailer-1", {
+      size: 20,
+      random: () => 0,
+      cleanupFile: async () => { throw new Error("unlink denied"); },
+    });
+
+    await replacing.consider("<html>replacement</html>", {
+      kind: "observation",
+      id: "replacement-observation",
+    });
+
+    const directory = join(root, "2026-07-10", "retailer-1");
+    const files = (await readdir(directory)).filter((file) => file.endsWith(".html.gz"));
+    const state = JSON.parse(await readFile(join(directory, ".reservoir.json"), "utf8")) as {
+      population: number;
+      slots: unknown[];
+    };
+    expect(files).toHaveLength(20);
+    expect(state).toMatchObject({ population: 21 });
+    expect(state.slots).toHaveLength(20);
+  });
+
+  it("finalizes the prior day's sample manifest before opening a new day", async () => {
+    const root = await mkdtemp(join(tmpdir(), "precos-replay-finalize-"));
+    directories.push(root);
+    const firstDay = await openDailyReplayReservoir(root, "2026-07-10", "retailer-1", {
+      size: 20,
+      random: () => 0,
+    });
+    await firstDay.consider("<html>stable</html>", {
+      kind: "observation",
+      id: "stable-observation",
+    });
+
+    await openDailyReplayReservoir(root, "2026-07-11", "retailer-1", {
+      size: 20,
+      random: () => 0,
+    });
+
+    const previous = join(root, "2026-07-10", "retailer-1");
+    await expect(readFile(join(previous, ".reservoir.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    const finalized = JSON.parse(
+      await readFile(join(previous, "replay-samples.json"), "utf8"),
+    ) as { finalizedAt: string; slots: Array<{ evidence: { id: string } }> };
+    expect(finalized.finalizedAt).toBe("2026-07-11T00:00:00.000-03:00");
+    expect(finalized.slots[0]?.evidence.id).toBe("stable-observation");
   });
 
   it("performs no executor/network work and writes no evidence during dry-run", async () => {

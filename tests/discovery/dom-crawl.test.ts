@@ -189,4 +189,25 @@ describe("DOM crawl discovery", () => {
     await expect(collect(executeDiscovery(strategy, { browser })))
       .rejects.toMatchObject({ failure: { category: "domain-denied" } });
   });
+
+  it("categorizes a robots-denied DOM entry instead of returning zero refs", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/categoria?page=1`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 10,
+    });
+
+    await expect(collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.parse(
+        `${server.origin}/robots.txt`,
+        "User-agent: *\nDisallow: /categoria\n",
+      ),
+    }))).rejects.toMatchObject({ failure: { category: "domain-denied" } });
+  });
 });

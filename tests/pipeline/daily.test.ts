@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
-import { runDaily } from "../../src/pipeline/daily.js";
+import { NoActiveRetailersError, runDaily } from "../../src/pipeline/daily.js";
 import { seedRetailer } from "./helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
@@ -64,6 +64,14 @@ describe("daily pipeline", () => {
     }) });
 
     expect(summary.heartbeatRecorded).toBe(false);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM heartbeats").get()).toEqual({ n: 0 });
+  });
+
+  it("fails degraded and emits no heartbeat when no retailer is active", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+
+    await expect(runDaily({ database })).rejects.toBeInstanceOf(NoActiveRetailersError);
     expect(database.prepare("SELECT COUNT(*) AS n FROM heartbeats").get()).toEqual({ n: 0 });
   });
 });

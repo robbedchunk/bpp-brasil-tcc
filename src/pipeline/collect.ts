@@ -6,6 +6,7 @@ import type Database from "better-sqlite3";
 import { executeExtraction } from "../collection/executor.js";
 import {
   openDailyReplayReservoir,
+  type ReplayEvidenceRef,
 } from "../collection/replay.js";
 import {
   createRun,
@@ -150,8 +151,7 @@ export async function runCollection(
       replayRoot,
       day,
       retailerId,
-      DAILY_REPLAY_SAMPLE,
-      random,
+      { size: DAILY_REPLAY_SAMPLE, random },
     );
     const politeGate = createPoliteGate(
       dependencies.politeDelayMs,
@@ -163,13 +163,12 @@ export async function runCollection(
 
     const persistAttempt = async (
       pending: PendingHtmlAttempt,
-      replayArtifact?: { path: string; sha256: string },
-    ): Promise<void> => {
+    ): Promise<ReplayEvidenceRef | undefined> => {
       let { result } = pending;
 
       if (result.ok === true && result.fields !== undefined) {
         try {
-          insertObservation(dependencies.database, {
+          const id = insertObservation(dependencies.database, {
             product: pending.product,
             runId,
             result,
@@ -177,10 +176,9 @@ export async function runCollection(
             collectionDay: day,
             strategyId: active.id,
             strategyVersion: active.version,
-            ...(replayArtifact === undefined ? {} : { replay: replayArtifact }),
           });
           counters.ok += 1;
-          return;
+          return { kind: "observation", id };
         } catch (error) {
           result = rejected(error);
         }
@@ -188,7 +186,7 @@ export async function runCollection(
 
       counters.failed += 1;
       try {
-        insertRunFailure(dependencies.database, {
+        const id = insertRunFailure(dependencies.database, {
           runId,
           retailerId,
           product: pending.product,
@@ -200,12 +198,13 @@ export async function runCollection(
           occurredAt: now().toISOString(),
           strategyId: active.id,
           strategyVersion: active.version,
-          ...(replayArtifact === undefined ? {} : { replay: replayArtifact }),
         });
+        return { kind: "failure", id };
       } catch (error) {
         persistenceErrors.push(
           error instanceof Error ? error.message : "Failure evidence persistence failed",
         );
+        return undefined;
       }
     };
 
@@ -221,14 +220,15 @@ export async function runCollection(
           result = rejected(error);
         }
         const pending = { product, result };
-        if (result.html === undefined) {
-          await persistAttempt(pending);
-          return;
-        }
+        const html = result.html;
+        const evidence = await persistAttempt(pending);
+        if (html === undefined || evidence === undefined) return;
         try {
-          await persistAttempt(pending, await replayReservoir.consider(result.html));
+          await replayReservoir.consider(html, evidence);
         } catch (error) {
-          await persistAttempt({ product, result: rejected(error) });
+          persistenceErrors.push(
+            error instanceof Error ? error.message : "Replay sampling failed",
+          );
         }
       },
     );

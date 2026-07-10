@@ -196,4 +196,24 @@ describe("sitemap discovery", () => {
       fetch: async () => new Response("<html>not a sitemap</html>"),
     }))).rejects.toMatchObject({ failure: { category: "parse" } });
   });
+
+  it("categorizes a robots-denied sitemap entry instead of returning zero refs", async () => {
+    const strategy = SitemapDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "sitemap",
+      allowedDomains: ["shop.test"],
+      sitemapUrls: ["https://shop.test/sitemap.xml"],
+    });
+
+    await expect(collect(executeDiscovery(strategy, {
+      robots: RobotsPolicy.parse(
+        "https://shop.test/robots.txt",
+        "User-agent: *\nDisallow: /sitemap.xml\n",
+      ),
+      fetch: async () => {
+        throw new Error("robots denial must prevent the request");
+      },
+    }))).rejects.toMatchObject({ failure: { category: "domain-denied" } });
+  });
 });

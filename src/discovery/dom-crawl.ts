@@ -108,7 +108,13 @@ export async function discoverDomCrawl(
           responded: false,
         });
       }
-      if (!robotsCanFetch(context, pageUrl)) continue;
+      if (!robotsCanFetch(context, pageUrl)) {
+        throw new DiscoveryFailureError({
+          category: "domain-denied",
+          message: "DOM discovery entry point is denied by robots policy",
+          responded: false,
+        });
+      }
       seenPages.add(pageUrl);
       session.deniedUrl = null;
       session.policyDenied = false;

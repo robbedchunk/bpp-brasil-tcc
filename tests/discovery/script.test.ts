@@ -306,11 +306,49 @@ describe("script discovery", () => {
     });
     let gated = 0;
 
-    await collect(executeDiscovery(strategy, {
+    await expect(collect(executeDiscovery(strategy, {
       browser,
       beforeRequest: async () => { gated += 1; },
-    }));
+    }))).rejects.toMatchObject({ failure: { category: "parse" } });
 
     expect(gated).toBe(2);
+  });
+
+  it("categorizes missing, wrong, and zero-ref scripted mappings", async () => {
+    const strategy = (itemsPath: string, payload: unknown) => ({
+      parsed: ScriptDiscoveryStrategySchema.parse({
+        schemaVersion: 1,
+        purpose: "discovery",
+        tier: "script",
+        allowedDomains: ["shop.test"],
+        operations: [
+          {
+            op: "http",
+            request: { method: "GET", url: "https://shop.test/catalog", headers: {} },
+            saveAs: "catalog",
+          },
+          {
+            op: "extract",
+            source: "json",
+            from: "catalog",
+            itemsPath,
+            refFields: { url: "$.url" },
+          },
+        ],
+      }),
+      fetch: async () => new Response(JSON.stringify(payload)),
+    });
+
+    for (const testCase of [
+      strategy("$.missing[*]", { items: [{ url: "/a" }] }),
+      strategy("$.items[*]", { items: { url: "/a" } }),
+      strategy("$.items[*]", { items: [{ id: "missing-url" }] }),
+      strategy("$.items[*]", { items: [] }),
+    ]) {
+      await expect(collect(executeDiscovery(testCase.parsed, {
+        browser,
+        fetch: testCase.fetch,
+      }))).rejects.toMatchObject({ failure: { category: "parse" } });
+    }
   });
 });

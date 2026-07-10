@@ -25,12 +25,20 @@ export interface DailyPipelineDependencies
   ) => Pick<CollectionPipelineDependencies, "politeDelayMs">;
 }
 
+export class NoActiveRetailersError extends Error {
+  constructor() {
+    super("Daily collection is degraded: no active retailers are configured");
+    this.name = "NoActiveRetailersError";
+  }
+}
+
 export async function runDaily(
   dependencies: DailyPipelineDependencies,
 ): Promise<DailySummary> {
   const now = dependencies.now ?? (() => new Date());
   const startedAt = now().toISOString();
   const retailerIds = activeRetailerIds(dependencies.database);
+  if (retailerIds.length === 0) throw new NoActiveRetailersError();
   const runs: RunSummary[] = [];
   const collect = dependencies.collect ?? ((retailerId: string) =>
     runCollection(retailerId, {

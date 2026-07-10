@@ -229,3 +229,53 @@ Pending time-gated authority boundaries:
   Read-only checks confirmed all four existing production timers remain
   `enabled` and `active`. No production run, observation, failure, heartbeat,
   timer installation, or retailer request was made by the fix verification.
+
+## Re-review completion and production deployment
+
+- RED: the focused discovery/daily run had 4/26 failures: robots-denied
+  sitemap and DOM entry points, scripted missing/wrong/zero-reference mappings,
+  and zero-active-retailer daily execution all returned false success. The
+  replay suite had 5/14 failures because mutable samples were still written into
+  immutable observation paths and had no failure-atomic publication contract.
+  Focused lock/migration tests separately reproduced two failures covering the
+  three-contender recovery race and missing copied-database integrity gate.
+- GREEN: robots-denied entry points now throw typed `domain-denied` failures;
+  scripted item containers must exist and be arrays, mapped records must yield
+  valid references, and a zero-reference script is a typed parse failure. A
+  daily run with no active retailers throws `NoActiveRetailersError` before any
+  heartbeat. These errors propagate through discovery orchestration into
+  terminal categorized `run_failures` evidence.
+- Mutable same-day replay samples no longer populate `response_path` on
+  append-only observations or failures. The private manifest owns evidence IDs
+  while the day is open; opening a later São Paulo day exclusively publishes
+  the prior state as `replay-samples.json`, after which its content-addressed
+  gzip paths are stable. Replacement journals preserve the prior gzip bytes and
+  manifest, use rename-based file replacement, and roll both back if state
+  publication fails. Injected state-publication and unlink-cleanup failures left
+  exactly 20 `.html.gz` files, an unchanged old manifest on rollback, and no
+  dangling database paths.
+- Legacy migration now requires the temporary copy's exact
+  `PRAGMA integrity_check` result to be `ok` before hard-link publication or
+  marker creation; corrupt-copy and repeat-migration tests pass. Lock
+  acquisition/recovery is serialized by a crash-released private SQLite write
+  lease; the deterministic three-contender test permits exactly one owner and
+  never renames a live contender. Migration markers and temporary copies are
+  ignored by Git.
+- Final source verification on Node `v24.18.0`: focused pipeline/discovery/ops/
+  CLI, 18 files and 98/98 tests; full suite, 31 files and 198/198 tests;
+  `npm run typecheck`; `npm run build`; `bash -n ops/*.sh`; backup self-test;
+  and two identical disposable systemd renders accepted by
+  `systemd-analyze verify`.
+- Production deployment ran `ops/install-systemd.sh`, which rebuilt before
+  daemon reload. The installed daily unit reports this ExecStart:
+  `/home/ubuntu-server/.nvm/versions/node/v24.18.0/bin/node
+  /home/ubuntu-server/projects/tcc-ultra-super/dist/cli.js daily --json`.
+  Rebuilt hashes include `dist/cli.js` `a7bc9f71bd02...`, replay
+  `e5fc326b0b87...`, and lock `7b1f28a655f...`. Safe heartbeat and backup
+  services returned `Result=success`, `ExecMainStatus=0`; all four production
+  timers remain enabled/active.
+- The rebuilt production bundle's `daily --limit 1 --dry-run --json` completed
+  with two retailers, zero attempts, one planned persisted product each, and no
+  heartbeat. Production evidence counts were identical before and after:
+  8 runs, 62 observations, 60 historical failures, and 1 heartbeat. No live
+  collection/discovery request ran and no historical evidence was altered.

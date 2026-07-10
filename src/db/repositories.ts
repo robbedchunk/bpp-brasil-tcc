@@ -253,7 +253,8 @@ export function insertRunFailure(
     strategyVersion: number;
     replay?: ReplayReference;
   },
-): void {
+): string {
+  const id = randomUUID();
   database.prepare(
     `INSERT INTO run_failures
        (id, run_id, retailer_id, product_id, canonical_url, category, message,
@@ -261,7 +262,7 @@ export function insertRunFailure(
         response_sha256, occurred_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    randomUUID(),
+    id,
     input.runId,
     input.retailerId,
     input.product?.id ?? null,
@@ -275,6 +276,7 @@ export function insertRunFailure(
     input.replay?.sha256 ?? null,
     input.occurredAt,
   );
+  return id;
 }
 
 export function insertObservation(
@@ -289,11 +291,12 @@ export function insertObservation(
     strategyVersion: number;
     replay?: ReplayReference;
   },
-): void {
+): string {
   if (input.result.ok !== true || input.result.fields === undefined) {
     throw new Error("A successful extraction result is required");
   }
   const fields = input.result.fields;
+  const id = randomUUID();
   const unit = normalizeUnit(fields.unit);
   const transaction = database.transaction(() => {
     database.prepare(
@@ -322,7 +325,7 @@ export function insertObservation(
           promo_price_cents, available, response_path, response_sha256)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-      randomUUID(),
+      id,
       input.product.id,
       input.runId,
       input.strategyId,
@@ -345,6 +348,7 @@ export function insertObservation(
     );
   });
   transaction.immediate();
+  return id;
 }
 
 export function activeRetailerIds(database: Database.Database): string[] {

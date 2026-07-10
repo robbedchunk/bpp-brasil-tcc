@@ -211,10 +211,19 @@ async function selectorLinks(
   return [];
 }
 
-function jsonValues(document: unknown, path: string): unknown[] {
-  const values = safeJsonPathValues(document, path);
-  if (values.length === 1 && Array.isArray(values[0])) return values[0] as unknown[];
-  return values;
+function jsonItems(document: unknown, path: string): unknown[] {
+  const wildcardMatch = /^(.*)\[\*\]$/u.exec(path);
+  const containers = wildcardMatch === null
+    ? safeJsonPathValues(document, path)
+    : safeJsonPathValues(document, wildcardMatch[1] ?? "");
+  if (containers.length === 0 || containers.some((value) => !Array.isArray(value))) {
+    throw new DiscoveryFailureError({
+      category: "parse",
+      message: `Script discovery items path ${path} was missing or not an array`,
+      responded: true,
+    });
+  }
+  return containers.flatMap((value) => value as unknown[]);
 }
 
 function jsonValue(document: unknown, path: string | undefined): unknown {
@@ -234,7 +243,7 @@ function jsonRefs(
   strategy: ScriptDiscoveryStrategy,
 ): ProductRef[] {
   const refs: ProductRef[] = [];
-  for (const item of jsonValues(saved.document, operation.itemsPath)) {
+  for (const item of jsonItems(saved.document, operation.itemsPath)) {
     const rawUrl = jsonValue(item, operation.refFields.url);
     if (typeof rawUrl !== "string" || rawUrl.trim().length === 0) continue;
     try {
@@ -250,6 +259,13 @@ function jsonRefs(
     } catch {
       // Ignore malformed or cross-domain discovered URLs.
     }
+  }
+  if (refs.length === 0) {
+    throw new DiscoveryFailureError({
+      category: "parse",
+      message: "Script discovery mapping produced no valid product references",
+      responded: true,
+    });
   }
   return refs;
 }
@@ -432,6 +448,13 @@ async function runDiscoveryProgram(
     throw scriptFailure(error);
   }
 
+  if (refs.length === 0) {
+    throw new DiscoveryFailureError({
+      category: "parse",
+      message: "Script discovery completed without product references",
+      responded: true,
+    });
+  }
   return refs.slice(0, strategy.maxProducts);
 }
 
@@ -439,7 +462,13 @@ export async function discoverScript(
   strategy: ScriptDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): Promise<ProductRef[]> {
-  if (strategy.operations.length > MAX_OPERATIONS) return [];
+  if (strategy.operations.length > MAX_OPERATIONS) {
+    throw new DiscoveryFailureError({
+      category: "parse",
+      message: `Script discovery exceeds the ${MAX_OPERATIONS}-operation limit`,
+      responded: false,
+    });
+  }
 
   const totalController = new AbortController();
   const totalSignal = context.signal === undefined
