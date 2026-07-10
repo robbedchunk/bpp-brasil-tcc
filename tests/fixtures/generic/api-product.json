@@ -1,0 +1,18 @@
+{
+  "data": {
+    "product": {
+      "name": "  Arroz Tipo 1  ",
+      "manufacturer": {
+        "name": " Marca "
+      },
+      "pricing": {
+        "regular": "R$ 12,99",
+        "promotion": "10.99"
+      },
+      "package": "5 kg",
+      "stock": {
+        "available": "yes"
+      }
+    }
+  }
+}

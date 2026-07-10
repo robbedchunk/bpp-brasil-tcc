@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <title>Produto de teste</title>
+    <script type="application/ld+json">
+      [
+        {
+          "@context": "https://schema.org",
+          "@graph": [
+            {
+              "@type": "BreadcrumbList",
+              "name": "Mercearia"
+            },
+            {
+              "@type": ["Thing", "Product"],
+              "name": "Feijão Carioca",
+              "brand": { "name": "Marca Boa" },
+              "offers": {
+                "price": "R$ 8,49",
+                "highPrice": "R$ 9,99",
+                "availability": "https://schema.org/InStock"
+              },
+              "size": "Pacote 1 kg"
+            }
+          ]
+        }
+      ]
+    </script>
+    <script id="__NEXT_DATA__" type="application/json">
+      {
+        "props": {
+          "pageProps": {
+            "product": {
+              "name": "Café Torrado",
+              "brand": "Marca Next",
+              "price": 21.9,
+              "promoPrice": null,
+              "unit": "500 g",
+              "available": true
+            }
+          }
+        }
+      }
+    </script>
+    <script id="custom-state" type="application/json">
+      {
+        "product": {
+          "name": "Leite Integral",
+          "brand": "Marca State",
+          "price": "R$ 6,39",
+          "promoPrice": "R$ 5,99",
+          "unit": "1 l",
+          "available": 1
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main>Fixture offline</main>
+  </body>
+</html>

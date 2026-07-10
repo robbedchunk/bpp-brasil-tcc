@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <title>Fixture de produto</title>
+  </head>
+  <body>
+    <label>
+      CEP
+      <input id="postal-code" name="postal-code">
+    </label>
+    <label>
+      Loja
+      <select id="store">
+        <option value="61">Loja 61</option>
+        <option value="923">Loja 923</option>
+      </select>
+    </label>
+    <button id="reveal" type="button">Mostrar produto</button>
+
+    <main class="product-card">
+      <h1 class="product-title">Feijão Carioca</h1>
+      <span class="brand" data-brand="Marca Boa">Marca Boa</span>
+      <span class="regular-price">R$ 19,90</span>
+      <span class="promotional-price">R$ 17,50</span>
+      <span class="unit">Pacote 1 kg</span>
+      <span class="stock" data-available="true">Em estoque</span>
+      <span id="ready">Pronto</span>
+    </main>
+
+    <script>
+      document.querySelector("#reveal").addEventListener("click", () => {
+        document.querySelector(".product-card").setAttribute("data-revealed", "true");
+      });
+    </script>
+  </body>
+</html>
