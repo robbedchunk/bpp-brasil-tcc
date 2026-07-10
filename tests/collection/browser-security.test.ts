@@ -313,7 +313,7 @@ describe("browser network boundaries", () => {
     expect(budgetFinalHits).toBe(0);
   });
 
-  it("cancels a timed-out extraction goto fetch before returning", async () => {
+  it("cancels a total-deadline extraction goto fetch before returning", async () => {
     const strategy = ScriptStrategySchema.parse({
       schemaVersion: 1,
       purpose: "extraction",
@@ -335,6 +335,51 @@ describe("browser network boundaries", () => {
     }, {
       browser,
       totalTimeoutMs: 200,
+      fetch: async (_input, init) => {
+        active += 1;
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(init.signal?.reason);
+            }, { once: true });
+          });
+        } finally {
+          active -= 1;
+        }
+        throw new Error("unreachable");
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, failure: { category: "timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(aborted).toBe(true);
+    expect(active).toBe(0);
+  });
+
+  it("cancels an operation-timeout extraction goto fetch before returning", async () => {
+    const strategy = ScriptStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        { op: "goto", url: "https://shop.test/pending", timeoutMs: 25 },
+        { op: "extract", source: "dom", selectors: fields },
+      ],
+    });
+    let active = 0;
+    let aborted = false;
+    const startedAt = Date.now();
+
+    const result = await executeRestrictedScript(strategy, {
+      canonicalUrl: "https://shop.test/product/1",
+      externalId: null,
+      sourceCategory: null,
+    }, {
+      browser,
+      timeoutMs: 1_000,
+      totalTimeoutMs: 2_000,
       fetch: async (_input, init) => {
         active += 1;
         try {

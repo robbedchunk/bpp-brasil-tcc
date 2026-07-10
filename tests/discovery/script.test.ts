@@ -172,7 +172,7 @@ describe("script discovery", () => {
     expect(active).toBe(0);
   });
 
-  it("cancels a timed-out discovery goto fetch before returning", async () => {
+  it("cancels a total-deadline discovery goto fetch before returning", async () => {
     const strategy = ScriptDiscoveryStrategySchema.parse({
       schemaVersion: 1,
       purpose: "discovery",
@@ -191,6 +191,53 @@ describe("script discovery", () => {
       browser,
       totalTimeoutMs: 200,
       fetch: async (_input, init) => {
+        active += 1;
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(init.signal?.reason);
+            }, { once: true });
+          });
+        } finally {
+          active -= 1;
+        }
+        throw new Error("unreachable");
+      },
+    }));
+
+    expect(refs).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(aborted).toBe(true);
+    expect(active).toBe(0);
+  });
+
+  it("cancels an operation-timeout discovery click fetch before returning", async () => {
+    const strategy = ScriptDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        { op: "goto", url: "https://shop.test/start", timeoutMs: 500 },
+        { op: "click", selector: "#next", timeoutMs: 100 },
+        { op: "extract", source: "dom", linkSelectors: [{ selector: "a" }] },
+      ],
+    });
+    let active = 0;
+    let aborted = false;
+    const startedAt = Date.now();
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      timeoutMs: 1_000,
+      totalTimeoutMs: 2_000,
+      fetch: async (input, init) => {
+        if (String(input).endsWith("/start")) {
+          return new Response('<a id="next" href="/pending">next</a>', {
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
         active += 1;
         try {
           await new Promise<never>((_resolve, reject) => {

@@ -33,6 +33,7 @@ export interface RestrictedPageSession {
   redirectLimitExceeded: boolean;
   policyDenied: boolean;
   finalDocumentUrl: string | null;
+  waitForInFlightRequests: () => Promise<void>;
 }
 
 interface BrowserResources {
@@ -257,6 +258,7 @@ export async function withRestrictedPage<T>(
   try {
     const page = await resources.browserContext.newPage();
     page.setDefaultTimeout(executionContext.timeoutMs ?? 10_000);
+    const inFlightRequests = new Set<Promise<void>>();
     const session: RestrictedPageSession = {
       page,
       deniedUrl: null,
@@ -264,6 +266,11 @@ export async function withRestrictedPage<T>(
       redirectLimitExceeded: false,
       policyDenied: false,
       finalDocumentUrl: null,
+      waitForInFlightRequests: async () => {
+        while (inFlightRequests.size > 0) {
+          await Promise.allSettled([...inFlightRequests]);
+        }
+      },
     };
     const requestBudget: RequestBudget = { bytes: 0, redirects: 0 };
     let requestQueue = Promise.resolve();
@@ -302,18 +309,26 @@ export async function withRestrictedPage<T>(
       requestQueue = new Promise<void>((resolve) => {
         releaseRequest = resolve;
       });
-      await previousRequest;
-      try {
-        await handleRequest(
-          route,
-          session,
-          allowedDomains,
-          executionContext,
-          requestBudget,
-        );
-      } finally {
-        releaseRequest();
-      }
+      const requestWork = (async () => {
+        await previousRequest;
+        try {
+          await handleRequest(
+            route,
+            session,
+            allowedDomains,
+            executionContext,
+            requestBudget,
+          );
+        } finally {
+          releaseRequest();
+        }
+      })();
+      inFlightRequests.add(requestWork);
+      requestWork.then(
+        () => inFlightRequests.delete(requestWork),
+        () => inFlightRequests.delete(requestWork),
+      );
+      await requestWork;
     });
 
     return await run(session);

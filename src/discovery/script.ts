@@ -39,18 +39,81 @@ interface SavedJson {
   baseUrl: string;
 }
 
+interface DeadlineCancellation {
+  controller: AbortController;
+  cancel: () => Promise<void>;
+}
+
 async function withDeadline<T>(
   operation: () => Promise<T>,
   timeoutMs: number,
+  deadlineCancellation?: DeadlineCancellation,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: Error | undefined;
+  let cancellationStarted = false;
+  let cancellation = Promise.resolve();
+  const cancel = (reason: Error): void => {
+    if (deadlineCancellation === undefined) return;
+    if (!deadlineCancellation.controller.signal.aborted) {
+      deadlineCancellation.controller.abort(reason);
+    }
+    if (!cancellationStarted) {
+      cancellationStarted = true;
+      cancellation = deadlineCancellation.cancel().catch(() => undefined);
+    }
+  };
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Operation exceeded ${timeoutMs} ms`)), timeoutMs);
+    timer = setTimeout(() => {
+      timeoutError = new Error(`Operation exceeded ${timeoutMs} ms`);
+      timeoutError.name = "TimeoutError";
+      cancel(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
   });
+  const work = Promise.resolve().then(operation);
   try {
-    return await Promise.race([Promise.resolve().then(operation), timeout]);
+    return await Promise.race([work, timeout]);
+  } catch (error) {
+    const deadlineError = timeoutError
+      ?? (error instanceof Error && error.name === "TimeoutError" ? error : undefined);
+    if (deadlineError !== undefined) {
+      cancel(deadlineError);
+      await cancellation;
+      await work.catch(() => undefined);
+      throw deadlineError;
+    }
+    throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function withPageOperationDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  context: DiscoveryExecutionContext,
+  session: RestrictedPageSession,
+): Promise<T> {
+  const parentSignal = context.signal;
+  const controller = new AbortController();
+  context.signal = parentSignal === undefined
+    ? controller.signal
+    : AbortSignal.any([controller.signal, parentSignal]);
+  try {
+    return await withDeadline(operation, timeoutMs, {
+      controller,
+      cancel: async () => {
+        await session.page.close().catch(() => undefined);
+        await session.waitForInFlightRequests();
+      },
+    });
+  } finally {
+    if (parentSignal === undefined) {
+      delete context.signal;
+    } else {
+      context.signal = parentSignal;
+    }
   }
 }
 
@@ -293,9 +356,11 @@ async function runDiscoveryProgram(
       }
 
       session.deniedUrl = null;
-      await withDeadline(
+      await withPageOperationDeadline(
         async () => pageOperation(operation, session.page, strategy, context),
         operation.timeoutMs ?? context.timeoutMs ?? 10_000,
+        context,
+        session,
       );
     }
   } catch {
@@ -330,7 +395,10 @@ export async function discoverScript(
           async () => runDiscoveryProgram(strategy, programContext, session),
           context.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
           totalController,
-          async () => session.page.close(),
+          async () => {
+            await session.page.close().catch(() => undefined);
+            await session.waitForInFlightRequests();
+          },
         );
       },
     );

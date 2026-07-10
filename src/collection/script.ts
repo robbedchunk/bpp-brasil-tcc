@@ -35,6 +35,11 @@ const MAX_TOTAL_RUNTIME_MS = 60_000;
 type ScriptOperation = ScriptExtractionStrategy["operations"][number];
 type DomExtractOperation = Extract<ScriptOperation, { op: "extract"; source: "dom" }>;
 
+interface DeadlineCancellation {
+  controller: AbortController;
+  cancel: () => Promise<void>;
+}
+
 class OperationFailure extends Error {
   readonly failure: ExtractionFailure;
 
@@ -77,19 +82,73 @@ function asFailure(error: unknown): ExtractionResult {
 async function withDeadline<T>(
   operation: () => Promise<T>,
   timeoutMs: number,
+  deadlineCancellation?: DeadlineCancellation,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: Error | undefined;
+  let cancellationStarted = false;
+  let cancellation = Promise.resolve();
+  const cancel = (reason: Error): void => {
+    if (deadlineCancellation === undefined) return;
+    if (!deadlineCancellation.controller.signal.aborted) {
+      deadlineCancellation.controller.abort(reason);
+    }
+    if (!cancellationStarted) {
+      cancellationStarted = true;
+      cancellation = deadlineCancellation.cancel().catch(() => undefined);
+    }
+  };
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
-      const error = new Error(`Operation exceeded ${timeoutMs} ms`);
-      error.name = "TimeoutError";
-      reject(error);
+      timeoutError = new Error(`Operation exceeded ${timeoutMs} ms`);
+      timeoutError.name = "TimeoutError";
+      cancel(timeoutError);
+      reject(timeoutError);
     }, timeoutMs);
   });
+  const work = Promise.resolve().then(operation);
   try {
-    return await Promise.race([Promise.resolve().then(operation), timeout]);
+    return await Promise.race([work, timeout]);
+  } catch (error) {
+    const deadlineError = timeoutError
+      ?? (error instanceof Error && error.name === "TimeoutError" ? error : undefined);
+    if (deadlineError !== undefined) {
+      cancel(deadlineError);
+      await cancellation;
+      await work.catch(() => undefined);
+      throw deadlineError;
+    }
+    throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function withPageOperationDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  executionContext: ExtractionExecutionContext,
+  session: RestrictedPageSession,
+): Promise<T> {
+  const parentSignal = executionContext.signal;
+  const controller = new AbortController();
+  executionContext.signal = parentSignal === undefined
+    ? controller.signal
+    : AbortSignal.any([controller.signal, parentSignal]);
+  try {
+    return await withDeadline(operation, timeoutMs, {
+      controller,
+      cancel: async () => {
+        await session.page.close().catch(() => undefined);
+        await session.waitForInFlightRequests();
+      },
+    });
+  } finally {
+    if (parentSignal === undefined) {
+      delete executionContext.signal;
+    } else {
+      executionContext.signal = parentSignal;
+    }
   }
 }
 
@@ -302,7 +361,7 @@ async function runRestrictedProgram(
         continue;
       }
 
-      await withDeadline(
+      await withPageOperationDeadline(
         async () => executePageOperation(
           operation,
           session.page,
@@ -311,6 +370,8 @@ async function runRestrictedProgram(
           executionContext,
         ),
         operation.timeoutMs ?? executionContext.timeoutMs ?? 10_000,
+        executionContext,
+        session,
       );
     }
     if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
@@ -366,7 +427,10 @@ export async function executeRestrictedScript(
           async () => runRestrictedProgram(strategy, ref, programContext, session),
           executionContext.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
           totalController,
-          async () => session.page.close(),
+          async () => {
+            await session.page.close().catch(() => undefined);
+            await session.waitForInFlightRequests();
+          },
         );
       },
     );
