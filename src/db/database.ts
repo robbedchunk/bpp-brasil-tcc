@@ -52,8 +52,8 @@ export function openDatabase(path: string): Database.Database {
   try {
     database.pragma("foreign_keys = ON");
     database.pragma("recursive_triggers = ON");
-    database.pragma("journal_mode = WAL");
     database.pragma("busy_timeout = 5000");
+    database.pragma("journal_mode = WAL");
     migrate(database);
 
     if (path !== ":memory:") {
