@@ -141,3 +141,23 @@ Migration 4 was applied to the existing production database and the official loa
 - asynchronous no-key submit for version 2: `provider_unavailable`, 60 pending, zero jobs/evidence, with a sanitized local alert.
 
 Collection evidence remains exactly 8 runs, 62 observations, 60 failures, and 1 heartbeat. Daily, weekly discovery, heartbeat, and backup timers remain enabled and active. A real synchronous or Batch provider acceptance remains intentionally pending until a key and explicit spend authorization are supplied.
+
+## Re-review remaining-findings closure
+
+The five appended re-review findings were closed in `dfff076` (`fix(m3): close batch reconciliation audit gaps`). The focused RED run was 14 failures and 24 passes. The final Node 24 evidence is now:
+
+- `npm test -- tests/classify/review-fixes.test.ts tests/classify/batch.test.ts`: 2 files, 38 tests passed;
+- `npm test`: 35 files, 266 tests passed;
+- `npm run typecheck`: passed;
+- `npm run build`: passed;
+- `git diff --check`: passed.
+
+Batch claims now remain active for every non-released status, including `cancelling`, every remote terminal state, ambiguous submission, and retryable finalization. They are released only by a local `finalized*` state, permanent `finalize_failed`, or explicit `submission_released` after a definitely safe upload/create failure. Both synchronous and Batch eligibility use this rule.
+
+Migration 5 adds non-negative projected and nullable actual Batch costs plus validated provider-error JSON. Submission stores the projected commitment; polling stores aggregate usage, actual-model estimated cost, and sanitized provider errors without erasing earlier diagnostics. Monthly preflight adds active commitments (actual when available, otherwise projected) to all finalized ledger spend.
+
+The production OpenAI path now uses the raw `responses.create` boundary with the same strict JSON schema and host Zod validation. A malformed structured output is converted to sanitized attempt evidence containing the response ID, actual model snapshot, and exact usage before the parse error escapes, so its billed cost is appended to the failure ledger. Parse-only injected fixtures remain supported for compatibility.
+
+Batch upload, retrieve, and output/error download use bounded transient retries. Batch creation uses one deterministic local-job metadata value and idempotency key; after an ambiguous response it lists and reconciles that metadata before any second create. An unreconciled create remains `submission_unknown` and claimed. A transport failure while downloading terminal output becomes `finalize_retryable`, retains the claim, writes diagnostics, and can later finalize without duplicate billing.
+
+Migration 5 was applied forward-only to the production SQLite database, and the official loader again completed idempotently twice with 84 rows and total `12.1181`. No key is configured, so version-7 synchronous and Batch acceptance both returned `provider_unavailable` with all 60 products pending; the dry run reported the same 60 eligible products and two planned batches. Final production checks show migrations `5/5`, 84 distinct IPCA codes, zero classifications/classification costs/Batch jobs/items/events/product pointers, integrity `ok`, and no foreign-key violations. Collection evidence remains 8 runs, 62 observations, 60 failures, and 1 heartbeat; all four production timers remain enabled and active.
