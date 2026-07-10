@@ -104,8 +104,18 @@ function listEligibleProducts(database: Database.Database, version: number): Cla
          SELECT 1 FROM classifications c
          WHERE c.product_id = p.id AND c.version = ?
        )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM classification_batch_items bi
+         JOIN classification_batch_jobs bj ON bj.id = bi.job_id
+         WHERE bi.product_id = p.id
+           AND bj.version = ?
+           AND bj.status IN (
+             'preparing', 'submitted', 'validating', 'in_progress', 'finalizing'
+           )
+       )
      ORDER BY p.id`,
-  ).all(version) as ClassificationProduct[];
+  ).all(version, version) as ClassificationProduct[];
 }
 
 function inputFor(

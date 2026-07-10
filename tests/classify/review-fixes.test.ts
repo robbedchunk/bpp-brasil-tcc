@@ -362,6 +362,41 @@ describe("billed failure and retry accounting", () => {
 });
 
 describe("classification auditability and serialization", () => {
+  it("does not synchronously bill a product/version already claimed by an active Batch job", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database);
+      database.exec(`
+        INSERT INTO classification_batch_jobs
+          (id, provider, version, confidence_threshold, requested_model,
+           prompt_version, prompt_hash, input_sha256, status, total_items,
+           created_at, updated_at)
+        VALUES
+          ('job-active', 'openai', 1, 0.8, 'gpt-5.6-luna', 'prompt-v1',
+           '${"d".repeat(64)}', '${"e".repeat(64)}', 'in_progress', 1,
+           '2026-07-10T12:00:00.000Z', '2026-07-10T12:00:00.000Z');
+        INSERT INTO classification_batch_items
+          (id, job_id, custom_id, product_id, input_json, created_at)
+        VALUES
+          ('item-active', 'job-active', 'custom-active', 'product-1', '{}',
+           '2026-07-10T12:00:00.000Z');
+      `);
+      const provider = new FixtureClassifier();
+
+      await expect(classifyNewProducts({
+        batchSize: 50,
+        confidenceThreshold: 0.8,
+        version: 1,
+      }, { database, provider, budgetGuard: new BudgetGuard() })).resolves.toMatchObject({
+        eligible: 0,
+        status: "completed",
+      });
+      expect(provider.calls).toBe(0);
+    } finally {
+      database.close();
+    }
+  });
+
   it("returns completed before requiring a provider when no work is eligible", async () => {
     const database = openDatabase(":memory:");
     try {
