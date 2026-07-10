@@ -401,4 +401,50 @@ describe("browser network boundaries", () => {
     expect(aborted).toBe(true);
     expect(active).toBe(0);
   });
+
+  it("aborts and drains background browser fetches on successful DOM teardown", async () => {
+    const strategy = DomExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "dom",
+      allowedDomains: ["shop.test"],
+      url: "{productUrl}",
+      selectors: fields,
+    });
+    let active = 0;
+    let aborted = false;
+
+    const result = await executeDom(strategy, {
+      canonicalUrl: "https://shop.test/product/1",
+      externalId: null,
+      sourceCategory: null,
+    }, {
+      browser,
+      timeoutMs: 2_000,
+      fetch: async (input, init) => {
+        if (String(input).endsWith("/product/1")) {
+          return new Response(
+            `${productMarkup}<script async src="/background.js"></script>`,
+            { headers: { "content-type": "text/html; charset=utf-8" } },
+          );
+        }
+        active += 1;
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(init.signal?.reason);
+            }, { once: true });
+          });
+        } finally {
+          active -= 1;
+        }
+        throw new Error("unreachable");
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(aborted).toBe(true);
+    expect(active).toBe(0);
+  });
 });

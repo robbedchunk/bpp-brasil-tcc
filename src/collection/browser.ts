@@ -118,6 +118,7 @@ async function handleRequest(
   allowedDomains: string[],
   executionContext: ExtractionExecutionContext,
   budget: RequestBudget,
+  sessionSignal: AbortSignal,
 ): Promise<void> {
   const request = route.request();
   const isMainDocument = request.isNavigationRequest()
@@ -136,8 +137,8 @@ async function handleRequest(
   headers.delete("content-length");
   const timeout = AbortSignal.timeout(executionContext.timeoutMs ?? 10_000);
   const signal = executionContext.signal === undefined
-    ? timeout
-    : AbortSignal.any([timeout, executionContext.signal]);
+    ? AbortSignal.any([timeout, sessionSignal])
+    : AbortSignal.any([timeout, executionContext.signal, sessionSignal]);
   if (signal.aborted) {
     await route.abort("failed").catch(() => undefined);
     return;
@@ -255,12 +256,16 @@ export async function withRestrictedPage<T>(
   run: (session: RestrictedPageSession) => Promise<T>,
 ): Promise<T> {
   const resources = await createResources(executionContext);
+  const sessionController = new AbortController();
+  let page: Page | undefined;
+  let session: RestrictedPageSession | undefined;
   try {
-    const page = await resources.browserContext.newPage();
+    page = await resources.browserContext.newPage();
     page.setDefaultTimeout(executionContext.timeoutMs ?? 10_000);
+    const activePage = page;
     const inFlightRequests = new Set<Promise<void>>();
-    const session: RestrictedPageSession = {
-      page,
+    const activeSession: RestrictedPageSession = {
+      page: activePage,
       deniedUrl: null,
       bodyLimitExceeded: false,
       redirectLimitExceeded: false,
@@ -272,6 +277,7 @@ export async function withRestrictedPage<T>(
         }
       },
     };
+    session = activeSession;
     const requestBudget: RequestBudget = { bytes: 0, redirects: 0 };
     let requestQueue = Promise.resolve();
 
@@ -279,12 +285,12 @@ export async function withRestrictedPage<T>(
       await webSocket.close({ code: 1008, reason: "WebSockets are disabled" });
     });
 
-    page.on("framenavigated", (frame) => {
-      if (frame !== page.mainFrame()) return;
+    activePage.on("framenavigated", (frame) => {
+      if (frame !== activePage.mainFrame()) return;
       try {
         assertAllowedUrl(frame.url(), allowedDomains);
       } catch {
-        session.deniedUrl = frame.url();
+        activeSession.deniedUrl = frame.url();
       }
     });
 
@@ -294,7 +300,7 @@ export async function withRestrictedPage<T>(
         assertAllowedUrl(request.url(), allowedDomains);
       } catch {
         if (request.isNavigationRequest()) {
-          session.deniedUrl = request.url();
+          activeSession.deniedUrl = request.url();
         }
         await route.abort("blockedbyclient");
         return;
@@ -314,10 +320,11 @@ export async function withRestrictedPage<T>(
         try {
           await handleRequest(
             route,
-            session,
+            activeSession,
             allowedDomains,
             executionContext,
             requestBudget,
+            sessionController.signal,
           );
         } finally {
           releaseRequest();
@@ -331,13 +338,23 @@ export async function withRestrictedPage<T>(
       await requestWork;
     });
 
-    return await run(session);
+    return await run(activeSession);
   } finally {
+    const sessionEnded = new Error("Restricted page session ended");
+    sessionEnded.name = "AbortError";
+    sessionController.abort(sessionEnded);
     try {
-      await resources.browserContext.close();
+      await session?.waitForInFlightRequests();
     } finally {
-      if (resources.ownsBrowser) {
-        await resources.browser.close();
+      try {
+        if (page !== undefined && typeof page.close === "function") {
+          await page.close().catch(() => undefined);
+        }
+        await resources.browserContext.close();
+      } finally {
+        if (resources.ownsBrowser) {
+          await resources.browser.close();
+        }
       }
     }
   }
