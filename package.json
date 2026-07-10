@@ -16,6 +16,7 @@
     "build": "tsc && mkdir -p dist/db/migrations && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && chmod 0755 dist/cli.js",
     "cli": "tsx src/cli.ts",
     "precos": "tsx src/cli.ts",
+    "ipca:load": "tsx scripts/load-ipca-items.ts",
     "retailers:register": "tsx scripts/register-retailers.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
@@ -24,8 +25,11 @@
     "better-sqlite3": "12.11.1",
     "cheerio": "1.2.0",
     "commander": "15.0.0",
+    "csv-parse": "7.0.1",
+    "decimal.js": "10.6.0",
     "fast-xml-parser": "5.9.3",
     "jsonpath-plus": "10.4.0",
+    "openai": "6.46.0",
     "playwright": "1.61.1",
     "robots-parser": "3.0.1",
     "zod": "4.4.3"

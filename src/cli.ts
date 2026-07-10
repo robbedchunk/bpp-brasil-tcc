@@ -6,6 +6,12 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import type Database from "better-sqlite3";
 
+import {
+  buildReviewSample,
+  classifyNewProducts,
+} from "./classify/classify.js";
+import { OpenAIProductClassifier } from "./classify/openai-provider.js";
+import type { ProductClassifier } from "./classify/provider.js";
 import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/database.js";
 import {
@@ -29,6 +35,7 @@ import {
   latestSuccessfulHeartbeat,
 } from "./ops/heartbeat.js";
 import { withProcessLock } from "./ops/lock.js";
+import { BudgetGuard } from "./ops/budget.js";
 
 interface PipelineCliOptions {
   limit: number;
@@ -44,6 +51,8 @@ export interface CliDependencies {
   stderr?: (text: string) => void;
   alertSink?: AlertSink;
   lockPath?: string;
+  productClassifier?: ProductClassifier;
+  budgetGuard?: BudgetGuard;
   runDiscovery?: (
     retailerId: string,
     options: PipelineCliOptions,
@@ -204,6 +213,102 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   pipelineCommand("discover", "Discover and persist retailer product references");
   pipelineCommand("collect", "Collect deterministic price observations");
+
+  const classificationVersion = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      throw new Error("--version must be a positive integer");
+    }
+    return parsed;
+  };
+  const classificationThreshold = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+      throw new Error("--confidence-threshold must be between 0 and 1");
+    }
+    return parsed;
+  };
+  const reviewSampleLimit = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      throw new Error("--review-sample must be a positive integer");
+    }
+    return Math.min(parsed, 200);
+  };
+
+  command
+    .command("classify")
+    .description("Classify new products into São Paulo IPCA food-at-home subitems")
+    .option("--batch-size <count>", "classification batch size", positiveLimit, 50)
+    .option("--version <number>", "append-only classification version", classificationVersion, 1)
+    .option(
+      "--confidence-threshold <number>",
+      "minimum confidence for an assigned item",
+      classificationThreshold,
+      0.8,
+    )
+    .option("--dry-run", "report pending batches without API or evidence writes")
+    .option("--review-sample <count>", "include a deterministic stratified review sample", reviewSampleLimit)
+    .option("--json", "emit only the JSON classification summary")
+    .action(async (options: {
+      batchSize: number;
+      version: number;
+      confidenceThreshold: number;
+      dryRun?: boolean;
+      reviewSample?: number;
+      json?: boolean;
+    }) => {
+      const applicationConfig = config();
+      const provider = dependencies.productClassifier ?? (
+        applicationConfig.openaiApiKey === undefined
+          ? undefined
+          : new OpenAIProductClassifier({
+              apiKey: applicationConfig.openaiApiKey,
+              ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+            })
+      );
+      const summary = await withDatabase((database) => classifyNewProducts({
+        batchSize: options.batchSize,
+        version: options.version,
+        confidenceThreshold: options.confidenceThreshold,
+        dryRun: options.dryRun === true,
+      }, {
+        database,
+        ...(provider === undefined ? {} : { provider }),
+        budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+        classificationModel: dependencies.env?.OPENAI_CLASSIFICATION_MODEL?.trim()
+          || "gpt-5.6-luna",
+        now,
+      }));
+
+      if (!summary.dryRun && summary.pending > 0) {
+        const sink = dependencies.alertSink ?? createAlertSink({
+          fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+          now,
+        });
+        await sink.send({
+          severity: "warning",
+          title: "IPCA classification pending",
+          message: summary.status === "provider_unavailable"
+            ? "Classification credentials are not configured; products remain pending"
+            : "Classification work remains pending under the configured safety controls",
+          details: { pending: summary.pending, version: summary.version },
+        });
+      }
+
+      const output = options.reviewSample === undefined
+        ? summary
+        : await withDatabase((database) => ({
+            ...summary,
+            reviewSample: buildReviewSample(database, {
+              limit: options.reviewSample ?? 200,
+              version: options.version,
+            }),
+          }));
+      stdout(options.json === true || options.reviewSample !== undefined
+        ? `${JSON.stringify(output)}\n`
+        : `classify v${summary.version}: ${summary.classified}/${summary.eligible} evidence rows; ${summary.pending} pending (${summary.status})\n`);
+    });
 
   command
     .command("daily")

@@ -1,0 +1,10 @@
+ALTER TABLE ipca_items ADD COLUMN pof_vintage TEXT;
+ALTER TABLE ipca_items ADD COLUMN effective_from TEXT;
+ALTER TABLE ipca_items ADD COLUMN sidra_area_level TEXT;
+ALTER TABLE ipca_items ADD COLUMN sidra_area_code TEXT;
+ALTER TABLE ipca_items ADD COLUMN area_name TEXT;
+ALTER TABLE ipca_items ADD COLUMN snipc_subgroup_code TEXT;
+ALTER TABLE ipca_items ADD COLUMN sidra_category_id TEXT;
+ALTER TABLE ipca_items ADD COLUMN source_sheet TEXT;
+ALTER TABLE ipca_items ADD COLUMN source_row INTEGER CHECK (source_row IS NULL OR source_row > 0);
+ALTER TABLE ipca_items ADD COLUMN source_archive_sha256 TEXT;

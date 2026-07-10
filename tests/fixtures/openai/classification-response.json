@@ -1,0 +1,22 @@
+{
+  "id": "resp_fixture_classification",
+  "object": "response",
+  "status": "completed",
+  "model": "gpt-5.6-luna",
+  "output": [],
+  "output_parsed": {
+    "results": [
+      {
+        "productId": "product-1",
+        "ipcaItemId": "ipca-arroz",
+        "confidence": 0.97,
+        "rationaleCode": "exact_food_match"
+      }
+    ]
+  },
+  "usage": {
+    "input_tokens": 321,
+    "output_tokens": 42,
+    "total_tokens": 363
+  }
+}

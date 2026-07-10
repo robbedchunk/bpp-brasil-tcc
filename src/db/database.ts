@@ -8,10 +8,15 @@ const APPEND_ONLY_SQL = readFileSync(
   new URL("./migrations/002_append_only.sql", import.meta.url),
   "utf8",
 );
+const IPCA_PROVENANCE_SQL = readFileSync(
+  new URL("./migrations/003_ipca_provenance.sql", import.meta.url),
+  "utf8",
+);
 
 const MIGRATIONS = [
   { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
   { version: 2, name: "append_only_evidence", sql: APPEND_ONLY_SQL },
+  { version: 3, name: "ipca_item_provenance", sql: IPCA_PROVENANCE_SQL },
 ] as const;
 
 export function migrate(database: Database.Database): void {
