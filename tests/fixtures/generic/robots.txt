@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /private/
+Allow: /private/public/
+Sitemap: https://shop.test/sitemap.xml
+

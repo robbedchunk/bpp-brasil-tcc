@@ -1,0 +1,20 @@
+{
+  "pages": {
+    "0": {
+      "products": [
+        { "url": "/produto/1", "id": "1", "category": "mercearia" },
+        { "url": "/produto/2", "id": "2", "category": "mercearia" }
+      ]
+    },
+    "1": {
+      "products": [
+        { "url": "/produto/3", "id": "3", "category": "bebidas" },
+        { "url": "/produto/2", "id": "2", "category": "mercearia" }
+      ]
+    },
+    "2": {
+      "products": []
+    }
+  }
+}
+
