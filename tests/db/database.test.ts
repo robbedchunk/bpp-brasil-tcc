@@ -252,6 +252,7 @@ describe("database foundation", () => {
     const database = openMemoryDatabase();
 
     expect(database.pragma("foreign_keys", { simple: true })).toBe(1);
+    expect(database.pragma("recursive_triggers", { simple: true })).toBe(1);
     expect(database.pragma("busy_timeout", { simple: true })).toBe(5_000);
     expect(
       database
@@ -388,6 +389,38 @@ describe("database foundation", () => {
     ]) {
       expect(() => database.exec(statement)).toThrow(/immutable/);
     }
+  });
+
+  it("rejects INSERT OR REPLACE for fully immutable facts", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    expect(() =>
+      database.exec(`
+        INSERT OR REPLACE INTO heartbeats
+          (id, pipeline, retailer_id, run_id, scheduled_for, completed_at, status)
+        VALUES
+          ('heartbeat-1', 'collect', 'retailer-1', 'run-1',
+           '2026-07-10T03:00:00.000Z', '2026-07-10T03:05:00.000Z', 'rewritten')
+      `),
+    ).toThrow(/append-only/);
+  });
+
+  it("rejects INSERT OR REPLACE for lifecycle history", () => {
+    const database = openMemoryDatabase();
+    seedEvidenceGraph(database);
+
+    expect(() =>
+      database.exec(`
+        INSERT OR REPLACE INTO healing_events
+          (id, retailer_id, purpose, onset_run_id, previous_strategy_id, category,
+           status, tier_from, drift_started_at, detected_at)
+        VALUES
+          ('healing-1', 'retailer-1', 'extraction', 'run-1', 'strategy-1',
+           'rewritten', 'recovered', 1, '2026-07-10T03:00:00.000Z',
+           '2026-07-10T03:10:00.000Z')
+      `),
+    ).toThrow(/append-only/);
   });
 });
 

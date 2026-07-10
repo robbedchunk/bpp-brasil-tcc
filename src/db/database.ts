@@ -51,6 +51,7 @@ export function openDatabase(path: string): Database.Database {
   const database = new Database(path);
   try {
     database.pragma("foreign_keys = ON");
+    database.pragma("recursive_triggers = ON");
     database.pragma("journal_mode = WAL");
     database.pragma("busy_timeout = 5000");
     migrate(database);
