@@ -11,16 +11,18 @@ import type {
 } from "../strategies/schema.js";
 import type { ProductRef } from "../strategies/types.js";
 import type { DiscoveryExecutionContext } from "./executor.js";
+import { robotsCanFetch } from "./robots.js";
 
 async function selectorValues(
   page: Page,
   selectors: DomSelector[],
   defaultAttribute: string,
+  maxMatches: number,
 ): Promise<string[]> {
   for (const candidate of selectors) {
     try {
       const locator = page.locator(candidate.selector);
-      const count = await locator.count();
+      const count = Math.min(await locator.count(), maxMatches);
       const values: string[] = [];
       for (let index = 0; index < count; index += 1) {
         const item = locator.nth(index);
@@ -35,16 +37,13 @@ async function selectorValues(
   return [];
 }
 
-function robotsAllows(context: DiscoveryExecutionContext, url: string): boolean {
-  return context.robots !== undefined && context.robots.canFetch(url);
-}
-
 export async function discoverDomCrawl(
   strategy: DomCrawlDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): Promise<ProductRef[]> {
   return withRestrictedPage(strategy.allowedDomains, context, async (session) => {
     const refs: ProductRef[] = [];
+    const seenProducts = new Set<string>();
     const queued = [...strategy.startUrls];
     const seenPages = new Set<string>();
 
@@ -58,7 +57,7 @@ export async function discoverDomCrawl(
       } catch {
         continue;
       }
-      if (seenPages.has(pageUrl) || !robotsAllows(context, pageUrl)) continue;
+      if (seenPages.has(pageUrl) || !robotsCanFetch(context, pageUrl)) continue;
       seenPages.add(pageUrl);
       session.deniedUrl = null;
 
@@ -69,11 +68,17 @@ export async function discoverDomCrawl(
         });
         if (session.deniedUrl !== null || response === null || !response.ok()) continue;
         assertNavigationAllowed(session.page.url(), pageUrl, strategy.allowedDomains);
+        if (!robotsCanFetch(context, session.page.url())) continue;
       } catch {
         continue;
       }
 
-      const links = await selectorValues(session.page, strategy.linkSelectors, "href");
+      const links = await selectorValues(
+        session.page,
+        strategy.linkSelectors,
+        "href",
+        context.maxDomMatches ?? 1_000,
+      );
       for (const link of links) {
         let canonicalUrl: string;
         try {
@@ -85,7 +90,9 @@ export async function discoverDomCrawl(
         } catch {
           continue;
         }
-        if (!robotsAllows(context, canonicalUrl)) continue;
+        if (!robotsCanFetch(context, canonicalUrl)) continue;
+        if (seenProducts.has(canonicalUrl)) continue;
+        seenProducts.add(canonicalUrl);
         refs.push({ canonicalUrl, externalId: null, sourceCategory: null });
         if (refs.length >= strategy.maxProducts) return refs;
       }
@@ -95,6 +102,7 @@ export async function discoverDomCrawl(
           session.page,
           strategy.paginationSelectors,
           "href",
+          1,
         );
         if (next !== undefined) {
           try {
@@ -103,7 +111,7 @@ export async function discoverDomCrawl(
               session.page.url(),
               strategy.allowedDomains,
             );
-            if (!seenPages.has(nextUrl) && robotsAllows(context, nextUrl)) {
+            if (!seenPages.has(nextUrl) && robotsCanFetch(context, nextUrl)) {
               queued.push(nextUrl);
             }
           } catch {

@@ -10,6 +10,7 @@ import { canonicalizeRetailerUrl } from "../normalize/url.js";
 import type { SitemapDiscoveryStrategy } from "../strategies/schema.js";
 import type { ProductRef } from "../strategies/types.js";
 import type { DiscoveryExecutionContext } from "./executor.js";
+import { robotsCanFetch } from "./robots.js";
 
 const parser = new XMLParser({
   ignoreAttributes: true,
@@ -62,34 +63,40 @@ function responseXml(
   return new TextDecoder().decode(decompressed);
 }
 
-function matchingRobots(context: DiscoveryExecutionContext, url: string): boolean {
-  const policy = context.robots;
-  return policy !== undefined && policy.canFetch(url);
-}
-
 export async function* discoverSitemap(
   strategy: SitemapDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): AsyncGenerator<ProductRef> {
-  const queue = [...strategy.sitemapUrls];
+  const queue: string[] = [];
+  const queuedSitemaps = new Set<string>();
   const seenSitemaps = new Set<string>();
-  let products = 0;
+  const seenProducts = new Set<string>();
+
+  const enqueue = (candidate: string, baseUrl: string): void => {
+    if (queuedSitemaps.size + seenSitemaps.size >= strategy.maxSitemaps) return;
+    try {
+      const canonical = canonicalizeRetailerUrl(
+        candidate,
+        baseUrl,
+        strategy.allowedDomains,
+      );
+      if (seenSitemaps.has(canonical) || queuedSitemaps.has(canonical)) return;
+      queuedSitemaps.add(canonical);
+      queue.push(canonical);
+    } catch {
+      // Ignore cross-domain or malformed sitemap members.
+    }
+  };
+
+  for (const sitemapUrl of strategy.sitemapUrls) enqueue(sitemapUrl, sitemapUrl);
 
   while (queue.length > 0 && seenSitemaps.size < strategy.maxSitemaps) {
     const candidate = queue.shift();
     if (candidate === undefined) break;
 
-    let sitemapUrl: string;
-    try {
-      sitemapUrl = canonicalizeRetailerUrl(
-        candidate,
-        candidate,
-        strategy.allowedDomains,
-      );
-    } catch {
-      continue;
-    }
-    if (seenSitemaps.has(sitemapUrl) || !matchingRobots(context, sitemapUrl)) continue;
+    const sitemapUrl = candidate;
+    queuedSitemaps.delete(sitemapUrl);
+    if (seenSitemaps.has(sitemapUrl) || !robotsCanFetch(context, sitemapUrl)) continue;
     seenSitemaps.add(sitemapUrl);
 
     const fetched = await fetchBounded(
@@ -98,6 +105,7 @@ export async function* discoverSitemap(
       context,
     );
     if (!fetched.ok) continue;
+    if (!robotsCanFetch(context, fetched.response.url)) continue;
 
     let parsed: ParsedSitemap;
     try {
@@ -111,16 +119,7 @@ export async function* discoverSitemap(
     }
 
     for (const nested of parsed.sitemapUrls) {
-      try {
-        const nestedUrl = canonicalizeRetailerUrl(
-          nested,
-          sitemapUrl,
-          strategy.allowedDomains,
-        );
-        if (!seenSitemaps.has(nestedUrl)) queue.push(nestedUrl);
-      } catch {
-        // Ignore cross-domain or malformed sitemap members.
-      }
+      enqueue(nested, sitemapUrl);
     }
 
     for (const product of parsed.productUrls) {
@@ -134,10 +133,11 @@ export async function* discoverSitemap(
       } catch {
         continue;
       }
-      if (!matchingRobots(context, canonicalUrl)) continue;
+      if (!robotsCanFetch(context, canonicalUrl)) continue;
+      if (seenProducts.has(canonicalUrl)) continue;
+      seenProducts.add(canonicalUrl);
       yield { canonicalUrl, externalId: null, sourceCategory: null };
-      products += 1;
-      if (products >= strategy.maxProducts) return;
+      if (seenProducts.size >= strategy.maxProducts) return;
     }
   }
 }

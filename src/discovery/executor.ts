@@ -10,6 +10,7 @@ import { discoverSitemap } from "./sitemap.js";
 
 export interface DiscoveryExecutionContext extends ExtractionExecutionContext {
   robots?: RobotsPolicy;
+  robotsByOrigin?: ReadonlyMap<string, RobotsPolicy>;
 }
 
 async function* rawDiscovery(

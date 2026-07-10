@@ -1,7 +1,6 @@
-import { JSONPath } from "jsonpath-plus";
-
 import { parseBrl } from "../normalize/brl.js";
 import { normalizeUnit } from "../normalize/unit.js";
+import { safeJsonPathValue } from "../strategies/json-path.js";
 import type { FieldMap } from "../strategies/schema.js";
 import type { ExtractionResult } from "../strategies/types.js";
 
@@ -143,29 +142,18 @@ export function mapExtractionFields(
   };
 }
 
-function jsonPathValue(document: unknown, path: string): unknown {
-  const values = JSONPath<unknown[]>({
-    path,
-    json: document as null | boolean | number | string | object | unknown[],
-    resultType: "value",
-    wrap: true,
-    eval: false,
-  });
-  return values[0];
-}
-
 export function mapJsonExtractionFields(
   document: unknown,
   fields: FieldMap,
 ): ExtractionResult {
   try {
     return mapExtractionFields({
-      title: jsonPathValue(document, fields.title),
-      brand: jsonPathValue(document, fields.brand),
-      price: jsonPathValue(document, fields.price),
-      promoPrice: jsonPathValue(document, fields.promoPrice),
-      unit: jsonPathValue(document, fields.unit),
-      availability: jsonPathValue(document, fields.availability),
+      title: safeJsonPathValue(document, fields.title),
+      brand: safeJsonPathValue(document, fields.brand),
+      price: safeJsonPathValue(document, fields.price),
+      promoPrice: safeJsonPathValue(document, fields.promoPrice),
+      unit: safeJsonPathValue(document, fields.unit),
+      availability: safeJsonPathValue(document, fields.availability),
     });
   } catch (error) {
     return failed(

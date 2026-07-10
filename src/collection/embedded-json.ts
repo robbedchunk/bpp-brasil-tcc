@@ -12,6 +12,9 @@ import {
   type ExtractionExecutionContext,
 } from "./http.js";
 
+const MAX_JSON_LD_DEPTH = 64;
+const MAX_JSON_LD_NODES = 10_000;
+
 function failure(
   message: string,
   responded: boolean,
@@ -31,16 +34,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function expandedJsonLdNodes(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value.flatMap(expandedJsonLdNodes);
-  if (!isRecord(value)) return [];
+function expandedJsonLdNodes(values: unknown[]): unknown[] {
+  const stack = values
+    .map((value) => ({ value, depth: 0 }))
+    .reverse();
+  const expanded: unknown[] = [];
+  let visited = 0;
 
-  const graph = value["@graph"];
-  if (graph !== undefined) {
-    const expandedGraph = expandedJsonLdNodes(graph);
-    return expandedGraph.length > 0 ? expandedGraph : [value];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) break;
+    visited += 1;
+    if (visited > MAX_JSON_LD_NODES) {
+      throw new Error(`Embedded JSON-LD exceeds ${MAX_JSON_LD_NODES} nodes`);
+    }
+    if (current.depth > MAX_JSON_LD_DEPTH) {
+      throw new Error(`Embedded JSON-LD exceeds depth ${MAX_JSON_LD_DEPTH}`);
+    }
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: current.value[index], depth: current.depth + 1 });
+      }
+      continue;
+    }
+    if (!isRecord(current.value)) continue;
+
+    const graph = current.value["@graph"];
+    if (graph === undefined) {
+      expanded.push(current.value);
+    } else {
+      stack.push({ value: graph, depth: current.depth + 1 });
+    }
   }
-  return [value];
+  return expanded;
 }
 
 function isProductNode(value: unknown): boolean {
@@ -104,7 +130,7 @@ function extractionCandidates(
 ): unknown[] {
   if (strategy.source.kind !== "json-ld") return documents;
 
-  const expanded = documents.flatMap(expandedJsonLdNodes);
+  const expanded = expandedJsonLdNodes(documents);
   const products = expanded.filter(isProductNode);
   return products.length > 0 ? products : expanded;
 }
@@ -149,7 +175,17 @@ export async function executeEmbeddedJson(
   }
 
   const parsed = parseDocuments(rawDocuments);
-  const candidates = extractionCandidates(strategy, parsed.documents);
+  let candidates: unknown[];
+  try {
+    candidates = extractionCandidates(strategy, parsed.documents);
+  } catch (error) {
+    return failure(
+      error instanceof Error ? error.message : "Embedded JSON traversal failed",
+      true,
+      fetched.response.status,
+      fetched.response.body,
+    );
+  }
   if (candidates.length === 0) {
     const details = parsed.errors[0] ?? "Embedded JSON contained no objects";
     return failure(

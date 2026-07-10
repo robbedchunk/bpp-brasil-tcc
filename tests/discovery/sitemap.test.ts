@@ -59,6 +59,7 @@ describe("sitemap discovery", () => {
     const products = `<?xml version="1.0"?><urlset>
       <url><loc>https://shop.test/produto/1</loc></url>
       <url><loc>https://shop.test/produto/1?utm_source=duplicate</loc></url>
+      <url><loc>https://shop.test/produto/2</loc></url>
     </urlset>`;
     let calls = 0;
     const strategy = SitemapDiscoveryStrategySchema.parse({
@@ -68,7 +69,7 @@ describe("sitemap discovery", () => {
       allowedDomains: ["shop.test"],
       sitemapUrls: ["https://shop.test/index.xml"],
       maxSitemaps: 5,
-      maxProducts: 20,
+      maxProducts: 2,
     });
 
     const refs = await collect(executeDiscovery(strategy, {
@@ -79,7 +80,39 @@ describe("sitemap discovery", () => {
       },
     }));
 
-    expect(refs).toHaveLength(1);
+    expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
+      "https://shop.test/produto/1",
+      "https://shop.test/produto/2",
+    ]);
+    expect(calls).toBe(2);
+  });
+
+  it("bounds and de-duplicates the aggregate sitemap queue", async () => {
+    const nested = Array.from(
+      { length: 20 },
+      (_, index) => `<sitemap><loc>https://shop.test/${index}.xml</loc></sitemap>`,
+    ).join("");
+    const strategy = SitemapDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "sitemap",
+      allowedDomains: ["shop.test"],
+      sitemapUrls: ["https://shop.test/index.xml"],
+      maxSitemaps: 2,
+      maxProducts: 20,
+    });
+    let calls = 0;
+
+    await collect(executeDiscovery(strategy, {
+      robots: RobotsPolicy.allowAll("https://shop.test"),
+      fetch: async (input) => {
+        calls += 1;
+        return new Response(String(input).endsWith("index.xml")
+          ? `<sitemapindex>${nested}${nested}</sitemapindex>`
+          : "<urlset></urlset>");
+      },
+    }));
+
     expect(calls).toBe(2);
   });
 
@@ -105,5 +138,44 @@ describe("sitemap discovery", () => {
     expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
       "https://shop.test/produto/gzip",
     ]);
+  });
+
+  it("requires a matching robots policy for the final redirect origin", async () => {
+    const strategy = SitemapDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "sitemap",
+      allowedDomains: ["shop.test", "cdn.test"],
+      sitemapUrls: ["https://shop.test/sitemap.xml"],
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      robots: RobotsPolicy.allowAll("https://shop.test"),
+      fetch: async (input) => String(input).includes("shop.test")
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "https://cdn.test/sitemap.xml" },
+          })
+        : new Response("<urlset><url><loc>https://shop.test/product/1</loc></url></urlset>"),
+    }));
+
+    expect(refs).toEqual([]);
+  });
+
+  it("rejects gzip output that exceeds the aggregate body bound", async () => {
+    const xml = `<urlset><url><loc>https://shop.test/${"x".repeat(20_000)}</loc></url></urlset>`;
+    const strategy = SitemapDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "sitemap",
+      allowedDomains: ["shop.test"],
+      sitemapUrls: ["https://shop.test/products.xml.gz"],
+    });
+
+    await expect(collect(executeDiscovery(strategy, {
+      robots: RobotsPolicy.allowAll("https://shop.test"),
+      maxBodyBytes: 1_000,
+      fetch: async () => new Response(gzipSync(xml)),
+    }))).resolves.toEqual([]);
   });
 });

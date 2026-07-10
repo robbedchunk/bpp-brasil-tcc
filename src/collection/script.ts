@@ -92,6 +92,44 @@ async function withDeadline<T>(
   }
 }
 
+async function withTotalDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  parentSignal: AbortSignal | undefined,
+  cancel: () => Promise<void>,
+): Promise<T> {
+  const controller = new AbortController();
+  const signal = parentSignal === undefined
+    ? controller.signal
+    : AbortSignal.any([controller.signal, parentSignal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancellation = Promise.resolve();
+  let timeoutError: Error | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timeoutError = new Error(`Script exceeded ${timeoutMs} ms`);
+      timeoutError.name = "TimeoutError";
+      controller.abort(timeoutError);
+      cancellation = cancel().catch(() => undefined);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  const work = Promise.resolve().then(() => operation(signal));
+
+  try {
+    return await Promise.race([work, timeout]);
+  } catch (error) {
+    if (timeoutError !== undefined) {
+      await cancellation;
+      await work.catch(() => undefined);
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function readFirst(
   page: Page,
   selectors: DomExtractOperation["selectors"][keyof DomExtractOperation["selectors"]],
@@ -207,7 +245,11 @@ export async function executeRestrictedScript(
     return await withRestrictedPage(
       strategy.allowedDomains,
       executionContext,
-      async (session) => withDeadline(async () => {
+      async (session) => withTotalDeadline(async (totalSignal) => {
+        const programContext: ExtractionExecutionContext = {
+          ...executionContext,
+          signal: totalSignal,
+        };
         const savedJson = new Map<string, unknown>();
         let result: ExtractionResult | null = null;
 
@@ -221,8 +263,8 @@ export async function executeRestrictedScript(
                 ref,
               );
               const httpContext = operation.timeoutMs === undefined
-                ? executionContext
-                : { ...executionContext, timeoutMs: operation.timeoutMs };
+                ? programContext
+                : { ...programContext, timeoutMs: operation.timeoutMs };
               const fetched = await fetchBounded(
                 request,
                 strategy.allowedDomains,
@@ -290,9 +332,15 @@ export async function executeRestrictedScript(
           if (session.deniedUrl !== null) {
             return failure("domain-denied", `URL domain is not allowed: ${session.deniedUrl}`, false);
           }
+          if (session.bodyLimitExceeded) {
+            return failure("parse", "Browser response exceeded maxBodyBytes", true);
+          }
           return asFailure(error);
         }
-      }, MAX_TOTAL_RUNTIME_MS),
+      },
+      executionContext.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
+      executionContext.signal,
+      async () => session.page.close()),
     );
   } catch (error) {
     return asFailure(error);

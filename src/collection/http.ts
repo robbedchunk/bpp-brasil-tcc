@@ -28,8 +28,11 @@ export type FetchLike = (
 export interface ExtractionExecutionContext {
   fetch?: FetchLike;
   browser?: Browser;
+  signal?: AbortSignal;
   timeoutMs?: number;
+  totalTimeoutMs?: number;
   maxBodyBytes?: number;
+  maxDomMatches?: number;
   maxRedirects?: number;
   userAgent?: string;
 }
@@ -310,6 +313,10 @@ function isTimeoutError(error: unknown, signal: AbortSignal): boolean {
     && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
+async function cancelResponseBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
+}
+
 export async function fetchBounded(
   request: BoundedHttpRequest,
   allowedDomains: string[],
@@ -325,7 +332,10 @@ export async function fetchBounded(
     context.maxRedirects,
     DEFAULT_MAX_REDIRECTS,
   );
-  const signal = AbortSignal.timeout(timeoutMs);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = context.signal === undefined
+    ? timeoutSignal
+    : AbortSignal.any([timeoutSignal, context.signal]);
   const headers = new Headers(request.headers);
   headers.set(
     "user-agent",
@@ -385,6 +395,7 @@ export async function fetchBounded(
       try {
         assertAllowedUrl(response.url, allowedDomains);
       } catch (error) {
+        await cancelResponseBody(response);
         return {
           ok: false,
           failure: extractionFailure(
@@ -400,6 +411,7 @@ export async function fetchBounded(
     if (REDIRECT_STATUSES.has(response.status)) {
       const location = response.headers.get("location");
       if (location === null) {
+        await cancelResponseBody(response);
         return {
           ok: false,
           failure: extractionFailure(
@@ -410,7 +422,7 @@ export async function fetchBounded(
           ),
         };
       }
-      await response.body?.cancel().catch(() => undefined);
+      await cancelResponseBody(response);
       let nextUrl: string;
       try {
         nextUrl = new URL(location, currentUrl).toString();

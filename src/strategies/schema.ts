@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isSafeJsonPath } from "./json-path.js";
+
 const EXTRACTION_PLACEHOLDERS = [
   "productUrl",
   "externalId",
@@ -201,7 +203,12 @@ const CommonStrategyShape = {
   allowedDomains: z.array(AllowedDomainSchema).min(1).max(20),
 };
 
-export const JsonPathSchema = z.string().min(1).max(1_000).startsWith("$");
+export const JsonPathSchema = z
+  .string()
+  .min(1)
+  .max(1_000)
+  .startsWith("$")
+  .refine(isSafeJsonPath, "Unsafe JSONPath expression");
 
 export const JsonFieldMapSchema = z
   .object({

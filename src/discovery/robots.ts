@@ -1,6 +1,6 @@
 import robotsParser from "robots-parser";
 
-const DEFAULT_USER_AGENT = "tcc-price-research-bot";
+import { DEFAULT_RESEARCH_USER_AGENT } from "../collection/http.js";
 
 interface ParsedRobots {
   isAllowed(url: string, userAgent?: string): boolean | undefined;
@@ -15,6 +15,7 @@ const parseRobots = robotsParser as unknown as (
 
 export class RobotsPolicy {
   readonly origin: string;
+  readonly userAgent: string;
   readonly sitemaps: string[];
   readonly crawlDelaySeconds: number | null;
   readonly #robots: ParsedRobots;
@@ -26,6 +27,7 @@ export class RobotsPolicy {
     userAgent: string,
   ) {
     this.origin = origin;
+    this.userAgent = userAgent;
     this.#robots = robots;
     this.#userAgent = userAgent;
     this.sitemaps = [...robots.getSitemaps()];
@@ -35,7 +37,7 @@ export class RobotsPolicy {
   static parse(
     robotsUrl: string,
     text: string,
-    userAgent = DEFAULT_USER_AGENT,
+    userAgent = DEFAULT_RESEARCH_USER_AGENT,
   ): RobotsPolicy {
     const url = new URL(robotsUrl);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -48,7 +50,10 @@ export class RobotsPolicy {
     );
   }
 
-  static allowAll(origin: string, userAgent = DEFAULT_USER_AGENT): RobotsPolicy {
+  static allowAll(
+    origin: string,
+    userAgent = DEFAULT_RESEARCH_USER_AGENT,
+  ): RobotsPolicy {
     const robotsUrl = new URL("/robots.txt", origin).toString();
     return RobotsPolicy.parse(robotsUrl, "User-agent: *\nDisallow:\n", userAgent);
   }
@@ -63,4 +68,29 @@ export class RobotsPolicy {
     if (url.origin !== this.origin) return false;
     return this.#robots.isAllowed(url.toString(), this.#userAgent) !== false;
   }
+}
+
+export interface RobotsPolicyContext {
+  robots?: RobotsPolicy;
+  robotsByOrigin?: ReadonlyMap<string, RobotsPolicy>;
+  userAgent?: string;
+}
+
+export function robotsCanFetch(
+  context: RobotsPolicyContext,
+  target: string,
+): boolean {
+  let origin: string;
+  try {
+    origin = new URL(target).origin;
+  } catch {
+    return false;
+  }
+  const policy = context.robots?.origin === origin
+    ? context.robots
+    : context.robotsByOrigin?.get(origin);
+  const userAgent = context.userAgent?.trim() || DEFAULT_RESEARCH_USER_AGENT;
+  return policy !== undefined
+    && policy.userAgent === userAgent
+    && policy.canFetch(target);
 }

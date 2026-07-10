@@ -29,6 +29,23 @@ describe("DOM crawl discovery", () => {
     );
     server = await startLocalHttpServer((request, response) => {
       response.setHeader("content-type", "text/html; charset=utf-8");
+      if (request.url === "/redirect-origin") {
+        const host = request.headers.host?.replace("127.0.0.1", "localhost");
+        response.writeHead(302, { location: `http://${host}/final-origin` });
+        response.end();
+        return;
+      }
+      if (request.url === "/final-origin") {
+        response.end(`<a class="product" href="http://127.0.0.1:${server.origin.split(":").at(-1)}/produto/1">1</a>`);
+        return;
+      }
+      if (request.url === "/many") {
+        response.end(Array.from(
+          { length: 5 },
+          (_, index) => `<a class="product" href="/produto/${index + 1}">${index + 1}</a>`,
+        ).join(""));
+        return;
+      }
       response.end(request.url === "/categoria?page=2"
         ? `<a class="product" href="/produto/2">2</a>
            <a class="product" href="/produto/3">3</a>
@@ -67,5 +84,68 @@ describe("DOM crawl discovery", () => {
       { canonicalUrl: `${server.origin}/produto/3`, externalId: null, sourceCategory: null },
     ]);
   });
-});
 
+  it("applies product caps after canonical de-duplication", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/categoria?page=1`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 2,
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+    }));
+
+    expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
+      `${server.origin}/produto/1`,
+      `${server.origin}/produto/2`,
+    ]);
+  });
+
+  it("bounds selector traversal before reading every match", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/many`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 10,
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+      maxDomMatches: 2,
+    }));
+
+    expect(refs).toHaveLength(2);
+  });
+
+  it("requires robots for the final allowed redirect origin before parsing", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1", "localhost"],
+      startUrls: [`${server.origin}/redirect-origin`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 10,
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+    }));
+
+    expect(refs).toEqual([]);
+  });
+});

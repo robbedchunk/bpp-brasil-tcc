@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { RobotsPolicy } from "../../src/discovery/robots.js";
+import { DEFAULT_RESEARCH_USER_AGENT } from "../../src/collection/http.js";
 
 describe("RobotsPolicy", () => {
   it("applies allow/disallow precedence and exposes declared sitemaps", async () => {
@@ -16,6 +17,7 @@ describe("RobotsPolicy", () => {
     expect(robots.canFetch("https://shop.test/private/x")).toBe(false);
     expect(robots.canFetch("https://shop.test/private/public/x")).toBe(true);
     expect(robots.sitemaps).toEqual(["https://shop.test/sitemap.xml"]);
+    expect(robots.userAgent).toBe(DEFAULT_RESEARCH_USER_AGENT);
   });
 
   it("never applies one origin's policy to a different origin", () => {
@@ -27,4 +29,3 @@ describe("RobotsPolicy", () => {
     expect(robots.canFetch("https://evil.test/product/1")).toBe(false);
   });
 });
-

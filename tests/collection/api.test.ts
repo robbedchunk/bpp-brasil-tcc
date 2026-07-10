@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { executeExtraction } from "../../src/collection/executor.js";
 import { mapExtractionFields } from "../../src/collection/field-map.js";
 import {
+  DEFAULT_RESEARCH_USER_AGENT,
   fetchBounded,
   renderTemplateString,
   type FetchLike,
@@ -88,7 +89,9 @@ describe("API extraction", () => {
     );
     expect(seen[0]?.init).toMatchObject({ method: "GET", redirect: "manual" });
     expect(new Headers(seen[0]?.init?.headers).get("x-product-id")).toBe("1/2");
-    expect(new Headers(seen[0]?.init?.headers).get("user-agent")).toMatch(/research/iu);
+    expect(new Headers(seen[0]?.init?.headers).get("user-agent")).toBe(
+      DEFAULT_RESEARCH_USER_AGENT,
+    );
   });
 
   it("renders nested POST body JSON templates without changing value types", async () => {
@@ -174,6 +177,38 @@ describe("API extraction", () => {
       ok: false,
       failure: { category: "domain-denied", responded: true, statusCode: 302 },
     });
+  });
+
+  it("cancels response bodies on denied final URLs and malformed redirects", async () => {
+    const cancellations: string[] = [];
+    const body = (label: string) => new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("pending"));
+      },
+      cancel() {
+        cancellations.push(label);
+      },
+    });
+    const denied = new Response(body("denied"), { status: 200 });
+    Object.defineProperty(denied, "url", { value: "https://evil.test/result" });
+
+    const deniedResult = await fetchBounded(
+      { url: "https://shop.test/start", method: "GET" },
+      ["shop.test"],
+      { fetch: async () => denied },
+    );
+    const malformedRedirect = await fetchBounded(
+      { url: "https://shop.test/start", method: "GET" },
+      ["shop.test"],
+      { fetch: async () => new Response(body("redirect"), { status: 302 }) },
+    );
+
+    expect(deniedResult).toMatchObject({
+      ok: false,
+      failure: { category: "domain-denied" },
+    });
+    expect(malformedRedirect).toMatchObject({ ok: false });
+    expect(cancellations).toEqual(["denied", "redirect"]);
   });
 
   it("categorizes malformed redirect locations instead of throwing", async () => {

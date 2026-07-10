@@ -169,6 +169,21 @@ describe("extraction strategy schemas", () => {
       }),
     ).toThrow();
   });
+
+  it("rejects JSONPath filters and method-call expressions", () => {
+    for (const unsafePath of [
+      "$.items[?(@.price > 0)]",
+      "$.items[?(@.name.toString())]",
+      "$['constructor']['constructor']('return process')()",
+    ]) {
+      expect(() => ApiExtractionStrategySchema.parse({
+        ...extractionBase,
+        tier: "api",
+        request: { method: "GET", url: "{productUrl}", headers: {} },
+        fields: { ...jsonFields, title: unsafePath },
+      })).toThrow(/JSONPath|unsafe/iu);
+    }
+  });
 });
 
 describe("discovery strategy schemas", () => {

@@ -120,4 +120,55 @@ describe("script discovery", () => {
       { canonicalUrl: `${server.origin}/produto/5`, externalId: "5", sourceCategory: "hortifruti" },
     ]);
   });
+
+  it("cancels an in-flight HTTP operation at the total deadline", async () => {
+    const strategy = ScriptDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        {
+          op: "http",
+          request: { method: "GET", url: "https://shop.test/pending", headers: {} },
+          saveAs: "pending",
+          timeoutMs: 2_000,
+        },
+        {
+          op: "extract",
+          source: "json",
+          from: "pending",
+          itemsPath: "$.items[*]",
+          refFields: { url: "$.url" },
+        },
+      ],
+    });
+    let active = 0;
+    let aborted = false;
+    const startedAt = Date.now();
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      totalTimeoutMs: 25,
+      fetch: async (_input, init) => {
+        active += 1;
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(init.signal?.reason);
+            }, { once: true });
+          });
+        } finally {
+          active -= 1;
+        }
+        throw new Error("unreachable");
+      },
+    }));
+
+    expect(refs).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(aborted).toBe(true);
+    expect(active).toBe(0);
+  });
 });

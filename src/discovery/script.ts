@@ -1,4 +1,3 @@
-import { JSONPath } from "jsonpath-plus";
 import type { Page } from "playwright";
 
 import {
@@ -7,6 +6,10 @@ import {
 } from "../collection/browser.js";
 import { fetchBounded } from "../collection/http.js";
 import { canonicalizeRetailerUrl } from "../normalize/url.js";
+import {
+  safeJsonPathValue,
+  safeJsonPathValues,
+} from "../strategies/json-path.js";
 import type {
   DiscoveryRequestTemplate,
   DiscoveryScriptOperation,
@@ -50,6 +53,42 @@ async function withDeadline<T>(
   }
 }
 
+async function withTotalDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  parentSignal: AbortSignal | undefined,
+  cancel: () => Promise<void>,
+): Promise<T> {
+  const controller = new AbortController();
+  const signal = parentSignal === undefined
+    ? controller.signal
+    : AbortSignal.any([controller.signal, parentSignal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancellation = Promise.resolve();
+  let timedOut = false;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const error = new Error(`Script exceeded ${timeoutMs} ms`);
+      controller.abort(error);
+      cancellation = cancel().catch(() => undefined);
+      reject(error);
+    }, timeoutMs);
+  });
+  const work = Promise.resolve().then(() => operation(signal));
+  try {
+    return await Promise.race([work, timeout]);
+  } catch (error) {
+    if (timedOut) {
+      await cancellation;
+      await work.catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function renderDiscoveryString(template: string): string {
   return template.replace(
     /\{(page|pageSize|offset|from|to|cursor)\}/gu,
@@ -61,11 +100,12 @@ async function selectorLinks(
   page: Page,
   selectors: DomExtract["linkSelectors"],
   timeoutMs: number,
+  maxMatches: number,
 ): Promise<string[]> {
   for (const candidate of selectors) {
     try {
       const locator = page.locator(candidate.selector);
-      const count = await locator.count();
+      const count = Math.min(await locator.count(), maxMatches);
       const values: string[] = [];
       for (let index = 0; index < count; index += 1) {
         const value = await locator.nth(index).getAttribute(
@@ -83,26 +123,14 @@ async function selectorLinks(
 }
 
 function jsonValues(document: unknown, path: string): unknown[] {
-  const values = JSONPath<unknown[]>({
-    path,
-    json: document as null | boolean | number | string | object | unknown[],
-    resultType: "value",
-    wrap: true,
-    eval: false,
-  });
+  const values = safeJsonPathValues(document, path);
   if (values.length === 1 && Array.isArray(values[0])) return values[0] as unknown[];
   return values;
 }
 
 function jsonValue(document: unknown, path: string | undefined): unknown {
   if (path === undefined) return undefined;
-  return JSONPath({
-    path,
-    json: document as null | boolean | number | string | object | unknown[],
-    resultType: "value",
-    wrap: false,
-    eval: false,
-  });
+  return safeJsonPathValue(document, path);
 }
 
 function optionalString(value: unknown): string | null {
@@ -187,13 +215,25 @@ export async function discoverScript(
   if (strategy.operations.length > MAX_OPERATIONS) return [];
 
   try {
-    return await withRestrictedPage(strategy.allowedDomains, context, async (session) => withDeadline(async () => {
+    return await withRestrictedPage(strategy.allowedDomains, context, async (session) => withTotalDeadline(async (totalSignal) => {
+      const programContext: DiscoveryExecutionContext = {
+        ...context,
+        signal: totalSignal,
+      };
       const refs: ProductRef[] = [];
+      const seenRefs = new Set<string>();
       const savedJson = new Map<string, SavedJson>();
+
+      const appendRef = (ref: ProductRef): boolean => {
+        if (seenRefs.has(ref.canonicalUrl)) return false;
+        seenRefs.add(ref.canonicalUrl);
+        refs.push(ref);
+        return refs.length >= strategy.maxProducts;
+      };
 
       try {
         for (const operation of strategy.operations) {
-          if (session.deniedUrl !== null) return [];
+          if (session.deniedUrl !== null || session.bodyLimitExceeded) return [];
 
           if (operation.op === "http") {
             const request = renderDiscoveryRequest(
@@ -201,8 +241,8 @@ export async function discoverScript(
               EMPTY_PAGINATION,
             );
             const requestContext = operation.timeoutMs === undefined
-              ? context
-              : { ...context, timeoutMs: operation.timeoutMs };
+              ? programContext
+              : { ...programContext, timeoutMs: operation.timeoutMs };
             const fetched = await fetchBounded(
               request,
               strategy.allowedDomains,
@@ -225,12 +265,17 @@ export async function discoverScript(
             const timeout = operation.timeoutMs ?? context.timeoutMs ?? 10_000;
             if (operation.source === "dom") {
               const links = await withDeadline(
-                async () => selectorLinks(session.page, operation.linkSelectors, timeout),
+                async () => selectorLinks(
+                  session.page,
+                  operation.linkSelectors,
+                  timeout,
+                  context.maxDomMatches ?? 1_000,
+                ),
                 timeout,
               );
               for (const link of links) {
                 try {
-                  refs.push({
+                  if (appendRef({
                     canonicalUrl: canonicalizeRetailerUrl(
                       link,
                       session.page.url(),
@@ -238,7 +283,7 @@ export async function discoverScript(
                     ),
                     externalId: null,
                     sourceCategory: null,
-                  });
+                  })) return refs;
                 } catch {
                   // Ignore malformed or cross-domain discovered URLs.
                 }
@@ -246,19 +291,21 @@ export async function discoverScript(
             } else {
               const saved = savedJson.get(operation.from);
               if (saved === undefined) return [];
-              refs.push(...await withDeadline(
+              const discovered = await withDeadline(
                 async () => jsonRefs(saved, operation, strategy),
                 timeout,
-              ));
+              );
+              for (const ref of discovered) {
+                if (appendRef(ref)) return refs;
+              }
             }
             if (session.deniedUrl !== null) return [];
-            if (refs.length >= strategy.maxProducts) return refs.slice(0, strategy.maxProducts);
             continue;
           }
 
           session.deniedUrl = null;
           await withDeadline(
-            async () => pageOperation(operation, session.page, strategy, context),
+            async () => pageOperation(operation, session.page, strategy, programContext),
             operation.timeoutMs ?? context.timeoutMs ?? 10_000,
           );
           if (session.deniedUrl !== null) return [];
@@ -268,7 +315,10 @@ export async function discoverScript(
       }
 
       return refs.slice(0, strategy.maxProducts);
-    }, MAX_TOTAL_RUNTIME_MS));
+    },
+    context.totalTimeoutMs ?? MAX_TOTAL_RUNTIME_MS,
+    context.signal,
+    async () => session.page.close()));
   } catch {
     return [];
   }

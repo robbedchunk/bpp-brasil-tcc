@@ -153,4 +153,40 @@ describe("embedded JSON extraction", () => {
       failure: { category: "parse", responded: true },
     });
   });
+
+  it("rejects over-deep JSON-LD graphs with a categorized failure", async () => {
+    let nested = JSON.stringify({
+      "@type": "Product",
+      name: "Deep Product",
+      brand: "Brand",
+      price: 10,
+      promo: 9,
+      unit: "1 kg",
+      available: true,
+    });
+    for (let depth = 0; depth < 200; depth += 1) {
+      nested = `{"@graph":[${nested}]}`;
+    }
+    const extractionStrategy = strategy(
+      { kind: "json-ld" },
+      {
+        title: "$.name",
+        brand: "$.brand",
+        price: "$.price",
+        promoPrice: "$.promo",
+        unit: "$.unit",
+        availability: "$.available",
+      },
+    );
+
+    await expect(executeExtraction(extractionStrategy, productRef, {
+      fetch: async () => new Response(
+        `<script type="application/ld+json">${nested}</script>`,
+        { headers: { "content-type": "text/html" } },
+      ),
+    })).resolves.toMatchObject({
+      ok: false,
+      failure: { category: "parse", responded: true },
+    });
+  });
 });

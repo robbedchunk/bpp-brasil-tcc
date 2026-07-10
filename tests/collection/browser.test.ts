@@ -25,4 +25,34 @@ describe("withRestrictedPage", () => {
     expect(closeContext).toHaveBeenCalledOnce();
     expect(closeBrowser).not.toHaveBeenCalled();
   });
+
+  it("closes an isolated context when execution fails after setup", async () => {
+    const closeContext = vi.fn(async () => undefined);
+    const page = {
+      setDefaultTimeout: vi.fn(),
+      on: vi.fn(),
+      mainFrame: vi.fn(),
+    };
+    const browserContext = {
+      newPage: vi.fn(async () => page),
+      routeWebSocket: vi.fn(async () => undefined),
+      route: vi.fn(async () => undefined),
+      close: closeContext,
+    };
+    const browser = {
+      newContext: vi.fn(async () => browserContext),
+      close: vi.fn(async () => undefined),
+    };
+
+    await expect(withRestrictedPage(
+      ["shop.test"],
+      { browser: browser as never },
+      async () => {
+        throw new Error("execution failed");
+      },
+    )).rejects.toThrow("execution failed");
+
+    expect(closeContext).toHaveBeenCalledOnce();
+    expect(browser.close).not.toHaveBeenCalled();
+  });
 });

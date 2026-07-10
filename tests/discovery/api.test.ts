@@ -146,4 +146,108 @@ describe("API discovery", () => {
       "https://shop.test/api/next%26admin%3Dtrue%2Fsegment",
     );
   });
+
+  it("applies product caps after canonical de-duplication", async () => {
+    const strategy = ApiDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: { method: "GET", url: "https://shop.test/api?page={page}", headers: {} },
+      itemsPath: "$.items[*]",
+      refFields: { url: "$.url" },
+      pagination: { kind: "page", start: 0, pageSize: 3, maxPages: 1 },
+      maxProducts: 2,
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      fetch: async () => new Response(JSON.stringify({ items: [
+        { url: "/produto/1" },
+        { url: "/produto/1?utm_source=duplicate" },
+        { url: "/produto/2" },
+      ] })),
+    }));
+
+    expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
+      "https://shop.test/produto/1",
+      "https://shop.test/produto/2",
+    ]);
+  });
+
+  it("stops page and offset pagination on partial pages", async () => {
+    const common = {
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      itemsPath: "$.items[*]",
+      refFields: { url: "$.url" },
+    } as const;
+    const strategies = [
+      ApiDiscoveryStrategySchema.parse({
+        ...common,
+        request: { method: "GET", url: "https://shop.test/api?page={page}", headers: {} },
+        pagination: { kind: "page", start: 0, pageSize: 2, maxPages: 5 },
+      }),
+      ApiDiscoveryStrategySchema.parse({
+        ...common,
+        request: { method: "GET", url: "https://shop.test/api?offset={offset}", headers: {} },
+        pagination: { kind: "offset", start: 0, step: 2, pageSize: 2, maxPages: 5 },
+      }),
+    ];
+
+    for (const strategy of strategies) {
+      let calls = 0;
+      const refs = await collect(executeDiscovery(strategy, {
+        fetch: async () => {
+          calls += 1;
+          return new Response(JSON.stringify({ items: [{ url: "/produto/1" }] }));
+        },
+      }));
+      expect(refs).toHaveLength(1);
+      expect(calls).toBe(1);
+    }
+  });
+
+  it("terminates constant requests and repeated response pages", async () => {
+    const base = {
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      itemsPath: "$.items[*]",
+      refFields: { url: "$.url" },
+      pagination: { kind: "page", start: 0, pageSize: 2, maxPages: 5 },
+    } as const;
+    const constant = ApiDiscoveryStrategySchema.parse({
+      ...base,
+      request: { method: "GET", url: "https://shop.test/api", headers: {} },
+    });
+    const changing = ApiDiscoveryStrategySchema.parse({
+      ...base,
+      request: { method: "GET", url: "https://shop.test/api?page={page}", headers: {} },
+    });
+    const body = JSON.stringify({ items: [
+      { url: "/produto/1" },
+      { url: "/produto/2" },
+    ] });
+    let constantCalls = 0;
+    let changingCalls = 0;
+
+    await collect(executeDiscovery(constant, {
+      fetch: async () => {
+        constantCalls += 1;
+        return new Response(body);
+      },
+    }));
+    await collect(executeDiscovery(changing, {
+      fetch: async () => {
+        changingCalls += 1;
+        return new Response(body);
+      },
+    }));
+
+    expect(constantCalls).toBe(1);
+    expect(changingCalls).toBe(2);
+  });
 });

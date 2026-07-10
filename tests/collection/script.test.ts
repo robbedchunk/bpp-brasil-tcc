@@ -269,4 +269,69 @@ describe("executeRestrictedScript", () => {
       failure: { category: "domain-denied" },
     });
   });
+
+  it("aborts and awaits an in-flight HTTP operation at the total deadline", async () => {
+    const strategy = ScriptStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        {
+          op: "http",
+          request: { method: "GET", url: "https://shop.test/pending", headers: {} },
+          saveAs: "pending",
+          timeoutMs: 2_000,
+        },
+        {
+          op: "extract",
+          source: "json",
+          from: "pending",
+          fields: {
+            title: "$.name",
+            brand: "$.brand",
+            price: "$.price",
+            promoPrice: "$.promo",
+            unit: "$.unit",
+            availability: "$.available",
+          },
+        },
+      ],
+    });
+    let activeFetches = 0;
+    let aborted = false;
+    const startedAt = Date.now();
+
+    const result = await executeRestrictedScript(
+      strategy,
+      {
+        canonicalUrl: "https://shop.test/product/1",
+        externalId: "1",
+        sourceCategory: null,
+      },
+      {
+        browser,
+        totalTimeoutMs: 25,
+        fetch: async (_input, init) => {
+          activeFetches += 1;
+          try {
+            await new Promise<never>((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                aborted = true;
+                reject(init.signal?.reason);
+              }, { once: true });
+            });
+          } finally {
+            activeFetches -= 1;
+          }
+          throw new Error("unreachable");
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok: false, failure: { category: "timeout" } });
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(aborted).toBe(true);
+    expect(activeFetches).toBe(0);
+  });
 });

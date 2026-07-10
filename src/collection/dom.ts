@@ -117,6 +117,9 @@ export async function executeDom(
           if (session.deniedUrl !== null) {
             return failure("domain-denied", `URL domain is not allowed: ${session.deniedUrl}`, false);
           }
+          if (session.bodyLimitExceeded) {
+            return failure("parse", "Browser response exceeded maxBodyBytes", true);
+          }
           return failure(
             errorCategory(error),
             error instanceof Error ? error.message : "Browser extraction failed",

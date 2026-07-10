@@ -1,6 +1,10 @@
-import { JSONPath } from "jsonpath-plus";
+import { createHash } from "node:crypto";
 
 import { canonicalizeRetailerUrl } from "../normalize/url.js";
+import {
+  safeJsonPathValue,
+  safeJsonPathValues,
+} from "../strategies/json-path.js";
 import type {
   ApiDiscoveryStrategy,
   DiscoveryRequestTemplate,
@@ -84,20 +88,14 @@ export function renderDiscoveryRequest(
 }
 
 function jsonPathValues(document: unknown, path: string): unknown[] {
-  const result = JSONPath({ path, json: document as object, resultType: "value" });
-  if (!Array.isArray(result)) return result === undefined ? [] : [result];
+  const result = safeJsonPathValues(document, path);
   if (result.length === 1 && Array.isArray(result[0])) return result[0] as unknown[];
-  return result as unknown[];
+  return result;
 }
 
 function jsonPathValue(document: unknown, path: string | undefined): unknown {
   if (path === undefined) return undefined;
-  return JSONPath({
-    path,
-    json: document as object,
-    resultType: "value",
-    wrap: false,
-  });
+  return safeJsonPathValue(document, path);
 }
 
 function optionalString(value: unknown): string | null {
@@ -162,11 +160,30 @@ function valuesFor(
   };
 }
 
+function requestFingerprint(request: BoundedHttpRequest): string {
+  return JSON.stringify({
+    method: request.method,
+    url: request.url,
+    headers: Object.entries(request.headers ?? {}).sort(([left], [right]) =>
+      left.localeCompare(right)),
+    body: request.body === undefined || request.body === null
+      ? null
+      : String(request.body),
+  });
+}
+
+function responseFingerprint(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
+}
+
 export async function* discoverApi(
   strategy: ApiDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): AsyncGenerator<ProductRef> {
   const seenCursors = new Set<string>();
+  const seenRequests = new Set<string>();
+  const seenResponses = new Set<string>();
+  const seenProducts = new Set<string>();
   let cursor = strategy.pagination.kind === "cursor"
     ? strategy.pagination.initial
     : null;
@@ -174,8 +191,14 @@ export async function* discoverApi(
 
   for (let attempt = 0; attempt < strategy.pagination.maxPages; attempt += 1) {
     const request = renderDiscoveryRequest(strategy.request, valuesFor(strategy, attempt, cursor));
+    const requestKey = requestFingerprint(request);
+    if (seenRequests.has(requestKey)) return;
+    seenRequests.add(requestKey);
     const fetched = await fetchBounded(request, strategy.allowedDomains, context);
     if (!fetched.ok) return;
+    const responseKey = responseFingerprint(fetched.response.body);
+    if (seenResponses.has(responseKey)) return;
+    seenResponses.add(responseKey);
 
     let document: unknown;
     try {
@@ -189,6 +212,8 @@ export async function* discoverApi(
     for (const item of items) {
       const ref = productRef(item, strategy, fetched.response.url || request.url);
       if (ref === null) continue;
+      if (seenProducts.has(ref.canonicalUrl)) continue;
+      seenProducts.add(ref.canonicalUrl);
       yield ref;
       produced += 1;
       if (produced >= strategy.maxProducts) return;
@@ -199,10 +224,7 @@ export async function* discoverApi(
       if (next === null || seenCursors.has(next)) return;
       seenCursors.add(next);
       cursor = next;
-    } else if (
-      strategy.pagination.kind === "offset" &&
-      items.length < strategy.pagination.pageSize
-    ) {
+    } else if (items.length < strategy.pagination.pageSize) {
       return;
     }
   }
