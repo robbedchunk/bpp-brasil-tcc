@@ -1,0 +1,37 @@
+{
+  "name": "tcc-ultra-super",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-healing online price extraction pilot for a bachelor's thesis.",
+  "type": "module",
+  "packageManager": "npm@11.16.0",
+  "bin": {
+    "precos": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "scripts": {
+    "build": "tsc && mkdir -p dist/db && cp src/db/schema.sql dist/db/schema.sql && chmod 0755 dist/cli.js",
+    "cli": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.11.1",
+    "commander": "15.0.0",
+    "playwright": "1.61.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.13.3",
+    "tsx": "4.23.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.1": true
+  }
+}
