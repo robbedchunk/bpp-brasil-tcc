@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { APIConnectionError } from "openai";
 
 import {
   finalizeClassificationBatch,
@@ -64,6 +65,11 @@ class FakeBatchClient implements OpenAIBatchClient {
   uploadedJsonl = "";
   createdBody: Record<string, unknown> | null = null;
   downloaded: string[] = [];
+  createCalls = 0;
+  listCalls = 0;
+  contentCalls = 0;
+  loseCreateResponse = false;
+  contentFailures = 0;
   state: Record<string, any> = {
     id: "batch-1",
     object: "batch",
@@ -84,6 +90,11 @@ class FakeBatchClient implements OpenAIBatchClient {
       return { id: "file-input" };
     },
     content: async (fileId) => {
+      this.contentCalls += 1;
+      if (this.contentFailures > 0) {
+        this.contentFailures -= 1;
+        throw new APIConnectionError({ message: "download reset" });
+      }
       this.downloaded.push(fileId);
       return new Response(fileId === "file-output" ? this.outputText : this.errorText);
     },
@@ -91,10 +102,22 @@ class FakeBatchClient implements OpenAIBatchClient {
 
   readonly batches: OpenAIBatchClient["batches"] = {
     create: async (body) => {
+      this.createCalls += 1;
       this.createdBody = body;
+      if (this.loseCreateResponse && this.createCalls === 1) {
+        throw new APIConnectionError({ message: "response lost after create" });
+      }
       return this.state;
     },
     retrieve: async () => this.state,
+    list: async () => {
+      this.listCalls += 1;
+      return {
+        data: this.loseCreateResponse
+          ? [{ ...this.state, metadata: { local_job_id: this.createdBody?.metadata?.local_job_id } }]
+          : [],
+      };
+    },
   };
 }
 
@@ -112,6 +135,7 @@ function dependencies(
     budgetGuard: new BudgetGuard(),
     model: "gpt-5.6-luna",
     now: () => new Date("2026-07-10T12:00:00.000Z"),
+    sleep: async () => {},
   };
 }
 
@@ -142,6 +166,24 @@ async function invokeCli(
 }
 
 describe("asynchronous OpenAI classification batches", () => {
+  it("reconciles a lost create response by deterministic remote metadata without a second create", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database);
+      const client = new FakeBatchClient();
+      client.loseCreateResponse = true;
+
+      await expect(submitClassificationBatch(options(), dependencies(database, client)))
+        .resolves.toMatchObject({ status: "submitted", providerBatchId: "batch-1" });
+      expect(client.createCalls).toBe(1);
+      expect(client.listCalls).toBeGreaterThanOrEqual(1);
+      expect(database.prepare("SELECT status, provider_batch_id FROM classification_batch_jobs").get())
+        .toEqual({ status: "submitted", provider_batch_id: "batch-1" });
+    } finally {
+      database.close();
+    }
+  });
+
   it("exposes a locked operator CLI for asynchronous submission", async () => {
     const database = openDatabase(":memory:");
     try {
@@ -290,6 +332,136 @@ describe("asynchronous OpenAI classification batches", () => {
         { status: "completed" },
         { status: "finalized_partial" },
       ]));
+    } finally {
+      database.close();
+    }
+  });
+
+  it("retains a remote-terminal claim through a retryable download and later finalizes", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database, 1);
+      const client = new FakeBatchClient();
+      client.state.request_counts = { total: 1, completed: 0, failed: 0 };
+      const submitted = await submitClassificationBatch(options(4), dependencies(database, client));
+      const mapping = database.prepare("SELECT custom_id FROM classification_batch_items").get() as {
+        custom_id: string;
+      };
+      client.outputText = `${JSON.stringify({
+        id: "batch-request-retry",
+        custom_id: mapping.custom_id,
+        response: {
+          status_code: 200,
+          request_id: "request-retry",
+          body: successBody("product-1"),
+        },
+        error: null,
+      })}\n`;
+      client.state = {
+        ...client.state,
+        status: "completed",
+        output_file_id: "file-output",
+        request_counts: { total: 1, completed: 1, failed: 0 },
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          total_tokens: 120,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+      };
+      await pollClassificationBatch(submitted.jobId, dependencies(database, client));
+      client.contentFailures = 1;
+
+      await expect(finalizeClassificationBatch(submitted.jobId, {
+        ...dependencies(database, client),
+        maxAttempts: 1,
+      })).rejects.toThrow("download reset");
+      expect(database.prepare("SELECT status FROM classification_batch_jobs").get())
+        .toEqual({ status: "finalize_retryable" });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get())
+        .toEqual({ count: 0 });
+
+      await expect(finalizeClassificationBatch(submitted.jobId, dependencies(database, client)))
+        .resolves.toMatchObject({ status: "finalized", classified: 1 });
+      expect(client.contentCalls).toBe(2);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("keeps completed remote claims out of a second Batch submission until local finalization", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database, 1);
+      const client = new FakeBatchClient();
+      client.state.request_counts = { total: 1, completed: 0, failed: 0 };
+      const submitted = await submitClassificationBatch(options(5), dependencies(database, client));
+      client.state = {
+        ...client.state,
+        status: "completed",
+        request_counts: { total: 1, completed: 0, failed: 1 },
+        usage: {
+          input_tokens: 10,
+          output_tokens: 1,
+          total_tokens: 11,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+        errors: {
+          object: "list",
+          data: [{ code: "invalid_request", line: 1, message: "bad line", param: "body" }],
+        },
+      };
+      await pollClassificationBatch(submitted.jobId, dependencies(database, client));
+
+      const second = await submitClassificationBatch(options(5), dependencies(database, client));
+      expect(second).toMatchObject({ eligible: 0, status: "completed", submitted: 0 });
+      expect(client.createCalls).toBe(1);
+      expect(JSON.parse((database.prepare(`
+        SELECT provider_errors_json FROM classification_batch_jobs WHERE id = ?
+      `).get(submitted.jobId) as { provider_errors_json: string }).provider_errors_json))
+        .toEqual([{ code: "invalid_request", line: 1, message: "bad line", param: "body" }]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    ["projected", 50, null],
+    ["actual", 0, 50],
+  ])("includes active-job %s cost when deciding another Batch submission", async (
+    _kind,
+    projectedCost,
+    actualCost,
+  ) => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database, 2);
+      database.prepare(`
+        INSERT INTO classification_batch_jobs
+          (id, provider, version, confidence_threshold, requested_model,
+           prompt_version, prompt_hash, input_sha256, status, total_items,
+           projected_cost_usd, actual_cost_usd, created_at, updated_at)
+        VALUES
+          ('job-commitment', 'openai', 6, 0.8, 'gpt-5.6-luna', 'prompt-v1',
+           ?, ?, 'completed', 1, ?, ?,
+           '2026-07-10T12:00:00.000Z', '2026-07-10T12:00:00.000Z')
+      `).run("d".repeat(64), "e".repeat(64), projectedCost, actualCost);
+      database.exec(`
+        INSERT INTO classification_batch_items
+          (id, job_id, custom_id, product_id, input_json, created_at)
+        VALUES
+          ('item-commitment', 'job-commitment', 'custom-commitment', 'product-1', '{}',
+           '2026-07-10T12:00:00.000Z')
+      `);
+      const client = new FakeBatchClient();
+
+      await expect(submitClassificationBatch(options(6), {
+        ...dependencies(database, client),
+        budgetGuard: new BudgetGuard(50),
+      })).resolves.toMatchObject({ status: "budget_denied", pending: 1 });
+      expect(client.createCalls).toBe(0);
     } finally {
       database.close();
     }

@@ -135,6 +135,46 @@ async function invokeCli(
 }
 
 describe("reviewed OpenAI provider evidence", () => {
+  it("retains billed usage when strict parsing throws at the raw SDK response boundary", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database);
+      const provider = new OpenAIProductClassifier({
+        client: {
+          responses: {
+            create: async () => response({
+              output: [{
+                type: "message",
+                content: [{ type: "output_text", text: "{not valid json" }],
+              }],
+            }),
+          },
+        },
+        env: {},
+      });
+
+      await expect(classifyNewProducts({
+        batchSize: 50,
+        confidenceThreshold: 0.8,
+        version: 1,
+      }, { database, provider, budgetGuard: new BudgetGuard() })).rejects.toThrow();
+      expect(database.prepare(`
+        SELECT model, input_tokens, output_tokens,
+               json_extract(details_json, '$.failureKind') AS failure_kind
+        FROM cost_ledger WHERE category = 'classification_failure'
+      `).get()).toEqual({
+        model: "gpt-5.6-luna-2026-06-30",
+        input_tokens: 100,
+        output_tokens: 20,
+        failure_kind: "schema_invalid",
+      });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get())
+        .toEqual({ count: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
   it.each([
     ["connection", new APIConnectionError({
       message: "connection reset",
@@ -362,19 +402,33 @@ describe("billed failure and retry accounting", () => {
 });
 
 describe("classification auditability and serialization", () => {
-  it("does not synchronously bill a product/version already claimed by an active Batch job", async () => {
+  it.each([
+    "preparing",
+    "submitted",
+    "validating",
+    "in_progress",
+    "finalizing",
+    "cancelling",
+    "completed",
+    "failed",
+    "expired",
+    "cancelled",
+    "finalize_retryable",
+  ])("does not synchronously bill a product/version claimed by a %s Batch job", async (status) => {
     const database = openDatabase(":memory:");
     try {
       seed(database);
-      database.exec(`
+      database.prepare(`
         INSERT INTO classification_batch_jobs
           (id, provider, version, confidence_threshold, requested_model,
            prompt_version, prompt_hash, input_sha256, status, total_items,
            created_at, updated_at)
         VALUES
           ('job-active', 'openai', 1, 0.8, 'gpt-5.6-luna', 'prompt-v1',
-           '${"d".repeat(64)}', '${"e".repeat(64)}', 'in_progress', 1,
-           '2026-07-10T12:00:00.000Z', '2026-07-10T12:00:00.000Z');
+           '${"d".repeat(64)}', '${"e".repeat(64)}', ?, 1,
+           '2026-07-10T12:00:00.000Z', '2026-07-10T12:00:00.000Z')
+      `).run(status);
+      database.exec(`
         INSERT INTO classification_batch_items
           (id, job_id, custom_id, product_id, input_json, created_at)
         VALUES
@@ -391,6 +445,52 @@ describe("classification auditability and serialization", () => {
         eligible: 0,
         status: "completed",
       });
+      expect(provider.calls).toBe(0);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.each([
+    ["projected", 50, null],
+    ["actual", 0, 50],
+  ])("adds an active Batch %s commitment to synchronous monthly budget", async (
+    _kind,
+    projectedCost,
+    actualCost,
+  ) => {
+    const database = openDatabase(":memory:");
+    try {
+      seed(database, 2);
+      database.prepare(`
+        INSERT INTO classification_batch_jobs
+          (id, provider, version, confidence_threshold, requested_model,
+           prompt_version, prompt_hash, input_sha256, status, total_items,
+           projected_cost_usd, actual_cost_usd, created_at, updated_at)
+        VALUES
+          ('job-budget', 'openai', 1, 0.8, 'gpt-5.6-luna', 'prompt-v1',
+           ?, ?, 'in_progress', 1, ?, ?,
+           '2026-07-10T12:00:00.000Z', '2026-07-10T12:00:00.000Z')
+      `).run("d".repeat(64), "e".repeat(64), projectedCost, actualCost);
+      database.exec(`
+        INSERT INTO classification_batch_items
+          (id, job_id, custom_id, product_id, input_json, created_at)
+        VALUES
+          ('item-budget', 'job-budget', 'custom-budget', 'product-1', '{}',
+           '2026-07-10T12:00:00.000Z')
+      `);
+      const provider = new FixtureClassifier();
+
+      await expect(classifyNewProducts({
+        batchSize: 50,
+        confidenceThreshold: 0.8,
+        version: 1,
+      }, {
+        database,
+        provider,
+        budgetGuard: new BudgetGuard(50),
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+      })).resolves.toMatchObject({ status: "budget_denied", pending: 1 });
       expect(provider.calls).toBe(0);
     } finally {
       database.close();

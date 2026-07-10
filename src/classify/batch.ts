@@ -5,7 +5,11 @@ import OpenAI, { toFile } from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
-import { BudgetGuard } from "../ops/budget.js";
+import {
+  BudgetGuard,
+  RELEASED_CLASSIFICATION_BATCH_STATUSES,
+  classificationMonthlyCommittedUsd,
+} from "../ops/budget.js";
 import {
   persistClassificationBatch,
   persistFailureAttempts,
@@ -13,6 +17,7 @@ import {
 } from "./classify.js";
 import {
   ClassificationResponseSchema,
+  isTransientOpenAIError,
 } from "./openai-provider.js";
 import {
   CLASSIFICATION_INSTRUCTIONS,
@@ -47,6 +52,10 @@ export interface RemoteBatch {
     input_tokens: number;
     output_tokens: number;
   };
+  metadata?: Record<string, string> | null;
+  errors?: {
+    data?: unknown[];
+  } | null;
   [key: string]: unknown;
 }
 
@@ -61,8 +70,9 @@ export interface OpenAIBatchClient {
       endpoint: "/v1/responses";
       completion_window: "24h";
       metadata: Record<string, string>;
-    }): Promise<RemoteBatch>;
+    }, options?: { idempotencyKey?: string }): Promise<RemoteBatch>;
     retrieve(batchId: string): Promise<RemoteBatch>;
+    list(query?: { limit?: number }): Promise<{ data: RemoteBatch[] }>;
   };
 }
 
@@ -82,6 +92,8 @@ export interface ClassificationBatchDependencies {
   budgetGuard?: BudgetGuard;
   model: string;
   now?: () => Date;
+  maxAttempts?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
 
 export interface BatchSubmissionSummary {
@@ -127,6 +139,9 @@ interface JobRow {
   failed_items: number;
   input_tokens: number;
   output_tokens: number;
+  projected_cost_usd: number;
+  actual_cost_usd: number | null;
+  provider_errors_json: string;
 }
 
 interface ItemRow {
@@ -178,13 +193,6 @@ const ResponseBodySchema = z.object({
   }).passthrough(),
 }).passthrough();
 
-const ACTIVE_JOB_STATUSES = [
-  "preparing",
-  "submitted",
-  "validating",
-  "in_progress",
-  "finalizing",
-] as const;
 const TERMINAL_REMOTE_STATUSES = new Set(["completed", "failed", "expired", "cancelled"]);
 
 function positiveInteger(name: string, value: number, maximum: number): number {
@@ -214,7 +222,7 @@ function listEligibleProducts(
   version: number,
   limit: number,
 ): ClassificationProduct[] {
-  const activePlaceholders = ACTIVE_JOB_STATUSES.map(() => "?").join(", ");
+  const releasedPlaceholders = RELEASED_CLASSIFICATION_BATCH_STATUSES.map(() => "?").join(", ");
   return database.prepare(`
     SELECT p.id, p.retailer_id, p.title, p.brand, p.source_category
     FROM products p
@@ -229,11 +237,17 @@ function listEligibleProducts(
         JOIN classification_batch_jobs bj ON bj.id = bi.job_id
         WHERE bi.product_id = p.id
           AND bj.version = ?
-          AND bj.status IN (${activePlaceholders})
+          AND bj.status NOT LIKE 'finalized%'
+          AND bj.status NOT IN (${releasedPlaceholders})
       )
     ORDER BY p.id
     LIMIT ?
-  `).all(version, version, ...ACTIVE_JOB_STATUSES, limit) as ClassificationProduct[];
+  `).all(
+    version,
+    version,
+    ...RELEASED_CLASSIFICATION_BATCH_STATUSES,
+    limit,
+  ) as ClassificationProduct[];
 }
 
 function inputFor(
@@ -249,13 +263,46 @@ function inputFor(
   };
 }
 
-function monthSpend(database: Database.Database, now: Date): number {
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
-  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
-  return (database.prepare(`
-    SELECT COALESCE(SUM(cost_usd), 0) AS cost FROM cost_ledger
-    WHERE occurred_at >= ? AND occurred_at < ?
-  `).get(monthStart, nextMonth) as { cost: number }).cost;
+function providerErrors(remote: RemoteBatch): Array<Record<string, unknown>> {
+  if (!Array.isArray(remote.errors?.data)) return [];
+  return remote.errors.data.flatMap((value) => {
+    if (typeof value !== "object" || value === null) return [];
+    const error: Record<string, unknown> = {};
+    if ("code" in value && typeof value.code === "string") {
+      error.code = value.code.slice(0, 200);
+    }
+    if ("line" in value && Number.isSafeInteger(value.line) && Number(value.line) >= 0) {
+      error.line = Number(value.line);
+    }
+    if ("message" in value && typeof value.message === "string") {
+      error.message = value.message.slice(0, 500);
+    }
+    if (
+      "param" in value
+      && (typeof value.param === "string" || value.param === null)
+    ) error.param = value.param;
+    return Object.keys(error).length === 0 ? [] : [error];
+  });
+}
+
+function mergedProviderErrors(
+  currentJson: string,
+  incoming: readonly Record<string, unknown>[],
+): Array<Record<string, unknown>> {
+  let current: Array<Record<string, unknown>> = [];
+  try {
+    const parsed = JSON.parse(currentJson) as unknown;
+    if (Array.isArray(parsed)) {
+      current = parsed.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      );
+    }
+  } catch {
+    current = [];
+  }
+  const unique = new Map<string, Record<string, unknown>>();
+  for (const error of [...current, ...incoming]) unique.set(JSON.stringify(error), error);
+  return [...unique.values()];
 }
 
 function safeRemote(remote: RemoteBatch): Record<string, unknown> {
@@ -271,7 +318,53 @@ function safeRemote(remote: RemoteBatch): Record<string, unknown> {
       inputTokens: remote.usage.input_tokens,
       outputTokens: remote.usage.output_tokens,
     },
+    errors: providerErrors(remote),
   };
+}
+
+function safeError(error: unknown): Record<string, unknown> {
+  if (typeof error !== "object" || error === null) return { message: "unknown error" };
+  const diagnostic: Record<string, unknown> = {
+    name: error instanceof Error ? error.name : "Error",
+    message: error instanceof Error ? error.message.slice(0, 500) : "unknown error",
+  };
+  if ("status" in error && Number.isSafeInteger(Number(error.status))) {
+    diagnostic.status = Number(error.status);
+  }
+  if ("code" in error && typeof error.code === "string") {
+    diagnostic.code = error.code.slice(0, 100);
+  }
+  return diagnostic;
+}
+
+function retryAttempts(dependencies: ClassificationBatchDependencies): number {
+  const attempts = dependencies.maxAttempts ?? 3;
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 5) {
+    throw new RangeError("maxAttempts must be an integer from 1 to 5");
+  }
+  return attempts;
+}
+
+function sleeper(dependencies: ClassificationBatchDependencies): (milliseconds: number) => Promise<void> {
+  return dependencies.sleep ?? ((milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)));
+}
+
+async function retryTransient<T>(
+  operation: () => Promise<T>,
+  dependencies: ClassificationBatchDependencies,
+): Promise<T> {
+  const maxAttempts = retryAttempts(dependencies);
+  const sleep = sleeper(dependencies);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransientOpenAIError(error) || attempt === maxAttempts) throw error;
+      await sleep(250 * (2 ** (attempt - 1)));
+    }
+  }
+  throw new Error("Transient retry loop ended unexpectedly");
 }
 
 function insertEvent(
@@ -302,7 +395,8 @@ function job(database: Database.Database, jobId: string): JobRow {
     SELECT id, provider_batch_id, input_file_id, output_file_id, error_file_id,
            version, confidence_threshold, requested_model, actual_model,
            prompt_version, prompt_hash, status, total_items, completed_items,
-           failed_items, input_tokens, output_tokens
+           failed_items, input_tokens, output_tokens, projected_cost_usd,
+           actual_cost_usd, provider_errors_json
     FROM classification_batch_jobs WHERE id = ?
   `).get(jobId) as JobRow | undefined;
   if (row === undefined) throw new Error(`Unknown classification batch job: ${jobId}`);
@@ -331,6 +425,107 @@ function batchRequest(input: ClassificationInput, model: string): Record<string,
       },
     },
   };
+}
+
+interface BatchCreateBody {
+  input_file_id: string;
+  endpoint: "/v1/responses";
+  completion_window: "24h";
+  metadata: Record<string, string>;
+}
+
+class BatchSubmissionUnknownError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "BatchSubmissionUnknownError";
+  }
+}
+
+async function createBatchWithReconciliation(
+  client: OpenAIBatchClient,
+  body: BatchCreateBody,
+  jobId: string,
+  dependencies: ClassificationBatchDependencies,
+): Promise<RemoteBatch> {
+  const maxAttempts = retryAttempts(dependencies);
+  const sleep = sleeper(dependencies);
+  let ambiguous = false;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await client.batches.create(body, {
+        idempotencyKey: `classification-batch-${jobId}`,
+      });
+    } catch (error) {
+      if (!isTransientOpenAIError(error)) {
+        if (ambiguous) {
+          throw new BatchSubmissionUnknownError(
+            "Batch creation is ambiguous after an earlier lost response",
+            error,
+          );
+        }
+        throw error;
+      }
+      ambiguous = true;
+      let page: { data: RemoteBatch[] };
+      try {
+        page = await retryTransient(
+          () => client.batches.list({ limit: 100 }),
+          dependencies,
+        );
+      } catch (reconciliationError) {
+        throw new BatchSubmissionUnknownError(
+          "Batch creation response was lost and metadata reconciliation failed",
+          reconciliationError,
+        );
+      }
+      const reconciled = page.data.find(
+        (remote) => remote.metadata?.local_job_id === jobId,
+      );
+      if (reconciled !== undefined) return reconciled;
+      if (attempt === maxAttempts) {
+        throw new BatchSubmissionUnknownError(
+          "Batch creation response was lost and no matching remote metadata was found",
+          error,
+        );
+      }
+      await sleep(250 * (2 ** (attempt - 1)));
+    }
+  }
+  throw new Error("Batch creation retry loop ended unexpectedly");
+}
+
+function recordSubmissionFailure(
+  database: Database.Database,
+  input: {
+    jobId: string;
+    status: "submission_released" | "submission_unknown";
+    phase: "upload" | "create";
+    error: unknown;
+    occurredAt: string;
+  },
+): void {
+  const persist = database.transaction(() => {
+    database.prepare(`
+      UPDATE classification_batch_jobs
+      SET status = ?, error_message = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      input.status,
+      input.error instanceof Error
+        ? input.error.message.slice(0, 500)
+        : `${input.phase} failed`,
+      input.occurredAt,
+      input.jobId,
+    );
+    insertEvent(database, {
+      id: `${input.jobId}:0002`,
+      jobId: input.jobId,
+      status: input.status,
+      provider: { phase: input.phase, error: safeError(input.error) },
+      occurredAt: input.occurredAt,
+    });
+  });
+  persist.immediate();
 }
 
 export async function submitClassificationBatch(
@@ -362,7 +557,8 @@ export async function submitClassificationBatch(
     outputTokens: Math.max(1, inputs.length * 80),
   });
   if (budgetGuard.decide({
-    projectedMonthlyUsd: monthSpend(dependencies.database, now()) + projected,
+    projectedMonthlyUsd:
+      classificationMonthlyCommittedUsd(dependencies.database, now()) + projected,
     essential: false,
   }) === "pause") return { ...base, status: "budget_denied" };
 
@@ -379,8 +575,8 @@ export async function submitClassificationBatch(
       INSERT INTO classification_batch_jobs
         (id, provider, version, confidence_threshold, requested_model,
          prompt_version, prompt_hash, input_sha256, status, total_items,
-         created_at, updated_at)
-      VALUES (?, 'openai', ?, ?, ?, ?, ?, ?, 'preparing', ?, ?, ?)
+         projected_cost_usd, created_at, updated_at)
+      VALUES (?, 'openai', ?, ?, ?, ?, ?, ?, 'preparing', ?, ?, ?, ?)
     `).run(
       jobId,
       version,
@@ -390,6 +586,7 @@ export async function submitClassificationBatch(
       CLASSIFICATION_PROMPT_HASH,
       inputHash,
       products.length,
+      projected,
       createdAt,
       createdAt,
     );
@@ -416,28 +613,60 @@ export async function submitClassificationBatch(
   });
   prepare.immediate();
 
+  let uploaded: { id: string };
   try {
     const file = await toFile(
       Buffer.from(jsonl, "utf8"),
       `ipca-classification-v${version}.jsonl`,
       { type: "application/jsonl" },
     ) as unknown as UploadableText;
-    const uploaded = await dependencies.client.files.create({ file, purpose: "batch" });
+    uploaded = await retryTransient(
+      () => dependencies.client!.files.create({ file, purpose: "batch" }),
+      dependencies,
+    );
     dependencies.database.prepare(`
       UPDATE classification_batch_jobs SET input_file_id = ?, updated_at = ? WHERE id = ?
     `).run(uploaded.id, now().toISOString(), jobId);
-    const remote = await dependencies.client.batches.create({
+  } catch (error) {
+    recordSubmissionFailure(dependencies.database, {
+      jobId,
+      status: "submission_released",
+      phase: "upload",
+      error,
+      occurredAt: now().toISOString(),
+    });
+    throw error;
+  }
+
+  let remote: RemoteBatch;
+  try {
+    remote = await createBatchWithReconciliation(dependencies.client, {
       input_file_id: uploaded.id,
       endpoint: "/v1/responses",
       completion_window: "24h",
       metadata: { local_job_id: jobId, classification_version: String(version) },
+    }, jobId, dependencies);
+  } catch (error) {
+    recordSubmissionFailure(dependencies.database, {
+      jobId,
+      status: error instanceof BatchSubmissionUnknownError
+        ? "submission_unknown"
+        : "submission_released",
+      phase: "create",
+      error,
+      occurredAt: now().toISOString(),
     });
+    throw error;
+  }
+
+  try {
     const submittedAt = now().toISOString();
     const persist = dependencies.database.transaction(() => {
       dependencies.database.prepare(`
         UPDATE classification_batch_jobs
         SET provider_batch_id = ?, input_file_id = ?, status = 'submitted',
-            submitted_at = ?, updated_at = ?, actual_model = ?
+            submitted_at = ?, updated_at = ?, actual_model = ?,
+            provider_errors_json = ?
         WHERE id = ?
       `).run(
         remote.id,
@@ -445,6 +674,7 @@ export async function submitClassificationBatch(
         submittedAt,
         submittedAt,
         remote.model ?? null,
+        JSON.stringify(providerErrors(remote)),
         jobId,
       );
       insertEvent(dependencies.database, {
@@ -465,22 +695,8 @@ export async function submitClassificationBatch(
       pending: products.length,
     };
   } catch (error) {
-    const failedAt = now().toISOString();
-    const persist = dependencies.database.transaction(() => {
-      dependencies.database.prepare(`
-        UPDATE classification_batch_jobs
-        SET status = 'submission_failed', error_message = ?, updated_at = ?
-        WHERE id = ?
-      `).run(error instanceof Error ? error.message.slice(0, 500) : "submission failed", failedAt, jobId);
-      insertEvent(dependencies.database, {
-        id: `${jobId}:0002`,
-        jobId,
-        status: "submission_failed",
-        provider: {},
-        occurredAt: failedAt,
-      });
-    });
-    persist.immediate();
+    // The remote Batch exists. Leaving the preparing claim active prevents a
+    // second bill if local persistence fails after provider creation.
     throw error;
   }
 }
@@ -492,7 +708,10 @@ export async function pollClassificationBatch(
   const current = job(dependencies.database, jobId);
   if (dependencies.client === undefined) throw new Error("OpenAI Batch client is unavailable");
   if (current.provider_batch_id === null) throw new Error(`Batch job ${jobId} was not submitted`);
-  const remote = await dependencies.client.batches.retrieve(current.provider_batch_id);
+  const remote = await retryTransient(
+    () => dependencies.client!.batches.retrieve(current.provider_batch_id!),
+    dependencies,
+  );
   if (remote.id !== current.provider_batch_id) throw new Error("Retrieved the wrong provider batch");
   const counts = remote.request_counts ?? {
     total: current.total_items,
@@ -508,21 +727,29 @@ export async function pollClassificationBatch(
     || counts.failed < 0
     || counts.completed + counts.failed > counts.total
   ) throw new Error("Invalid provider batch request counts");
-  const inputTokens = remote.usage?.input_tokens ?? 0;
-  const outputTokens = remote.usage?.output_tokens ?? 0;
+  const inputTokens = remote.usage?.input_tokens ?? current.input_tokens;
+  const outputTokens = remote.usage?.output_tokens ?? current.output_tokens;
   if (
     !Number.isSafeInteger(inputTokens)
     || inputTokens < 0
     || !Number.isSafeInteger(outputTokens)
     || outputTokens < 0
   ) throw new Error("Invalid provider batch token usage");
+  const actualCost = remote.usage === undefined
+    ? current.actual_cost_usd
+    : (dependencies.budgetGuard ?? new BudgetGuard()).estimateModelCost({
+        model: remote.model ?? current.actual_model ?? current.requested_model,
+        inputTokens,
+        outputTokens,
+      });
+  const errors = mergedProviderErrors(current.provider_errors_json, providerErrors(remote));
   const occurredAt = (dependencies.now ?? (() => new Date()))().toISOString();
   const persist = dependencies.database.transaction(() => {
     dependencies.database.prepare(`
       UPDATE classification_batch_jobs
       SET status = ?, output_file_id = ?, error_file_id = ?, actual_model = ?,
           completed_items = ?, failed_items = ?, input_tokens = ?, output_tokens = ?,
-          updated_at = ?
+          actual_cost_usd = ?, provider_errors_json = ?, updated_at = ?
       WHERE id = ?
     `).run(
       remote.status,
@@ -533,6 +760,8 @@ export async function pollClassificationBatch(
       counts.failed,
       inputTokens,
       outputTokens,
+      actualCost,
+      JSON.stringify(errors),
       occurredAt,
       jobId,
     );
@@ -667,6 +896,44 @@ function recordFinalizeFailure(
   transaction.immediate();
 }
 
+function recordFinalizeRetryable(
+  database: Database.Database,
+  row: JobRow,
+  now: Date,
+  error: unknown,
+): void {
+  const occurredAt = now.toISOString();
+  const transaction = database.transaction(() => {
+    database.prepare(`
+      UPDATE classification_batch_jobs
+      SET status = 'finalize_retryable', updated_at = ?, error_message = ?
+      WHERE id = ?
+    `).run(
+      occurredAt,
+      error instanceof Error ? error.message.slice(0, 500) : "retryable finalization failure",
+      row.id,
+    );
+    insertEvent(database, {
+      jobId: row.id,
+      status: "finalize_retryable",
+      provider: { error: safeError(error) },
+      occurredAt,
+    });
+  });
+  transaction.immediate();
+}
+
+async function downloadFileText(
+  client: OpenAIBatchClient,
+  fileId: string,
+  dependencies: ClassificationBatchDependencies,
+): Promise<string> {
+  return retryTransient(async () => {
+    const response = await client.files.content(fileId);
+    return response.text();
+  }, dependencies);
+}
+
 export async function finalizeClassificationBatch(
   jobId: string,
   dependencies: ClassificationBatchDependencies,
@@ -690,10 +957,10 @@ export async function finalizeClassificationBatch(
     const [outputFile, errorFile] = await Promise.all([
       current.output_file_id === null
         ? Promise.resolve("")
-        : dependencies.client.files.content(current.output_file_id).then((response) => response.text()),
+        : downloadFileText(dependencies.client, current.output_file_id, dependencies),
       current.error_file_id === null
         ? Promise.resolve("")
-        : dependencies.client.files.content(current.error_file_id).then((response) => response.text()),
+        : downloadFileText(dependencies.client, current.error_file_id, dependencies),
     ]);
     const lines = [...parseJsonl(outputFile), ...parseJsonl(errorFile)]
       .map((line) => BatchLineSchema.parse(line));
@@ -836,7 +1103,11 @@ export async function finalizeClassificationBatch(
     return finalizedSummary(dependencies.database, current);
   } catch (error) {
     current = job(dependencies.database, jobId);
-    recordFinalizeFailure(dependencies.database, current, budgetGuard, now(), error);
+    if (isTransientOpenAIError(error)) {
+      recordFinalizeRetryable(dependencies.database, current, now(), error);
+    } else {
+      recordFinalizeFailure(dependencies.database, current, budgetGuard, now(), error);
+    }
     throw error;
   }
 }

@@ -34,7 +34,8 @@ export const ClassificationResponseSchema = z.object({
 
 interface ResponsesClient {
   responses: {
-    parse(request: unknown): Promise<unknown>;
+    create?(request: unknown): Promise<unknown>;
+    parse?(request: unknown): Promise<unknown>;
   };
 }
 
@@ -85,7 +86,7 @@ function nestedErrorCode(error: unknown, depth = 0): string | null {
   return "cause" in error ? nestedErrorCode(error.cause, depth + 1) : null;
 }
 
-function transientApiFailure(error: unknown): boolean {
+export function isTransientOpenAIError(error: unknown): boolean {
   if (error instanceof APIConnectionTimeoutError || error instanceof APIConnectionError) {
     return true;
   }
@@ -186,6 +187,72 @@ function containsRefusal(output: unknown): boolean {
   });
 }
 
+function responseOutputText(output: unknown): string {
+  if (!Array.isArray(output)) {
+    throw new Error("OpenAI response output must be an array");
+  }
+  const texts: string[] = [];
+  for (const item of output) {
+    if (typeof item !== "object" || item === null || !("content" in item)) continue;
+    if (!Array.isArray(item.content)) continue;
+    for (const content of item.content) {
+      if (
+        typeof content === "object"
+        && content !== null
+        && "type" in content
+        && content.type === "output_text"
+        && "text" in content
+        && typeof content.text === "string"
+      ) texts.push(content.text);
+    }
+  }
+  if (texts.length !== 1) {
+    throw new Error("OpenAI response must contain exactly one output_text");
+  }
+  return texts[0] ?? "";
+}
+
+async function requestStructuredResponse(
+  client: ResponsesClient,
+  request: unknown,
+  requestedModel: string,
+  attempt: number,
+): Promise<ParsedResponse> {
+  if (client.responses.create !== undefined) {
+    const response = await client.responses.create(request) as ParsedResponse;
+    const status = typeof response.status === "string" ? response.status : "unknown";
+    if (status !== "completed" || containsRefusal(response.output)) {
+      return { ...response, output_parsed: null };
+    }
+    try {
+      return {
+        ...response,
+        output_parsed: ClassificationResponseSchema.parse(
+          JSON.parse(responseOutputText(response.output)) as unknown,
+        ),
+      };
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "OpenAI structured response parsing failed";
+      const wrapped = new Error(message, { cause: error });
+      Object.assign(wrapped, {
+        classificationAttempt: responseAttemptEvidence(
+          response,
+          requestedModel,
+          attempt,
+          "schema_invalid",
+        ),
+      });
+      throw wrapped;
+    }
+  }
+  if (client.responses.parse !== undefined) {
+    return client.responses.parse(request) as Promise<ParsedResponse>;
+  }
+  throw new Error("OpenAI Responses client must implement create or parse");
+}
+
 function validateResults(
   parsed: unknown,
   inputs: readonly ClassificationInput[],
@@ -258,7 +325,7 @@ export class OpenAIProductClassifier implements ProductClassifier {
     const failedAttempts: ClassificationAttemptEvidence[] = [];
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       try {
-        response = await this.#client.responses.parse({
+        response = await requestStructuredResponse(this.#client, {
           model: this.#model,
           store: false,
           instructions: CLASSIFICATION_INSTRUCTIONS,
@@ -269,13 +336,13 @@ export class OpenAIProductClassifier implements ProductClassifier {
               "ipca_product_classifications",
             ),
           },
-        }) as ParsedResponse;
+        }, this.#model, attempt);
         completedAttempt = attempt;
         break;
       } catch (error) {
         const billedAttempt = customAttemptEvidence(error, this.#model, attempt);
         if (billedAttempt !== null) failedAttempts.push(billedAttempt);
-        if (!transientApiFailure(error) || attempt === this.#maxAttempts) {
+        if (!isTransientOpenAIError(error) || attempt === this.#maxAttempts) {
           throw new ClassificationProviderError(
             error instanceof Error ? error.message : "OpenAI classification request failed",
             failedAttempts,

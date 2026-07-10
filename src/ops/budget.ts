@@ -1,4 +1,40 @@
 import { Decimal } from "decimal.js";
+import type Database from "better-sqlite3";
+
+export const RELEASED_CLASSIFICATION_BATCH_STATUSES = [
+  "finalize_failed",
+  "submission_released",
+] as const;
+
+export function classificationMonthlyCommittedUsd(
+  database: Database.Database,
+  now: Date,
+): number {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+  const releasedPlaceholders = RELEASED_CLASSIFICATION_BATCH_STATUSES.map(() => "?").join(", ");
+  const row = database.prepare(`
+    SELECT
+      (SELECT COALESCE(SUM(cost_usd), 0)
+       FROM cost_ledger
+       WHERE occurred_at >= ? AND occurred_at < ?)
+      +
+      (SELECT COALESCE(SUM(
+         CASE
+           WHEN actual_cost_usd IS NOT NULL THEN actual_cost_usd
+           ELSE projected_cost_usd
+         END
+       ), 0)
+       FROM classification_batch_jobs
+       WHERE status NOT LIKE 'finalized%'
+         AND status NOT IN (${releasedPlaceholders})) AS committed
+  `).get(
+    monthStart,
+    nextMonth,
+    ...RELEASED_CLASSIFICATION_BATCH_STATUSES,
+  ) as { committed: number };
+  return row.committed;
+}
 
 export type BudgetDecision = "continue" | "pause";
 

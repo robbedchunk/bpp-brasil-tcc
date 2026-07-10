@@ -3,7 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
 
-import { BudgetGuard } from "../ops/budget.js";
+import {
+  BudgetGuard,
+  RELEASED_CLASSIFICATION_BATCH_STATUSES,
+  classificationMonthlyCommittedUsd,
+} from "../ops/budget.js";
 import { DEFAULT_CLASSIFICATION_MODEL } from "./openai-provider.js";
 import { ClassificationProviderError } from "./provider.js";
 import type {
@@ -95,6 +99,7 @@ function listItems(database: Database.Database): AllowedIpcaItem[] {
 }
 
 function listEligibleProducts(database: Database.Database, version: number): ClassificationProduct[] {
+  const releasedPlaceholders = RELEASED_CLASSIFICATION_BATCH_STATUSES.map(() => "?").join(", ");
   return database.prepare(
     `SELECT p.id, p.retailer_id, p.title, p.brand, p.source_category
      FROM products p
@@ -110,12 +115,15 @@ function listEligibleProducts(database: Database.Database, version: number): Cla
          JOIN classification_batch_jobs bj ON bj.id = bi.job_id
          WHERE bi.product_id = p.id
            AND bj.version = ?
-           AND bj.status IN (
-             'preparing', 'submitted', 'validating', 'in_progress', 'finalizing'
-           )
+           AND bj.status NOT LIKE 'finalized%'
+           AND bj.status NOT IN (${releasedPlaceholders})
        )
      ORDER BY p.id`,
-  ).all(version, version) as ClassificationProduct[];
+  ).all(
+    version,
+    version,
+    ...RELEASED_CLASSIFICATION_BATCH_STATUSES,
+  ) as ClassificationProduct[];
 }
 
 function inputFor(
@@ -348,17 +356,6 @@ function uniqueClassificationConflict(error: unknown): boolean {
     && error.code.startsWith("SQLITE_CONSTRAINT_UNIQUE");
 }
 
-function monthSpend(database: Database.Database, now: Date): number {
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
-  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
-  const row = database.prepare(
-    `SELECT COALESCE(SUM(cost_usd), 0) AS cost
-     FROM cost_ledger
-     WHERE occurred_at >= ? AND occurred_at < ?`,
-  ).get(monthStart, nextMonth) as { cost: number };
-  return row.cost;
-}
-
 function plannedUsage(inputs: readonly ClassificationInput[]): {
   inputTokens: number;
   outputTokens: number;
@@ -405,7 +402,7 @@ export async function classifyNewProducts(
   const model = dependencies.classificationModel ?? DEFAULT_CLASSIFICATION_MODEL;
   const now = dependencies.now ?? (() => new Date());
   const productById = new Map(products.map((product) => [product.id, product]));
-  let currentSpend = monthSpend(dependencies.database, now());
+  let currentSpend = classificationMonthlyCommittedUsd(dependencies.database, now());
   let batches = 0;
   let classified = 0;
   let unclassified = 0;
