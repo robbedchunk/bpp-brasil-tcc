@@ -74,4 +74,83 @@ describe("daily pipeline", () => {
     await expect(runDaily({ database })).rejects.toBeInstanceOf(NoActiveRetailersError);
     expect(database.prepare("SELECT COUNT(*) AS n FROM heartbeats").get()).toEqual({ n: 0 });
   });
+
+  it("monitors each collection only after that run is terminal", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database, "a");
+    seedRetailer(database, "b");
+    const order: string[] = [];
+
+    await runDaily({
+      database,
+      collect: async (retailerId) => {
+        order.push(`collect-${retailerId}`);
+        return {
+          id: `run-${retailerId}`,
+          retailerId,
+          stage: "collect",
+          attempted: 1,
+          ok: 1,
+          failed: 0,
+          successRate: 1,
+          status: "completed",
+          startedAt: "2026-07-10T06:00:00.000Z",
+          finishedAt: "2026-07-10T06:00:01.000Z",
+          dryRun: false,
+        };
+      },
+      monitor: async (runId) => {
+        order.push(`monitor-${runId}`);
+      },
+    });
+
+    expect(order).toEqual([
+      "collect-a",
+      "monitor-run-a",
+      "collect-b",
+      "monitor-run-b",
+    ]);
+  });
+
+  it("continues deterministic collection and records the heartbeat when monitoring fails", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database, "a");
+    seedRetailer(database, "b");
+    const collected: string[] = [];
+
+    const summary = await runDaily({
+      database,
+      collect: async (retailerId) => {
+        collected.push(retailerId);
+        return {
+          id: `run-${retailerId}`,
+          retailerId,
+          stage: "collect",
+          attempted: 1,
+          ok: 1,
+          failed: 0,
+          successRate: 1,
+          status: "completed",
+          startedAt: "2026-07-10T06:00:00.000Z",
+          finishedAt: "2026-07-10T06:00:01.000Z",
+          dryRun: false,
+        };
+      },
+      monitor: async (runId) => {
+        if (runId === "run-a") throw new Error("monitor fixture failure");
+      },
+    });
+
+    expect(collected).toEqual(["a", "b"]);
+    expect(summary.monitorFailedRunIds).toEqual(["run-a"]);
+    expect(summary.heartbeatRecorded).toBe(true);
+    const heartbeat = database.prepare(
+      "SELECT details_json FROM heartbeats",
+    ).get() as { details_json: string };
+    expect(JSON.parse(heartbeat.details_json)).toMatchObject({
+      monitorFailedRunIds: ["run-a"],
+    });
+  });
 });

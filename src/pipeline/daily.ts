@@ -13,6 +13,7 @@ export interface DailySummary {
   retailers: number;
   terminal: number;
   heartbeatRecorded: boolean;
+  monitorFailedRunIds: string[];
   runs: RunSummary[];
 }
 
@@ -23,6 +24,7 @@ export interface DailyPipelineDependencies
   retailerOptions?: (
     retailerId: string,
   ) => Pick<CollectionPipelineDependencies, "politeDelayMs">;
+  monitor?: (runId: string) => Promise<unknown>;
 }
 
 export class NoActiveRetailersError extends Error {
@@ -40,6 +42,7 @@ export async function runDaily(
   const retailerIds = activeRetailerIds(dependencies.database);
   if (retailerIds.length === 0) throw new NoActiveRetailersError();
   const runs: RunSummary[] = [];
+  const monitorFailedRunIds: string[] = [];
   const collect = dependencies.collect ?? ((retailerId: string) =>
     runCollection(retailerId, {
       ...dependencies,
@@ -47,7 +50,22 @@ export async function runDaily(
     }));
 
   for (const retailerId of retailerIds) {
-    runs.push(await collect(retailerId));
+    const summary = await collect(retailerId);
+    runs.push(summary);
+    if (
+      dependencies.dryRun !== true
+      && summary.dryRun !== true
+      && (summary.status === "completed"
+        || summary.status === "partial"
+        || summary.status === "failed")
+    ) {
+      try {
+        await dependencies.monitor?.(summary.id);
+      } catch {
+        // Healing/alerting is auxiliary: it must never stop later deterministic collection.
+        monitorFailedRunIds.push(summary.id);
+      }
+    }
   }
 
   const terminal = runs.filter((run) =>
@@ -62,7 +80,11 @@ export async function runDaily(
       scheduledFor: startedAt,
       completedAt: finishedAt,
       status: "completed",
-      details: { retailerIds, runIds: runs.map((run) => run.id) },
+      details: {
+        retailerIds,
+        runIds: runs.map((run) => run.id),
+        monitorFailedRunIds,
+      },
     });
   }
 
@@ -72,6 +94,7 @@ export async function runDaily(
     retailers: retailerIds.length,
     terminal,
     heartbeatRecorded,
+    monitorFailedRunIds,
     runs,
   };
 }

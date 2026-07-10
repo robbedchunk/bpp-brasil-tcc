@@ -38,6 +38,7 @@ describe("disposable exploration package", () => {
           unit: [{ selector: ".unit" }],
           availability: [{ selector: ".stock" }],
         },
+        apiKey: "opaque-old-secret",
       },
       failureSamples: [{
         canonicalUrl: "https://shop.test/products/1",
@@ -60,6 +61,7 @@ describe("disposable exploration package", () => {
     );
     const joined = packaged.join("\n");
     expect(joined).not.toContain("sk-secret-value");
+    expect(joined).not.toContain("opaque-old-secret");
     expect(joined).not.toContain("/home/alice");
     expect(joined).toContain("[REDACTED]");
     expect((await stat(join(sandbox.workspacePath, "validate-strategy"))).mode & 0o111)

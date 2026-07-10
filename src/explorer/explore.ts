@@ -201,11 +201,23 @@ function candidateForRetailer(
 ): Strategy | null {
   const parsed = StrategySchema.safeParse(value);
   if (!parsed.success || parsed.data.purpose !== purpose) return null;
+  if (containsSensitiveMaterial(parsed.data)) return null;
   const allowed = new Set(allowedDomains.map((domain) => domain.toLowerCase()));
   if (parsed.data.allowedDomains.some((domain) => !allowed.has(domain.toLowerCase()))) {
     return null;
   }
   return parsed.data;
+}
+
+const SENSITIVE_KEY = /(?:^|[_-])(?:auth(?:orization|entication)?|cookie|credential|password|secret|token|api[_-]?key)(?:$|[_-])/iu;
+const SENSITIVE_VALUE = /(?:\bbearer\s+|\bsk-[A-Za-z0-9_-]{12,}|\/(?:home|Users)\/|[A-Za-z]:\\Users\\|[?&](?:auth|key|secret|token)=)/iu;
+
+function containsSensitiveMaterial(value: unknown): boolean {
+  if (typeof value === "string") return SENSITIVE_VALUE.test(value);
+  if (Array.isArray(value)) return value.some(containsSensitiveMaterial);
+  if (value === null || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, child]) =>
+    SENSITIVE_KEY.test(key) || containsSensitiveMaterial(child));
 }
 
 function defaultValidator(

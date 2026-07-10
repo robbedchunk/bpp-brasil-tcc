@@ -244,4 +244,34 @@ describe("trusted strategy exploration", () => {
 
     expect(outcome).toMatchObject({ activated: false, outcome: "invalid_candidate" });
   });
+
+  it("rejects schema-valid candidate credentials before validation or persistence", async () => {
+    const database = seedExploration();
+    const validateCandidate: CandidateValidator = async () => {
+      throw new Error("validator must not receive credential-bearing material");
+    };
+    const generator = new FixtureGenerator([
+      generated({
+        ...extractionStrategy,
+        request: {
+          ...extractionStrategy.request,
+          headers: { authorization: "Bearer should-never-leave-the-sandbox" },
+        },
+      }),
+    ]);
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      validateCandidate,
+      maxAttempts: 1,
+    });
+
+    expect(outcome).toMatchObject({ activated: false, outcome: "invalid_candidate" });
+    const evidence = database.prepare(
+      "SELECT artifact_json, error_message FROM exploration_attempts",
+    ).get() as { artifact_json: string | null; error_message: string | null };
+    expect(evidence.artifact_json).toBeNull();
+    expect(JSON.stringify(evidence)).not.toContain("should-never-leave-the-sandbox");
+  });
 });

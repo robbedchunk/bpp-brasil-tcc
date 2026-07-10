@@ -44,6 +44,7 @@ const BEARER_PATTERN = /\b(?:authorization\s*:\s*)?bearer\s+[^\s<>'"]+/giu;
 const SECRET_ASSIGNMENT_PATTERN = /\b(?:api[_-]?key|secret|token|password|cookie)\b\s*[:=]\s*[^\s,;<>]+/giu;
 const UNIX_HOME_PATTERN = /\/(?:home|Users)\/[^\s"'<>]+/gu;
 const WINDOWS_HOME_PATTERN = /[A-Za-z]:\\Users\\[^\s"'<>]+/gu;
+const SENSITIVE_JSON_KEY = /(?:^|[_-])(?:auth(?:orization|entication)?|cookie|credential|password|secret|token|api[_-]?key)(?:$|[_-])/iu;
 
 export function redactSandboxText(value: string): string {
   return value
@@ -53,8 +54,26 @@ export function redactSandboxText(value: string): string {
     .replace(WINDOWS_HOME_PATTERN, "[REDACTED]");
 }
 
+function sanitizeJsonValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === "string") return redactSandboxText(value);
+  if (Array.isArray(value)) {
+    if (seen.has(value)) throw new Error("Sandbox evidence must not contain cycles");
+    seen.add(value);
+    return value.map((item) => sanitizeJsonValue(item, seen));
+  }
+  if (value === null || typeof value !== "object") return value;
+  if (seen.has(value)) throw new Error("Sandbox evidence must not contain cycles");
+  seen.add(value);
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    SENSITIVE_JSON_KEY.test(key)
+      ? "[REDACTED]"
+      : sanitizeJsonValue(child, seen),
+  ]));
+}
+
 function sanitizedJson(value: unknown): string {
-  return redactSandboxText(JSON.stringify(value, null, 2));
+  return JSON.stringify(sanitizeJsonValue(value, new WeakSet()), null, 2);
 }
 
 export async function createSandboxPackage(

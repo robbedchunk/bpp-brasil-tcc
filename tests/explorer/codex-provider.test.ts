@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -192,5 +192,41 @@ describe("Codex SDK strategy provider", () => {
     })).rejects.toThrow(/unknown|unrecognized|additional/iu);
     await expect(access(home)).rejects.toThrow();
     await expect(access(codexHome)).rejects.toThrow();
+  });
+
+  it("rejects a strategy artifact symlink before the trusted host reads it", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-link-test-"));
+    const externalRoot = await mkdtemp(join(tmpdir(), "explorer-provider-external-"));
+    roots.push(workspacePath, externalRoot);
+    const externalArtifact = join(externalRoot, "outside.json");
+    await writeFile(externalArtifact, JSON.stringify({ strategy }), "utf8");
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          run: async () => {
+            await symlink(externalArtifact, join(workspacePath, "strategy.json"));
+            return {
+              finalResponse: JSON.stringify({ strategy }),
+              items: [],
+              usage: {
+                input_tokens: 1,
+                cached_input_tokens: 0,
+                output_tokens: 1,
+                reasoning_output_tokens: 0,
+              },
+            };
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).rejects.toThrow(/regular file|symbolic link/iu);
   });
 });

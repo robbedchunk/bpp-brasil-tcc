@@ -28,6 +28,7 @@ import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/database.js";
 import {
   activeRetailerIds,
+  latestTerminalCollectionRunId,
   readStatusReport,
   type StatusReport,
 } from "./db/repositories.js";
@@ -61,6 +62,12 @@ import type {
   StrategyGenerator,
   StrategyPurpose,
 } from "./explorer/provider.js";
+import {
+  healRetailer as runHealRetailer,
+  type HealingOutcome,
+  type HealRetailerDependencies,
+} from "./healing/heal.js";
+import { monitorRun } from "./healing/monitor.js";
 
 interface PipelineCliOptions {
   limit: number;
@@ -86,6 +93,11 @@ export interface CliDependencies {
     purpose: StrategyPurpose,
     dependencies: ExploreRetailerDependencies,
   ) => Promise<ExplorationOutcome>;
+  healRetailer?: (
+    retailerId: string,
+    purpose: StrategyPurpose,
+    dependencies: HealRetailerDependencies,
+  ) => Promise<HealingOutcome>;
   runDiscovery?: (
     retailerId: string,
     options: PipelineCliOptions,
@@ -324,6 +336,66 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         : `explore ${options.retailer}/${options.purpose}: ${outcome.outcome}; ${outcome.attempts} attempt(s)\n`);
     });
 
+  command
+    .command("heal")
+    .description("Regenerate a drifted strategy through trusted exploration")
+    .requiredOption("--retailer <id>", "registered retailer ID")
+    .option("--run <id>", "terminal collection run that detected drift")
+    .option(
+      "--purpose <purpose>",
+      "strategy purpose: discovery or extraction",
+      strategyPurpose,
+      "extraction",
+    )
+    .option("--json", "emit only JSON")
+    .action(async (options: {
+      retailer: string;
+      run?: string;
+      purpose: StrategyPurpose;
+      json?: boolean;
+    }) => {
+      const applicationConfig = config();
+      const environment = dependencies.env ?? process.env;
+      const apiKey = resolveExplorerApiKey(environment);
+      const generator = dependencies.strategyGenerator ?? (
+        apiKey === undefined
+          ? undefined
+          : new CodexStrategyGenerator({ apiKey, env: environment })
+      );
+      const sink = dependencies.alertSink ?? createAlertSink({
+        ...(applicationConfig.ntfyTopic === undefined
+          ? {}
+          : { ntfyTopic: applicationConfig.ntfyTopic }),
+        fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+        now,
+      });
+      const outcome = await withProcessLock(
+        dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-explorer.lock"),
+        () => withDatabase((database) => {
+          const onsetRunId = options.run
+            ?? latestTerminalCollectionRunId(database, options.retailer);
+          if (onsetRunId === null) {
+            throw new Error(`No terminal collection run exists for ${options.retailer}`);
+          }
+          return (dependencies.healRetailer ?? runHealRetailer)(
+            options.retailer,
+            options.purpose,
+            {
+              database,
+              onsetRunId,
+              ...(generator === undefined ? {} : { generator }),
+              alertSink: sink,
+              env: environment,
+              now,
+            },
+          );
+        }),
+      );
+      stdout(options.json === true
+        ? `${JSON.stringify(outcome)}\n`
+        : `heal ${options.retailer}/${options.purpose}: ${outcome.status}; ${outcome.attempts} attempt(s)\n`);
+    });
+
   const classificationVersion = (value: string): number => {
     const parsed = Number(value);
     if (!Number.isSafeInteger(parsed) || parsed <= 0) {
@@ -546,16 +618,38 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option("--dry-run", "report a persisted-data plan without network or writes")
     .option("--json", "emit only the JSON summary")
     .action(async (options: { limit?: number; dryRun?: boolean; json?: boolean }) => {
+      const applicationConfig = config();
+      const environment = dependencies.env ?? process.env;
+      const apiKey = resolveExplorerApiKey(environment);
+      const generator = dependencies.strategyGenerator ?? (
+        apiKey === undefined
+          ? undefined
+          : new CodexStrategyGenerator({ apiKey, env: environment })
+      );
+      const sink = dependencies.alertSink ?? createAlertSink({
+        ...(applicationConfig.ntfyTopic === undefined
+          ? {}
+          : { ntfyTopic: applicationConfig.ntfyTopic }),
+        fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+        now,
+      });
       const result = await withProcessLock(
-        dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock"),
+        dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-pipeline.lock"),
         () => withDatabase((database) => runDaily({
           database,
-          limit: Math.min(options.limit ?? config().dailyPageCap, 2_000),
+          limit: Math.min(options.limit ?? applicationConfig.dailyPageCap, 2_000),
           dryRun: options.dryRun === true,
-          concurrency: config().pageConcurrency,
-          rawHtmlRoot: resolve(config().projectRoot, "data/raw-html"),
+          concurrency: applicationConfig.pageConcurrency,
+          rawHtmlRoot: resolve(applicationConfig.projectRoot, "data/raw-html"),
           retailerOptions,
           now,
+          monitor: (runId) => monitorRun(runId, {
+            database,
+            ...(generator === undefined ? {} : { generator }),
+            alertSink: sink,
+            env: environment,
+            now,
+          }),
         })),
       );
       stdout(options.json === true

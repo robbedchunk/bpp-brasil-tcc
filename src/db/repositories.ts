@@ -14,6 +14,7 @@ import {
 import type {
   ExtractionFailure,
   ExtractionResult,
+  FailureCategory,
   ProductRef,
 } from "../strategies/types.js";
 
@@ -93,6 +94,40 @@ export interface ExplorationAttemptEvidence {
 export interface ActivatedStrategy {
   id: string;
   version: number;
+}
+
+export interface StoredRunHealth {
+  id: string;
+  retailerId: string;
+  status: string;
+  attempted: number;
+  ok: number;
+  failed: number;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface StoredRunFailureEvidence {
+  category: FailureCategory;
+  responded: boolean;
+  canonicalUrl: string | null;
+  message: string | null;
+}
+
+export interface HealingEventRecord {
+  id: string;
+  retailerId: string;
+  purpose: StrategyPurpose;
+  onsetRunId: string | null;
+  previousStrategyId: string | null;
+  successorStrategyId: string | null;
+  status: string;
+  attempts: number;
+  tierFrom: number | null;
+  tierTo: number | null;
+  driftStartedAt: string;
+  detectedAt: string;
+  recoveredAt: string | null;
 }
 
 export function findActiveDiscoveryStrategy(
@@ -578,6 +613,327 @@ export function finishExplorationRun(
   if (result.changes !== 1) {
     throw new Error(`Exploration run ${input.explorationRunId} was already finished or missing`);
   }
+}
+
+const FAILURE_CATEGORIES = new Set<FailureCategory>([
+  "http-403",
+  "http-429",
+  "captcha",
+  "timeout",
+  "network",
+  "parse",
+  "missing-fields",
+  "invalid-price",
+  "domain-denied",
+  "unknown",
+]);
+
+function storedFailureCategory(value: string): FailureCategory {
+  return FAILURE_CATEGORIES.has(value as FailureCategory)
+    ? value as FailureCategory
+    : "unknown";
+}
+
+function inferredResponded(category: FailureCategory): boolean {
+  return category === "http-403"
+    || category === "http-429"
+    || category === "captcha"
+    || category === "parse"
+    || category === "missing-fields"
+    || category === "invalid-price";
+}
+
+export function findRunHealthEvidence(
+  database: Database.Database,
+  runId: string,
+): { run: StoredRunHealth; failures: StoredRunFailureEvidence[] } {
+  const row = database.prepare(
+    `SELECT id, retailer_id, status, attempted, ok, failed, started_at,
+            finished_at, metadata_json
+     FROM runs WHERE id = ? AND stage = 'collect'`,
+  ).get(runId) as {
+    id: string;
+    retailer_id: string | null;
+    status: string;
+    attempted: number;
+    ok: number;
+    failed: number;
+    started_at: string;
+    finished_at: string | null;
+    metadata_json: string;
+  } | undefined;
+  if (row === undefined || row.retailer_id === null) {
+    throw new Error(`Collection run ${runId} was not found`);
+  }
+  let responseHints: boolean[] = [];
+  try {
+    const metadata = JSON.parse(row.metadata_json) as { failureResponses?: unknown };
+    if (
+      Array.isArray(metadata.failureResponses)
+      && metadata.failureResponses.every((value) => typeof value === "boolean")
+    ) {
+      responseHints = metadata.failureResponses;
+    }
+  } catch {
+    // Immutable failure categories remain sufficient when old metadata has no hints.
+  }
+  const failureRows = database.prepare(
+    `SELECT category, canonical_url, message
+     FROM run_failures WHERE run_id = ?
+     ORDER BY occurred_at, id`,
+  ).all(runId) as Array<{
+    category: string;
+    canonical_url: string | null;
+    message: string | null;
+  }>;
+  return {
+    run: {
+      id: row.id,
+      retailerId: row.retailer_id,
+      status: row.status,
+      attempted: row.attempted,
+      ok: row.ok,
+      failed: row.failed,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+    },
+    failures: failureRows.map((failure, index) => {
+      const category = storedFailureCategory(failure.category);
+      return {
+        category,
+        responded: responseHints[index] ?? inferredResponded(category),
+        canonicalUrl: failure.canonical_url,
+        message: failure.message,
+      };
+    }),
+  };
+}
+
+export function latestTerminalCollectionRunId(
+  database: Database.Database,
+  retailerId: string,
+): string | null {
+  const row = database.prepare(
+    `SELECT id FROM runs
+     WHERE retailer_id = ? AND stage = 'collect'
+       AND finished_at IS NOT NULL
+       AND status IN ('completed', 'partial', 'failed')
+     ORDER BY collection_day DESC, finished_at DESC, id DESC
+     LIMIT 1`,
+  ).get(retailerId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+function healingEventFromRow(row: {
+  id: string;
+  retailer_id: string;
+  purpose: StrategyPurpose;
+  onset_run_id: string | null;
+  previous_strategy_id: string | null;
+  successor_strategy_id: string | null;
+  status: string;
+  attempts: number;
+  tier_from: number | null;
+  tier_to: number | null;
+  drift_started_at: string;
+  detected_at: string;
+  recovered_at: string | null;
+}): HealingEventRecord {
+  return {
+    id: row.id,
+    retailerId: row.retailer_id,
+    purpose: row.purpose,
+    onsetRunId: row.onset_run_id,
+    previousStrategyId: row.previous_strategy_id,
+    successorStrategyId: row.successor_strategy_id,
+    status: row.status,
+    attempts: row.attempts,
+    tierFrom: row.tier_from,
+    tierTo: row.tier_to,
+    driftStartedAt: row.drift_started_at,
+    detectedAt: row.detected_at,
+    recoveredAt: row.recovered_at,
+  };
+}
+
+function findHealingEvent(
+  database: Database.Database,
+  predicate: string,
+  ...parameters: unknown[]
+): HealingEventRecord | null {
+  const row = database.prepare(
+    `SELECT id, retailer_id, purpose, onset_run_id, previous_strategy_id,
+            successor_strategy_id, status, attempts, tier_from, tier_to,
+            drift_started_at, detected_at, recovered_at
+     FROM healing_events WHERE ${predicate}
+     ORDER BY detected_at DESC, id DESC LIMIT 1`,
+  ).get(...parameters) as Parameters<typeof healingEventFromRow>[0] | undefined;
+  return row === undefined ? null : healingEventFromRow(row);
+}
+
+export function beginHealingEvent(
+  database: Database.Database,
+  input: {
+    retailerId: string;
+    purpose: StrategyPurpose;
+    onsetRunId: string;
+    detectedAt: string;
+  },
+): { event: HealingEventRecord; created: boolean } {
+  const begin = database.transaction(() => {
+    const sameOnset = findHealingEvent(
+      database,
+      "onset_run_id = ? AND purpose = ?",
+      input.onsetRunId,
+      input.purpose,
+    );
+    if (sameOnset !== null) return { event: sameOnset, created: false };
+    const open = findHealingEvent(
+      database,
+      "retailer_id = ? AND purpose = ? AND status = 'open'",
+      input.retailerId,
+      input.purpose,
+    );
+    if (open !== null) return { event: open, created: false };
+    const run = database.prepare(
+      `SELECT started_at FROM runs WHERE id = ? AND retailer_id = ?`,
+    ).get(input.onsetRunId, input.retailerId) as { started_at: string } | undefined;
+    if (run === undefined) throw new Error(`Onset run ${input.onsetRunId} was not found`);
+    const previous = database.prepare(
+      `SELECT id, tier FROM strategies
+       WHERE retailer_id = ? AND purpose = ? AND active = 1`,
+    ).get(input.retailerId, input.purpose) as { id: string; tier: number } | undefined;
+    if (previous === undefined) {
+      throw new Error(`No active ${input.purpose} strategy exists for ${input.retailerId}`);
+    }
+    const id = randomUUID();
+    database.prepare(
+      `INSERT INTO healing_events
+         (id, retailer_id, purpose, onset_run_id, previous_strategy_id,
+          category, status, attempts, tier_from, drift_started_at,
+          detected_at, details_json)
+       VALUES (?, ?, ?, ?, ?, 'drift', 'open', 0, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      input.retailerId,
+      input.purpose,
+      input.onsetRunId,
+      previous.id,
+      previous.tier,
+      run.started_at,
+      input.detectedAt,
+      JSON.stringify({ leaseStartedAt: input.detectedAt }),
+    );
+    const event = findHealingEvent(database, "id = ?", id);
+    if (event === null) throw new Error("Healing event insert was not visible");
+    return { event, created: true };
+  });
+  return begin.immediate();
+}
+
+export function claimStaleHealingEvent(
+  database: Database.Database,
+  healingEventId: string,
+  staleBefore: string,
+  claimedAt: string,
+): boolean {
+  const result = database.prepare(
+    `UPDATE healing_events
+     SET details_json = json_set(details_json, '$.leaseStartedAt', ?)
+     WHERE id = ? AND status = 'open'
+       AND COALESCE(
+         json_extract(details_json, '$.leaseStartedAt'),
+         detected_at
+       ) <= ?`,
+  ).run(claimedAt, healingEventId, staleBefore);
+  return result.changes === 1;
+}
+
+export function finishHealingEvent(
+  database: Database.Database,
+  input: {
+    healingEventId: string;
+    status: "recovered" | "failed" | "provider_unavailable" | "deferred";
+    attempts: number;
+    finishedAt: string;
+    successorStrategyId?: string;
+    details: unknown;
+  },
+): HealingEventRecord {
+  const finish = database.transaction(() => {
+    const event = findHealingEvent(database, "id = ?", input.healingEventId);
+    if (event === null) throw new Error(`Healing event ${input.healingEventId} was not found`);
+    if (event.status !== "open") return event;
+    const tierTo = input.successorStrategyId === undefined
+      ? null
+      : (database.prepare("SELECT tier FROM strategies WHERE id = ?")
+          .get(input.successorStrategyId) as { tier: number } | undefined)?.tier ?? null;
+    const recoveredAt = input.status === "recovered" ? input.finishedAt : null;
+    const startMs = Date.parse(event.driftStartedAt);
+    const finishMs = Date.parse(input.finishedAt);
+    const durationSeconds = Number.isFinite(startMs) && Number.isFinite(finishMs)
+      ? Math.max(0, Math.floor((finishMs - startMs) / 1_000))
+      : null;
+    const result = database.prepare(
+      `UPDATE healing_events
+       SET successor_strategy_id = ?, status = ?, attempts = ?, tier_to = ?,
+           recovered_at = ?, duration_seconds = ?, details_json = ?
+       WHERE id = ? AND status = 'open'`,
+    ).run(
+      input.successorStrategyId ?? null,
+      input.status,
+      input.attempts,
+      tierTo,
+      recoveredAt,
+      durationSeconds,
+      JSON.stringify(input.details),
+      input.healingEventId,
+    );
+    if (result.changes !== 1) throw new Error("Healing event lifecycle update failed");
+    const completed = findHealingEvent(database, "id = ?", input.healingEventId);
+    if (completed === null) throw new Error("Healing event completion was not visible");
+    return completed;
+  });
+  return finish.immediate();
+}
+
+export function consecutiveFailedHealingEvents(
+  database: Database.Database,
+  retailerId: string,
+  purpose: StrategyPurpose,
+): number {
+  const statuses = database.prepare(
+    `SELECT status FROM healing_events
+     WHERE retailer_id = ? AND purpose = ?
+     ORDER BY rowid DESC
+     LIMIT 20`,
+  ).all(retailerId, purpose) as Array<{ status: string }>;
+  let count = 0;
+  for (const { status } of statuses) {
+    if (status !== "failed") break;
+    count += 1;
+  }
+  return count;
+}
+
+export function setRetailerDegraded(
+  database: Database.Database,
+  retailerId: string,
+  degraded: boolean,
+  reason?: string,
+  updatedAt = new Date().toISOString(),
+): void {
+  const result = database.prepare(
+    `UPDATE retailers
+     SET degraded = ?, degraded_reason = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    degraded ? 1 : 0,
+    degraded ? reason ?? "strategy regeneration failed" : null,
+    updatedAt,
+    retailerId,
+  );
+  if (result.changes !== 1) throw new Error(`Retailer ${retailerId} was not found`);
 }
 
 export function insertRunFailure(

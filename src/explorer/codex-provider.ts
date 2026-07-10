@@ -1,4 +1,5 @@
-import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -138,6 +139,26 @@ function parseEnvelope(text: string, source: string) {
   return StrategyEnvelopeSchema.parse(parsed);
 }
 
+async function readRegularArtifact(path: string): Promise<string> {
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw new Error("strategy.json must be one regular file, not a symbolic link");
+  }
+  if (metadata.size > 1_000_000) {
+    throw new Error("strategy.json exceeds the trusted host size limit");
+  }
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || opened.size !== metadata.size) {
+      throw new Error("strategy.json changed before the trusted host could read it");
+    }
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 export class CodexStrategyGenerator implements StrategyGenerator {
   readonly #apiKey: string | undefined;
   readonly #model: string;
@@ -203,7 +224,7 @@ export class CodexStrategyGenerator implements StrategyGenerator {
         signal: controller.signal,
       });
       const response = parseEnvelope(turn.finalResponse, "Codex final response");
-      const artifactText = await readFile(join(workspacePath, "strategy.json"), "utf8");
+      const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
       const artifact = parseEnvelope(artifactText, "strategy.json");
       if (JSON.stringify(response) !== JSON.stringify(artifact)) {
         throw new Error("Codex response and strategy.json artifact differ");

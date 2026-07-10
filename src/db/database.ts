@@ -24,6 +24,10 @@ const EXPLORATION_ATTEMPT_EVIDENCE_SQL = readFileSync(
   new URL("./migrations/006_exploration_attempt_evidence.sql", import.meta.url),
   "utf8",
 );
+const HEALING_EVENT_IDEMPOTENCY_SQL = readFileSync(
+  new URL("./migrations/007_healing_event_idempotency.sql", import.meta.url),
+  "utf8",
+);
 
 const MIGRATIONS = [
   { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
@@ -35,6 +39,11 @@ const MIGRATIONS = [
     version: 6,
     name: "exploration_attempt_evidence",
     sql: EXPLORATION_ATTEMPT_EVIDENCE_SQL,
+  },
+  {
+    version: 7,
+    name: "healing_event_idempotency",
+    sql: HEALING_EVENT_IDEMPOTENCY_SQL,
   },
 ] as const;
 
