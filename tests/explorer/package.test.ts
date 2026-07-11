@@ -77,6 +77,7 @@ describe("disposable exploration package", () => {
     expect(joined).not.toContain("opaque-meta-secret");
     expect(joined).not.toContain("opaque-attribute-secret");
     expect(joined).toContain("[REDACTED]");
+    expect(joined).toContain("currently ACTIVE strategy");
     expect(JSON.parse(await readFile(
       join(sandbox.workspacePath, "samples.json"),
       "utf8",
@@ -141,6 +142,7 @@ describe("disposable exploration package", () => {
     expect(extraction).toContain("USD 5");
     expect(extraction).toContain("{productUrl}, {externalId}, {sourceCategory}");
     expect(discovery).toContain("{page}, {pageSize}, {offset}, {from}, {to}, {cursor}, {segment}");
+    expect(extraction).toContain("currently ACTIVE strategy");
     expect(extraction).not.toMatch(/self[- ]?certif|activation score/iu);
     expect(extraction.length).toBeLessThan(1_500);
   });

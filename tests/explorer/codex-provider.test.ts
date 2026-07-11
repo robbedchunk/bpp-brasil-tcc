@@ -516,6 +516,34 @@ describe("Codex SDK strategy provider", () => {
     });
   });
 
+  it("accepts a validated strategy.json artifact when the final response is invalid", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-artifact-authority-test-"));
+    roots.push(workspacePath);
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => {
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
+            return streamed("{not valid JSON", usage(1, 1));
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "candidate",
+      strategy,
+      warning: "Codex final response was invalid; accepted validated strategy.json artifact",
+    });
+  });
+
   it("rejects unexpected executable scratch files after a paid turn", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-tree-test-"));
     roots.push(workspacePath);

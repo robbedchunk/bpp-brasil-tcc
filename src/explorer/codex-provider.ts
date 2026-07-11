@@ -537,9 +537,20 @@ export class CodexStrategyGenerator implements StrategyGenerator {
         }
         try {
           await auditWorkspaceTree(workspacePath);
-          const response = parseEnvelope(finalResponse, "Codex final response");
           const artifactText = await readRegularArtifact(join(workspacePath, "strategy.json"));
           const artifact = parseEnvelope(artifactText, "strategy.json");
+          let response: ReturnType<typeof parseEnvelope>;
+          try {
+            response = parseEnvelope(finalResponse, "Codex final response");
+          } catch {
+            return {
+              status: "candidate",
+              model: this.#model,
+              strategy: artifact.strategy,
+              usage,
+              warning: "Codex final response was invalid; accepted validated strategy.json artifact",
+            };
+          }
           if (canonicalJson(response) !== canonicalJson(artifact)) {
             throw new Error("Codex response and strategy.json artifact differ");
           }

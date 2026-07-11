@@ -23,6 +23,7 @@ export type GenerationResult =
       model: string;
       strategy: unknown;
       usage: GenerationUsage;
+      warning?: string;
     }
   | {
       status: "provider_unavailable";
