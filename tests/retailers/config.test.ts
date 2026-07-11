@@ -13,6 +13,7 @@ import { upsertDiscoveredProduct } from "../../src/db/repositories.js";
 import {
   loadRetailerConfigs,
   registerRetailerConfigs as registerRetailerConfigsWithEvidence,
+  stageRetailerConfigStrategy,
   type RetailerConfig,
   validateFixtureStrategy,
 } from "../../src/retailers/config.js";
@@ -396,6 +397,55 @@ describe("live retailer configuration", () => {
       .toMatch(/official store-61 alimentos category page/i);
     expect(provenance.find(({ purpose }) => purpose === "extraction")?.provenance)
       .toMatch(/bestPrices/i);
+  });
+
+  it("stages an immutable inactive successor without changing live activation", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "extra-mercado");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    registerRetailerConfigs(database, [current]);
+    const successorVersion = current.strategyVersions.discovery + 1;
+    const successor: RetailerConfig = {
+      ...current,
+      strategyVersions: {
+        ...current.strategyVersions,
+        discovery: successorVersion,
+      },
+      validation: {
+        ...current.validation,
+        discovery: {
+          ...current.validation.discovery,
+          receiptPath: `data/validation/${current.id}-discovery-v${successorVersion}.json`,
+          receiptSha256: null,
+        },
+      },
+    };
+
+    const first = stageRetailerConfigStrategy(database, successor, "discovery");
+    const second = stageRetailerConfigStrategy(database, successor, "discovery");
+
+    expect(second).toEqual(first);
+    expect(database.prepare(
+      `SELECT id, active, retired_at AS retiredAt
+       FROM strategies WHERE retailer_id = ? AND purpose = 'discovery'
+       ORDER BY version`,
+    ).all(current.id)).toEqual([
+      {
+        id: `${current.id}-discovery-v${current.strategyVersions.discovery}`,
+        active: 1,
+        retiredAt: null,
+      },
+      {
+        id: `${current.id}-discovery-v${successorVersion}`,
+        active: 0,
+        retiredAt: null,
+      },
+    ]);
+    expect(database.prepare("SELECT active FROM retailers WHERE id = ?").get(current.id))
+      .toEqual({ active: 1 });
   });
 
   it("rejects activation when the receipt aggregate differs from config metadata", () => {

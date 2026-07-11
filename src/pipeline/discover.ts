@@ -19,6 +19,7 @@ import {
   remainingDiscoveryReferenceAdmissions,
   remainingRequestAdmissions,
   upsertDiscoveredProduct,
+  type ActiveStrategy,
 } from "../db/repositories.js";
 import { executeDiscovery } from "../discovery/executor.js";
 import type {
@@ -61,6 +62,8 @@ export interface DiscoveryRunSummary extends RunSummary {
 
 export interface DiscoveryPipelineDependencies {
   database: Database.Database;
+  strategyOverride?: ActiveStrategy<DiscoveryStrategy>;
+  preserveCatalog?: boolean;
   execute?: (
     strategy: DiscoveryStrategy,
     context: DiscoveryExecutionContext,
@@ -242,7 +245,34 @@ export async function runDiscovery(
   const makeId = dependencies.id ?? randomUUID;
   const startedAt = now().toISOString();
   const day = collectionDay(new Date(startedAt));
-  const active = findActiveDiscoveryStrategy(dependencies.database, retailerId);
+  const active = dependencies.strategyOverride
+    ?? findActiveDiscoveryStrategy(dependencies.database, retailerId);
+  if (
+    active.retailerId !== retailerId
+    || active.purpose !== "discovery"
+  ) {
+    throw new Error("Discovery strategy override identity does not match the run");
+  }
+  if (dependencies.strategyOverride !== undefined) {
+    const staged = dependencies.database.prepare(`
+      SELECT retailer_id AS retailerId, purpose, version, strategy_json AS strategyJson
+      FROM strategies WHERE id = ?
+    `).get(active.id) as {
+      retailerId: string;
+      purpose: string;
+      version: number;
+      strategyJson: string;
+    } | undefined;
+    if (
+      staged === undefined
+      || staged.retailerId !== active.retailerId
+      || staged.purpose !== active.purpose
+      || staged.version !== active.version
+      || staged.strategyJson !== JSON.stringify(active.strategy)
+    ) {
+      throw new Error("Discovery strategy override must bind an immutable staged database row");
+    }
+  }
   const activeCatalogBefore = activeCatalogProductCount(
     dependencies.database,
     retailerId,
@@ -498,7 +528,10 @@ export async function runDiscovery(
           : !iteratorCompleted
             ? "run_limit_reached"
             : completionState.evidence?.reason ?? "completion_unverified";
-    if (snapshotComplete && counters.ok === 0) {
+    if (dependencies.preserveCatalog === true) {
+      snapshotComplete = false;
+      completionReason = "candidate_validation_preflight";
+    } else if (snapshotComplete && counters.ok === 0) {
       snapshotComplete = false;
       completionReason = "empty_snapshot_guard";
     } else if (snapshotComplete && activeCatalogBefore > 0) {

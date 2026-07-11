@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/db/database.js";
 import { DiscoveryFailureError } from "../../src/discovery/failure.js";
 import { runDiscovery } from "../../src/pipeline/discover.js";
+import { upsertDiscoveredProduct } from "../../src/db/repositories.js";
 import type { ProductRef } from "../../src/strategies/types.js";
 import { discoveryStrategy, seedRetailer, seedStrategy } from "./helpers.js";
 
@@ -104,6 +105,60 @@ describe("discovery pipeline", () => {
     expect(database.prepare("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM products").get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 0 });
+  });
+
+  it("runs an immutable inactive candidate while preserving the live catalog", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const liveId = seedStrategy(database, "discovery", discoveryStrategy);
+    upsertDiscoveredProduct(
+      database,
+      "retailer-1",
+      { canonicalUrl: "https://shop.test/live", externalId: "live", sourceCategory: "food" },
+      "2026-07-10T05:00:00.000Z",
+    );
+    const candidate = {
+      id: "retailer-1-discovery-v2",
+      retailerId: "retailer-1",
+      purpose: "discovery" as const,
+      version: 2,
+      strategy: discoveryStrategy,
+    };
+    database.prepare(
+      `INSERT INTO strategies
+       (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+        validation_sample_size, validation_successes, validation_rate, active)
+       VALUES (?, 'retailer-1', 'discovery', 1, 2, ?, 'candidate', 0, 0, NULL, 0)`,
+    ).run(candidate.id, JSON.stringify(candidate.strategy));
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      strategyOverride: candidate,
+      preserveCatalog: true,
+      execute: async function* (_strategy, context) {
+        yield {
+          canonicalUrl: "https://shop.test/candidate",
+          externalId: "candidate",
+          sourceCategory: "food",
+        };
+        context.reportCompletion?.({ complete: true, reason: "source_exhausted" });
+      },
+      now: () => new Date("2026-07-10T06:00:00.000Z"),
+    });
+
+    expect(summary).toMatchObject({ ok: 1, snapshotComplete: false, disappeared: 0 });
+    expect(database.prepare(
+      "SELECT strategy_id AS strategyId FROM runs WHERE id = ?",
+    ).get(summary.id)).toEqual({ strategyId: candidate.id });
+    expect(database.prepare(
+      "SELECT completion_reason AS reason FROM catalog_snapshots WHERE run_id = ?",
+    ).get(summary.id)).toEqual({ reason: "candidate_validation_preflight" });
+    expect(database.prepare(
+      "SELECT active FROM products WHERE canonical_url = 'https://shop.test/live'",
+    ).get()).toEqual({ active: 1 });
+    expect(database.prepare("SELECT active FROM strategies WHERE id = ?").get(liveId))
+      .toEqual({ active: 1 });
   });
 
   it("applies the durable 3,000-reference cap across same-day discovery runs", async () => {

@@ -24,7 +24,7 @@
   },
   "seedHints": ["mercearia", "bebidas", "congelados", "padaria-e-matinais", "frios-e-laticinios", "hortifruti", "acougue-e-peixaria"],
   "politeDelayMs": { "min": 200, "max": 300 },
-  "strategyVersions": { "discovery": 4, "extraction": 4 },
+  "strategyVersions": { "discovery": 5, "extraction": 4 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
@@ -116,7 +116,7 @@
       "successes": 30,
       "score": 1,
       "evidence": "Trusted execution of the official account-host category endpoint returned 30/30 canonical records with explicit Mercearia category paths; the same declarative request is bounded across seven food-at-home segments.",
-      "receiptPath": "data/validation/carrefour-discovery-v4.json",
+      "receiptPath": "data/validation/carrefour-discovery-v5.json",
       "receiptSha256": null
     },
     "extraction": {

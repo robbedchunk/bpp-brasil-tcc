@@ -4,7 +4,7 @@ import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { openDatabase } from "../../src/db/database.js";
 import {
@@ -1073,8 +1073,18 @@ describe("acceptance status and evidence", () => {
         join(root, "retailers", "carrefour.json"),
         `${JSON.stringify(boundConfig, null, 2)}\n`,
       );
-      const discoveryPath = join(root, "data", "validation", "carrefour-discovery-v4.json");
-      const extractionPath = join(root, "data", "validation", "carrefour-extraction-v4.json");
+      const discoveryPath = join(
+        root,
+        "data",
+        "validation",
+        basename(boundConfig.validation.discovery.receiptPath ?? ""),
+      );
+      const extractionPath = join(
+        root,
+        "data",
+        "validation",
+        basename(boundConfig.validation.extraction.receiptPath ?? ""),
+      );
       const serialize = (receipt: StrategyValidationEvidence) => `${JSON.stringify(receipt)}\n`;
       await writeFile(discoveryPath, serialize(discoveryReceipt));
       await writeFile(extractionPath, serialize(extractionReceipt));

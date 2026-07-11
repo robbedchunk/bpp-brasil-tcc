@@ -265,6 +265,89 @@ export interface RetailerRegistrationOptions {
   mode?: "activate" | "bootstrap-inactive";
 }
 
+/**
+ * Persist one immutable inactive config strategy so a bounded candidate run can
+ * be audited before external validation. Existing retailer/strategy activation
+ * state is deliberately untouched.
+ */
+export function stageRetailerConfigStrategy(
+  database: Database.Database,
+  config: RetailerConfig,
+  purpose: "discovery" | "extraction",
+): {
+  id: string;
+  retailerId: string;
+  purpose: "discovery" | "extraction";
+  version: number;
+  strategy: DiscoveryStrategy | ExtractionStrategy;
+} {
+  const strategy = config[purpose];
+  const version = config.strategyVersions[purpose];
+  const id = `${config.id}-${purpose}-v${version}`;
+  const strategyJson = JSON.stringify(strategy);
+  const provenance = `retailer config; ${config.validation[purpose].evidence}`;
+  const stage = database.transaction(() => {
+    database.prepare(
+      `INSERT INTO retailers
+         (id, name, base_url, cep, platform_hint, domains_json, active,
+          degraded, degraded_reason)
+       VALUES (?, ?, ?, ?, ?, ?, 0, 0, NULL)
+       ON CONFLICT (id) DO UPDATE SET
+         name = excluded.name,
+         base_url = excluded.base_url,
+         cep = excluded.cep,
+         platform_hint = excluded.platform_hint,
+         domains_json = excluded.domains_json,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+    ).run(
+      config.id,
+      config.name,
+      config.baseUrl,
+      config.cep,
+      config.platformEvidence.platform,
+      JSON.stringify(config.allowedDomains),
+    );
+    const existing = database.prepare(
+      `SELECT retailer_id, purpose, tier, version, strategy_json, provenance,
+              retired_at
+       FROM strategies WHERE id = ?`,
+    ).get(id) as {
+      retailer_id: string;
+      purpose: string;
+      tier: number;
+      version: number;
+      strategy_json: string;
+      provenance: string;
+      retired_at: string | null;
+    } | undefined;
+    const tier = strategyTier(strategy);
+    if (existing !== undefined && (
+      existing.retailer_id !== config.id
+      || existing.purpose !== purpose
+      || existing.tier !== tier
+      || existing.version !== version
+      || existing.strategy_json !== strategyJson
+      || existing.provenance !== provenance
+    )) {
+      throw new Error(`Strategy ${id} changed immutable fields; create a version bump instead`);
+    }
+    if (existing?.retired_at !== null && existing?.retired_at !== undefined) {
+      throw new Error(`Strategy ${id} is retired; candidate staging requires a successor version`);
+    }
+    if (existing === undefined) {
+      database.prepare(
+        `INSERT INTO strategies
+         (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+          validation_sample_size, validation_successes, validation_rate,
+          active, validated_at, activated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, NULL, 0, NULL, NULL)`,
+      ).run(id, config.id, purpose, tier, version, strategyJson, provenance);
+    }
+  });
+  stage.immediate();
+  return { id, retailerId: config.id, purpose, version, strategy };
+}
+
 function authoritativeValidationRefs(
   database: Database.Database,
   retailerId: string,

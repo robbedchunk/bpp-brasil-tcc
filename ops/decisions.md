@@ -1,5 +1,17 @@
 # Operations decisions
 
+## 2026-07-11 — Carrefour discovery v4 retained as a failed validation experiment
+
+- Trusted validation of `carrefour-discovery-v4` preselected the 30 authoritative
+  catalog references before starting the candidate execution and rediscovered
+  15/30. The missing references came from the prior narrow coffee-search catalog,
+  while v4 traversed bounded food-at-home category segments.
+- The signed 15/30 receipt is retained under `data/validation/attempts/`; it is
+  non-activating and is not rewritten. Carrefour discovery advances to v5.
+- Successor validation uses a separate bounded inactive-candidate catalog
+  preflight, preserves all live catalog rows, then starts a new external run
+  against 30 references fixed before that validation run begins.
+
 ## 2026-07-10 — M0 foundation
 
 - The supported runtime is Node `>=24 <25` with npm `>=11 <12`; package install

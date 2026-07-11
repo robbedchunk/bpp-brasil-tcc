@@ -153,6 +153,57 @@ describe("trusted live-host validation runner", () => {
     expect(raw.endsWith("\n")).toBe(true);
   });
 
+  it("rechecks the monotonic clock when a pacing sleep wakes early", async () => {
+    const retailer = config("extra-mercado");
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const refs = Array.from({ length: 30 }, (_value, index) => ({
+      canonicalUrl: `https://www.extramercado.com.br/produto/${1_500 + index}/produto-${index}`,
+      externalId: String(1_500 + index),
+      sourceCategory: "Alimentos",
+    }));
+    seed(database, retailer, refs);
+    let elapsedMs = 0;
+    let shortWakeups = 0;
+    const directory = await outputDirectory();
+
+    const result = await validateConfiguredStrategy(retailer, "extraction", {
+      database,
+      outputDirectory: directory,
+      signingPrivateKey: TEST_SIGNING_PRIVATE_KEY,
+      fetch: async (input) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const id = /\/ecom\/(\d+)\/bestPrices/u.exec(url)?.[1];
+        return new Response(JSON.stringify({
+          content: {
+            id: Number(id),
+            name: `Product ${id}`,
+            brand: "Brand",
+            sellInfos: [{ currentPrice: 10, sellPrice: 9, stock: 1 }],
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+      sleep: async (milliseconds) => {
+        if (milliseconds > 1) {
+          elapsedMs += milliseconds - 0.75;
+          shortWakeups += 1;
+        } else {
+          elapsedMs += milliseconds;
+        }
+      },
+      clock: () => elapsedMs,
+      now: () => new Date(Date.parse("2026-07-11T06:00:30.000Z") + elapsedMs),
+      runtime: "node-v24.18.0",
+    });
+
+    expect(shortWakeups).toBe(29);
+    const offsets = result.evidence.samples.map((sample) => sample.startedOffsetMs);
+    expect(offsets[0]).toBe(0);
+    expect(offsets.slice(1).every((offset, index) =>
+      offset - (offsets[index] ?? 0) >= 500)).toBe(true);
+    expect(result.evidence).toMatchObject({ attempted: 30, valid: 30, score: 1 });
+  });
+
   it("scores 30 numeric-only extraction titles invalid", async () => {
     const retailer = config("extra-mercado");
     const database = openDatabase(":memory:");

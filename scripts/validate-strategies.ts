@@ -20,12 +20,14 @@ import {
 } from "../src/collection/http.js";
 import { executeDiscovery } from "../src/discovery/executor.js";
 import { openDatabase } from "../src/db/database.js";
+import { runDiscovery } from "../src/pipeline/discover.js";
 import { DiscoveryFailureError } from "../src/discovery/failure.js";
 import { RobotsPolicy } from "../src/discovery/robots.js";
 import { redact } from "../src/ops/logger.js";
 import {
   loadRetailerConfigs,
   registerRetailerConfigs,
+  stageRetailerConfigStrategy,
   type RetailerConfig,
 } from "../src/retailers/config.js";
 import type {
@@ -316,7 +318,7 @@ class ExchangeRecorder {
   async pace(): Promise<number> {
     let startedAt = 0;
     const turn = this.#gate.then(async () => {
-      const current = this.#clock();
+      let current = this.#clock();
       if (this.#first) {
         this.#first = false;
         this.#nextStart = current;
@@ -324,11 +326,17 @@ class ExchangeRecorder {
         startedAt = current;
         return;
       }
-      this.#nextStart = Math.max(this.#nextStart + this.#pacingMs, current);
-      const wait = this.#nextStart - current;
-      if (wait > 0) await this.#sleep(wait);
-      this.#logicalStartedAt = this.#clock();
-      startedAt = this.#logicalStartedAt;
+      const deadline = this.#nextStart + this.#pacingMs;
+      while (current < deadline) {
+        await this.#sleep(Math.max(1, Math.ceil(deadline - current)));
+        current = this.#clock();
+      }
+      // Pace from the observed start, not the prior ideal deadline. A timer may
+      // wake fractionally early or late; only the observed monotonic timestamp
+      // can prove that consecutive request starts are far enough apart.
+      this.#nextStart = current;
+      this.#logicalStartedAt = current;
+      startedAt = current;
     });
     this.#gate = turn.catch(() => undefined);
     await turn;
@@ -922,6 +930,7 @@ interface CliOptions {
   signingPrivateKey: string;
   updateConfig?: boolean;
   activate?: boolean;
+  prepareDiscoveryChallenge?: boolean;
 }
 
 function positiveInteger(name: string, value: string): number {
@@ -949,6 +958,10 @@ async function main(): Promise<void> {
       "var/operations/validation-attestation-private.pem",
     )
     .option("--update-config", "atomically bind completed receipt metadata into configs")
+    .option(
+      "--prepare-discovery-challenge",
+      "stage each inactive discovery candidate and refresh 120 bounded catalog references before validation",
+    )
     .option("--activate", "activate only after binding every selected config receipt");
   command.parse(process.argv);
   const options = command.opts<CliOptions>();
@@ -977,6 +990,45 @@ async function main(): Promise<void> {
   }
   const databasePath = resolve(options.database);
   const configsDirectory = resolve(options.configs);
+  if (options.prepareDiscoveryChallenge === true && purposes.includes("discovery")) {
+    const writable = openDatabase(databasePath);
+    try {
+      for (const config of configs) {
+        const staged = stageRetailerConfigStrategy(writable, config, "discovery");
+        const summary = await runDiscovery(config.id, {
+          database: writable,
+          strategyOverride: {
+            ...staged,
+            purpose: "discovery",
+            strategy: config.discovery,
+          },
+          preserveCatalog: true,
+          limit: 120,
+          politeDelayMs: config.politeDelayMs,
+          logDirectory: resolve("var/log/precos"),
+        });
+        if (summary.ok < SAMPLE_SIZE || summary.inScope < SAMPLE_SIZE) {
+          throw new Error(
+            `${config.id} candidate preflight produced ${summary.ok} references, `
+            + `${summary.inScope} in scope; ${SAMPLE_SIZE} are required`,
+          );
+        }
+        process.stdout.write(`${JSON.stringify({
+          event: "discovery-challenge-prepared",
+          retailerId: config.id,
+          strategyId: staged.id,
+          runId: summary.id,
+          attempted: summary.attempted,
+          ok: summary.ok,
+          inScope: summary.inScope,
+          snapshotComplete: summary.snapshotComplete,
+          catalogPreserved: true,
+        })}\n`);
+      }
+    } finally {
+      writable.close();
+    }
+  }
   const database = new Database(databasePath, {
     readonly: true,
     fileMustExist: true,
@@ -1029,6 +1081,14 @@ async function main(): Promise<void> {
   } finally {
     database.close();
   }
+  if (
+    options.updateConfig === true
+    && completed.some(({ result }) => result.evidence.activatable !== true)
+  ) {
+    throw new Error(
+      "Refusing to bind non-activatable validation evidence; create a successor strategy version",
+    );
+  }
   if (options.updateConfig === true) {
     for (const config of configs) {
       const validation = { ...config.validation };
@@ -1052,9 +1112,11 @@ async function main(): Promise<void> {
   if (options.activate === true) {
     const writable = openDatabase(databasePath);
     try {
+      const selectedRetailers = new Set(configs.map(({ id }) => id));
       registerRetailerConfigs(
         writable,
-        loadRetailerConfigs(configsDirectory),
+        loadRetailerConfigs(configsDirectory)
+          .filter(({ id }) => selectedRetailers.has(id)),
         {
           projectRoot: dirname(configsDirectory),
           verificationPublicKey: createPublicKey(signingPrivateKey),
