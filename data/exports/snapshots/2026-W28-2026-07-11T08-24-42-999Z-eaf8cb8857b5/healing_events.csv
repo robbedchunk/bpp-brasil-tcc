@@ -1,0 +1,1 @@
+event_id,retailer_id,retailer_name,purpose,status,onset_run_id,previous_strategy_id,successor_strategy_id,attempts,tier_from,tier_to,drift_started_at,detected_at,recovered_at,duration_seconds
