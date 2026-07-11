@@ -3,7 +3,10 @@
   "id": "carrefour",
   "name": "Carrefour Mercado",
   "baseUrl": "https://mercado.carrefour.com.br",
-  "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
+  "allowedDomains": [
+    "carrefourbrfood.vtexcommercestable.com.br",
+    "mercado.carrefour.com.br"
+  ],
   "cep": "01310-100",
   "active": true,
   "backupRank": null,
@@ -22,19 +25,42 @@
     "erpCode": null,
     "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
   },
-  "seedHints": ["mercearia", "bebidas", "congelados", "padaria-e-matinais", "frios-e-laticinios", "hortifruti", "acougue-e-peixaria"],
-  "politeDelayMs": { "min": 200, "max": 300 },
-  "strategyVersions": { "discovery": 5, "extraction": 4 },
+  "seedHints": [
+    "mercearia",
+    "bebidas",
+    "congelados",
+    "padaria-e-matinais",
+    "frios-e-laticinios",
+    "hortifruti",
+    "acougue-e-peixaria"
+  ],
+  "politeDelayMs": {
+    "min": 200,
+    "max": 300
+  },
+  "strategyVersions": {
+    "discovery": 5,
+    "extraction": 4
+  },
   "discovery": {
     "schemaVersion": 1,
+    "allowedDomains": [
+      "carrefourbrfood.vtexcommercestable.com.br",
+      "mercado.carrefour.com.br"
+    ],
     "purpose": "discovery",
     "tier": "api",
-    "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
     "request": {
       "method": "GET",
       "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search/{segment}",
-      "headers": { "accept": "application/json" },
-      "query": { "_from": "{from}", "_to": "{to}", "sc": 2 }
+      "headers": {
+        "accept": "application/json"
+      },
+      "query": {
+        "_from": "{from}",
+        "_to": "{to}",
+        "sc": 2
+      }
     },
     "itemsPath": "$",
     "refFields": {
@@ -42,28 +68,63 @@
       "externalId": "$.productId",
       "sourceCategory": "$.categories[0]"
     },
-    "pagination": { "kind": "page", "start": 0, "step": 1, "pageSize": 50, "maxPages": 18 },
+    "pagination": {
+      "kind": "page",
+      "start": 0,
+      "step": 1,
+      "pageSize": 50,
+      "maxPages": 18
+    },
     "segments": [
-      { "value": "mercearia", "maxProducts": 900 },
-      { "value": "bebidas", "maxProducts": 450 },
-      { "value": "congelados", "maxProducts": 350 },
-      { "value": "padaria-e-matinais", "maxProducts": 350 },
-      { "value": "frios-e-laticinios", "maxProducts": 350 },
-      { "value": "hortifruti", "maxProducts": 300 },
-      { "value": "acougue-e-peixaria", "maxProducts": 300 }
+      {
+        "value": "mercearia",
+        "maxProducts": 900
+      },
+      {
+        "value": "bebidas",
+        "maxProducts": 450
+      },
+      {
+        "value": "congelados",
+        "maxProducts": 350
+      },
+      {
+        "value": "padaria-e-matinais",
+        "maxProducts": 350
+      },
+      {
+        "value": "frios-e-laticinios",
+        "maxProducts": 350
+      },
+      {
+        "value": "hortifruti",
+        "maxProducts": 300
+      },
+      {
+        "value": "acougue-e-peixaria",
+        "maxProducts": 300
+      }
     ],
     "maxProducts": 3000
   },
   "extraction": {
     "schemaVersion": 1,
+    "allowedDomains": [
+      "carrefourbrfood.vtexcommercestable.com.br",
+      "mercado.carrefour.com.br"
+    ],
     "purpose": "extraction",
     "tier": "api",
-    "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
     "request": {
       "method": "GET",
       "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
-      "headers": { "accept": "application/json" },
-      "query": { "fq": "productId:{externalId}", "sc": 2 }
+      "headers": {
+        "accept": "application/json"
+      },
+      "query": {
+        "fq": "productId:{externalId}",
+        "sc": 2
+      }
     },
     "regionalContext": {
       "kind": "vtex-segment",
@@ -90,44 +151,55 @@
       "path": "tests/fixtures/carrefour/catalog-product.json",
       "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId%3A14751&sc=2",
       "capturedAt": "2026-07-11T04:39:00.000Z",
-      "redactions": ["response headers and regional cookie omitted", "unrelated offer metadata removed", "payment metadata removed"],
+      "redactions": [
+        "response headers and regional cookie omitted",
+        "unrelated offer metadata removed",
+        "payment metadata removed"
+      ],
       "synthetic": false
     },
     {
       "path": "tests/fixtures/carrefour/catalog-product-plain.json",
       "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId%3A14751&sc=2",
       "capturedAt": "2026-07-11T04:39:00.000Z",
-      "redactions": ["response headers omitted", "unrelated offer metadata removed", "payment metadata removed"],
+      "redactions": [
+        "response headers omitted",
+        "unrelated offer metadata removed",
+        "payment metadata removed"
+      ],
       "synthetic": false
     },
     {
       "path": "tests/fixtures/carrefour/mutated-product.json",
       "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId%3A14751&sc=2",
       "capturedAt": "2026-07-11T04:39:00.000Z",
-      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "redactions": [
+        "fully synthetic mutation",
+        "no request metadata retained"
+      ],
       "synthetic": true
     }
   ],
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T05:07:25.000Z",
+      "validatedAt": "2026-07-11T06:52:14.683Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Trusted execution of the official account-host category endpoint returned 30/30 canonical records with explicit Mercearia category paths; the same declarative request is bounded across seven food-at-home segments.",
       "receiptPath": "data/validation/carrefour-discovery-v5.json",
-      "receiptSha256": null
+      "receiptSha256": "fbd41811e4e351700d20af49742265e1ecd4bf6ffc90055d60e0ba5b2c0f5e63"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T04:49:04.000Z",
+      "validatedAt": "2026-07-11T06:52:29.479Z",
       "sampleSize": 30,
       "successes": 28,
       "score": 0.9333333333333333,
       "evidence": "Trusted sequential validation with the public CEP-derived regional context produced 28/30 complete offers; all 30 responses contained validated catalog seller 1, while two unavailable products had no positive price. No cookie is stored in the strategy or evidence.",
       "receiptPath": "data/validation/carrefour-extraction-v4.json",
-      "receiptSha256": null
+      "receiptSha256": "fc2202d5fcdc80df3e720714be7e1d50fa5197bd196b01de3d12577fe9b16a90"
     }
   }
 }
