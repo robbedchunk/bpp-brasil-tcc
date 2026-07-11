@@ -45,8 +45,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 5,
-    "extraction": 4
+    "discovery": 6,
+    "extraction": 5
   },
   "discovery": {
     "schemaVersion": 1,
@@ -151,23 +151,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:11:44.492Z",
+      "validatedAt": "2026-07-11T14:13:22.715Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/st-marche-discovery-v5.json",
-      "receiptSha256": "667b9e42df631976f6ddc542fa72043e580242bd7a3af3a46602b55a8475a836"
+      "receiptPath": "data/validation/st-marche-discovery-v6.json",
+      "receiptSha256": "518f42c763d5e2df0ab036d4f2ec407ba35f8751ab9b8408061e13d3ed450fab"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:11:59.950Z",
+      "validatedAt": "2026-07-11T14:13:37.579Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/st-marche-extraction-v4.json",
-      "receiptSha256": "b07f90017a28f686db56fe35fdb1df0696ad990cab900ca47ef95be596e1dd7c"
+      "receiptPath": "data/validation/st-marche-extraction-v5.json",
+      "receiptSha256": "53fc91a13baa0301e64eadc0f190fe11c294e2a7b831343dd079b0b4cd38ce6e"
     }
   }
 }

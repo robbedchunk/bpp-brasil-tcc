@@ -39,7 +39,7 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 6,
+    "discovery": 7,
     "extraction": 5
   },
   "discovery": {
@@ -183,13 +183,13 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:08:34.912Z",
+      "validatedAt": "2026-07-11T14:10:13.004Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/carrefour-discovery-v6.json",
-      "receiptSha256": "6a5dd4a590ed2f52c0c297b834fa758f484e0038021a703888f0dd90b1a67c78"
+      "receiptPath": "data/validation/carrefour-discovery-v7.json",
+      "receiptSha256": "55e2c7f47eaeb3cef6042306c1950fa5fe7ae77db7c75281d721f404dcac2d62"
     },
     "extraction": {
       "externallyValidated": true,

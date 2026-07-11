@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 5,
-    "extraction": 3
+    "discovery": 6,
+    "extraction": 4
   },
   "discovery": {
     "schemaVersion": 1,
@@ -147,23 +147,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:10:35.513Z",
+      "validatedAt": "2026-07-11T14:12:13.181Z",
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/pao-de-acucar-discovery-v5.json",
-      "receiptSha256": "3d91e399b85f42cea56d9e45666fa5d62733623896b0202ab793841345a2009e"
+      "receiptPath": "data/validation/pao-de-acucar-discovery-v6.json",
+      "receiptSha256": "6c8b8896ee354ad0a6fa778cda5171a988ddb4d26be265ae53aa3357b59c03f7"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:10:50.087Z",
+      "validatedAt": "2026-07-11T14:12:28.075Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/pao-de-acucar-extraction-v3.json",
-      "receiptSha256": "a734467221d445aed5297cdf75ad0a4f600ba841d02efcdd56db7372ef010c5f"
+      "receiptPath": "data/validation/pao-de-acucar-extraction-v4.json",
+      "receiptSha256": "2afd64cba176bf2fd765f40de5bd4dc7ff7496613f67f4336fd3ff2edfb892be"
     }
   }
 }

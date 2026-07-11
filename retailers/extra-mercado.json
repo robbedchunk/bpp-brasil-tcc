@@ -34,7 +34,7 @@
   },
   "strategyVersions": {
     "discovery": 3,
-    "extraction": 3
+    "extraction": 4
   },
   "discovery": {
     "schemaVersion": 1,
@@ -157,13 +157,13 @@
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:09:47.817Z",
+      "validatedAt": "2026-07-11T14:11:27.539Z",
       "sampleSize": 30,
       "successes": 28,
       "score": 0.9333333333333333,
       "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/extra-mercado-extraction-v3.json",
-      "receiptSha256": "4a397aebaa3263b1a40623ac7b0afcf7082ac5783e5a3879064a36e971a92375"
+      "receiptPath": "data/validation/extra-mercado-extraction-v4.json",
+      "receiptSha256": "7d875da71b5aa5940e8ceafac863afb94170914f34ac23431ee67d4a1eb63ada"
     }
   }
 }
