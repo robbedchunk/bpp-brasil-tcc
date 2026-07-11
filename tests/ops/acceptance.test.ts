@@ -1,13 +1,15 @@
+import { execFileSync } from "node:child_process";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { openDatabase } from "../../src/db/database.js";
 import {
   acceptanceExitCode,
   aggregateAcceptanceStatus,
+  classificationAutomationIsCurrent,
   evaluateM2,
   evaluateM3,
   evaluateM4,
@@ -359,6 +361,42 @@ describe("acceptance status and evidence", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a stale rendered daily service without the classification OnSuccess link", async () => {
+    const installed = await mkdtemp(join(tmpdir(), "acceptance-rendered-units-"));
+    try {
+      const root = resolve(".");
+      execFileSync("bash", ["ops/install-systemd.sh", "--dry-run"], {
+        cwd: root,
+        env: { ...process.env, SYSTEMD_UNIT_DIR: installed },
+        stdio: "ignore",
+      });
+      expect(validateTimerDefinitions(root, installed).valid).toBe(true);
+      const dailyPath = join(installed, "precos-daily.service");
+      const daily = await readFile(dailyPath, "utf8");
+      await writeFile(dailyPath, daily.replace("OnSuccess=precos-classification.service\n", ""));
+      expect(validateTimerDefinitions(root, installed).valid).toBe(false);
+    } finally {
+      await rm(installed, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps classification automation in progress while the daily service is active", () => {
+    const currentDailyStart = new Date("2026-07-11T06:00:00.000Z");
+    const base = {
+      dailyResult: "success",
+      dailyStartedAt: "2026-07-11T06:02:00.000Z",
+      classificationActive: false,
+      classificationResult: null,
+      classificationStartedAt: null,
+      currentDailyStart,
+    } as const;
+    expect(classificationAutomationIsCurrent({ ...base, dailyActive: true })).toMatchObject({
+      current: true,
+      dailyRunObserved: true,
+    });
+    expect(classificationAutomationIsCurrent({ ...base, dailyActive: false }).current).toBe(false);
   });
 
   it("fails contradictory heartbeat JSON before executing json_each", () => {

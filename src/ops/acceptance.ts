@@ -84,6 +84,34 @@ export interface ServiceStateReader {
   read(units: string[]): Promise<ServiceState[]>;
 }
 
+export interface ClassificationAutomationState {
+  dailyActive: boolean;
+  dailyResult: string | null;
+  dailyStartedAt: string | null;
+  classificationActive: boolean;
+  classificationResult: string | null;
+  classificationStartedAt: string | null;
+  currentDailyStart: Date;
+}
+
+export function classificationAutomationIsCurrent(input: ClassificationAutomationState): {
+  current: boolean;
+  dailyRunObserved: boolean;
+} {
+  const dailyStartedAt = Date.parse(input.dailyStartedAt ?? "");
+  const classificationStartedAt = Date.parse(input.classificationStartedAt ?? "");
+  const dailyRunObserved = input.dailyResult === "success" && Number.isFinite(dailyStartedAt)
+    && dailyStartedAt >= input.currentDailyStart.getTime();
+  return {
+    dailyRunObserved,
+    current: !dailyRunObserved
+      || input.dailyActive
+      || input.classificationActive
+      || (input.classificationResult === "success" && Number.isFinite(classificationStartedAt)
+        && classificationStartedAt >= dailyStartedAt),
+  };
+}
+
 export interface AcceptanceOptions {
   projectRoot: string;
   databasePath: string;
@@ -1038,17 +1066,21 @@ export function validateTimerDefinitions(
     }
   }
   const dailySourcePath = join(root, "ops/precos-daily.service");
+  const dailyInstalledPath = join(installedUnitDirectory, "precos-daily.service");
   const classificationSourcePath = join(root, "ops", CLASSIFICATION_SERVICE_UNIT);
   const classificationInstalledPath = join(installedUnitDirectory, CLASSIFICATION_SERVICE_UNIT);
   if (existsSync(join(root, "ops/precos-classification.timer"))
     || existsSync(join(installedUnitDirectory, "precos-classification.timer"))) valid = false;
-  if (!existsSync(dailySourcePath) || !existsSync(classificationSourcePath) || !existsSync(classificationInstalledPath)) {
+  if (!existsSync(dailySourcePath) || !existsSync(dailyInstalledPath)
+    || !existsSync(classificationSourcePath) || !existsSync(classificationInstalledPath)) {
     valid = false;
   } else {
     const daily = readFileSync(dailySourcePath, "utf8");
+    const installedDaily = readFileSync(dailyInstalledPath, "utf8");
     const classification = readFileSync(classificationSourcePath, "utf8");
     const installed = readFileSync(classificationInstalledPath, "utf8");
     valid &&= /OnSuccess=precos-classification\.service/u.test(daily)
+      && /OnSuccess=precos-classification\.service/u.test(installedDaily)
       && /After=precos-daily\.service/u.test(classification)
       && /WorkingDirectory=@PROJECT_ROOT@/u.test(classification)
       && /Environment=@RUNTIME_PATH@/u.test(classification)
@@ -1291,14 +1323,17 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     const currentDailyStart = currentScheduledBoundary(scheduledBoundaryAfter(operationsActivation, 3, 0), now, 3, 0);
     const dailyState = services.find((service) => service.unit === "precos-daily.service");
     const classificationState = services.find((service) => service.unit === CLASSIFICATION_SERVICE_UNIT);
-    const dailyStartedAt = Date.parse(dailyState?.lastStartedAt ?? "");
-    const classificationStartedAt = Date.parse(classificationState?.lastStartedAt ?? "");
-    const dailyRunObserved = dailyState?.result === "success" && Number.isFinite(dailyStartedAt)
-      && dailyStartedAt >= currentDailyStart.getTime();
-    const classificationAutomationCurrent = !dailyRunObserved
-      || classificationState?.active === true
-      || (classificationState?.result === "success" && Number.isFinite(classificationStartedAt)
-        && classificationStartedAt >= dailyStartedAt);
+    const classificationAutomation = classificationAutomationIsCurrent({
+      dailyActive: dailyState?.active ?? false,
+      dailyResult: dailyState?.result ?? null,
+      dailyStartedAt: dailyState?.lastStartedAt ?? null,
+      classificationActive: classificationState?.active ?? false,
+      classificationResult: classificationState?.result ?? null,
+      classificationStartedAt: classificationState?.lastStartedAt ?? null,
+      currentDailyStart,
+    });
+    const { dailyRunObserved } = classificationAutomation;
+    const classificationAutomationCurrent = classificationAutomation.current;
     const classificationUnitsValid = validateTimerDefinitions(root).valid;
     const classificationEvidence = evidence("service-m3-classification-automation", "service", CLASSIFICATION_SERVICE_UNIT, now.toISOString(), {
       dailyRunObserved,
