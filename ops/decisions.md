@@ -245,3 +245,21 @@
   the external `>=0.9` activation gate without a proxy, browser bypass, paid
   service, or fabricated value, so Carrefour joins the daily panel as the third
   active retailer.
+
+## 2026-07-11 — St Marché public store activation
+
+- The official public `/stores` response lists two online fulfillment
+  locations. Pavão (`66677604431`) explicitly covers the `01310*` range, which
+  contains the pilot CEP `01310-100`; the retained store-response hash is
+  `6f2c79aeb015b5b79109c6650edfd15b8b7e7f7f3eeae15ad0d9756eb425574a`.
+- A robots-permitted Mercearia crawl, capped at two pages, yielded 30 unique
+  product references through the trusted DOM-crawl executor before reaching
+  that cap. The public Remix data
+  loaders accept the Pavão store ID without a cookie, account, token, proxy, or
+  challenge bypass. Sequential 1.1-second-paced trusted execution completed
+  30/30 offers between `2026-07-11T04:24:11.400Z` and
+  `2026-07-11T04:24:56.820Z`.
+- Regional availability maps only from top-level `hasInventory`: the same Alho
+  em Pó product was unavailable at Pavão and available at Mooca, while the
+  aggregate variant field stayed available. This causal store difference is
+  why extraction v3 does not use `selectedVariant.availableForSale`.

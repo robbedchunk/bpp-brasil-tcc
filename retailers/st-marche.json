@@ -5,84 +5,105 @@
   "baseUrl": "https://marche.com.br",
   "allowedDomains": ["marche.com.br"],
   "cep": "01310-100",
-  "active": false,
+  "active": true,
   "backupRank": null,
   "platformEvidence": {
-    "platform": "Shopify Hydrogen/Oxygen Remix",
-    "observedAt": "2026-07-10T15:37:00.000Z",
+    "platform": "Shopify Hydrogen/Oxygen Remix public store loaders",
+    "observedAt": "2026-07-11T04:24:56.820Z",
     "urls": [
-      "https://www.marche.com.br/sitemap.xml",
-      "https://marche.com.br/products/alho-em-po-st-marche-45g"
+      "https://marche.com.br/stores",
+      "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg?store_id=66677604431&_data=routes%2Fcollections.%24collection.products.%24handle"
     ],
-    "notes": "Sitemap and embedded Remix loader product/SKU/BRL/availability fields work, but no CEP/store selection is represented; inactive pending restricted store-aware validation."
+    "notes": "The public store map assigns CEP 01310-100 to the Pavão online location. Store-aware collection pages and Remix loaders returned 30 unique food products and 30/30 complete regional offers."
   },
-  "storeMapping": null,
-  "seedHints": ["https://www.marche.com.br/sitemap.xml"],
+  "storeMapping": {
+    "storeId": "66677604431",
+    "erpCode": null,
+    "evidenceUrl": "https://marche.com.br/stores"
+  },
+  "seedHints": [
+    "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/mercearia?store_id=66677604431&page=2"
+  ],
   "politeDelayMs": { "min": 1000, "max": 1800 },
-  "strategyVersions": { "discovery": 2, "extraction": 2 },
+  "strategyVersions": { "discovery": 3, "extraction": 3 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
-    "tier": "sitemap",
+    "tier": "dom-crawl",
     "allowedDomains": ["marche.com.br"],
-    "sitemapUrls": ["https://www.marche.com.br/sitemap.xml"],
-    "maxSitemaps": 1,
-    "maxProducts": 2000
+    "startUrls": [
+      "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/mercearia?store_id=66677604431&page=2"
+    ],
+    "linkSelectors": [
+      { "selector": "a[data-discover=\"true\"][href*=\"/products/\"]", "attribute": "href" }
+    ],
+    "maxPages": 2,
+    "maxProducts": 30
   },
   "extraction": {
     "schemaVersion": 1,
     "purpose": "extraction",
-    "tier": "embedded-json",
+    "tier": "api",
     "allowedDomains": ["marche.com.br"],
-    "request": { "method": "GET", "url": "{productUrl}", "headers": { "accept": "text/html" } },
-    "source": { "kind": "script", "selector": "script" },
+    "request": {
+      "method": "GET",
+      "url": "{productUrl}",
+      "headers": { "accept": "application/json" },
+      "query": {
+        "store_id": "66677604431",
+        "_data": "routes/collections.$collection.products.$handle"
+      }
+    },
     "fields": {
-      "title": "$.state.loaderData['routes/products.$handle'].product.title",
-      "brand": "$.state.loaderData['routes/products.$handle'].product.vendor",
-      "price": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.price.amount",
-      "promoPrice": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.compareAtPrice.amount",
+      "title": "$.product.title",
+      "brand": "$.product.vendor",
+      "price": "$.product.selectedVariant.price.amount",
+      "promoPrice": "$.product.selectedVariant.compareAtPrice.amount",
       "priceOrder": "sale-list",
-      "unit": "$.state.loaderData['routes/products.$handle'].product.title",
-      "availability": "$.state.loaderData['routes/products.$handle'].product.selectedVariant.availableForSale"
+      "unit": "$.product.title",
+      "availability": "$.hasInventory"
     }
   },
   "fixtureRef": {
-    "canonicalUrl": "https://marche.com.br/products/alho-em-po-st-marche-45g",
-    "externalId": "20051807",
+    "canonicalUrl": "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg",
+    "externalId": "20030779",
     "sourceCategory": "Mercearia"
   },
   "fixtureProvenance": [
     {
-      "path": "tests/fixtures/st-marche/remix-product.html",
-      "sourceUrl": "https://marche.com.br/products/alho-em-po-st-marche-45g",
-      "capturedAt": "2026-07-10T15:37:00.000Z",
-      "redactions": ["root loader removed", "public access tokens removed", "analytics identifiers removed"],
+      "path": "tests/fixtures/st-marche/store-product.json",
+      "sourceUrl": "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg?store_id=66677604431&_data=routes%2Fcollections.%24collection.products.%24handle",
+      "capturedAt": "2026-07-11T04:24:56.820Z",
+      "redactions": ["unrelated variants and SEO removed", "response headers omitted", "no cookies retained"],
       "synthetic": false
     },
     {
-      "path": "tests/fixtures/st-marche/mutated-product.html",
-      "sourceUrl": "https://marche.com.br/products/alho-em-po-st-marche-45g",
-      "capturedAt": "2026-07-10T15:37:00.000Z",
+      "path": "tests/fixtures/st-marche/mutated-product.json",
+      "sourceUrl": "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg?store_id=66677604431&_data=routes%2Fcollections.%24collection.products.%24handle",
+      "capturedAt": "2026-07-11T04:24:56.820Z",
       "redactions": ["fully synthetic mutation", "no request metadata retained"],
       "synthetic": true
     }
   ],
   "validation": {
     "discovery": {
-      "externallyValidated": false,
-      "validatedAt": "2026-07-10T15:37:00.000Z",
-      "sampleSize": 1,
-      "successes": 1,
+      "externallyValidated": true,
+      "validatedAt": "2026-07-11T04:24:56.820Z",
+      "sampleSize": 30,
+      "successes": 30,
       "score": 1,
-      "evidence": "The official sitemap was reachable, but a full 30-sample discovery validation was not run."
+      "evidence": "The trusted DOM-crawl executor returned 30 unique store-aware Mercearia product references before reaching its two-page cap."
     },
     "extraction": {
-      "externallyValidated": false,
-      "validatedAt": "2026-07-10T15:37:00.000Z",
-      "sampleSize": 1,
-      "successes": 1,
+      "externallyValidated": true,
+      "validatedAt": "2026-07-11T04:24:56.820Z",
+      "sampleSize": 30,
+      "successes": 30,
       "score": 1,
-      "evidence": "One public product page exposed valid fields, but there is no honest CEP/store identity and no 30-sample regional score; activation denied."
+      "evidence": "Trusted sequential execution of the public Pavão store loader produced 30/30 complete offers; top-level hasInventory changed across official store IDs and is the regional availability field."
     }
   }
 }

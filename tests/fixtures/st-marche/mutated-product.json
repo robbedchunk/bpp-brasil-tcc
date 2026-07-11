@@ -1,0 +1,16 @@
+{
+  "fixtureNote": "synthetic mutation for drift testing",
+  "product": {
+    "title": "Arroz Synthetic 1Kg",
+    "vendor": null,
+    "handle": "arroz-synthetic-1kg",
+    "selectedVariant": {
+      "price": { "amount": "not-a-price", "currencyCode": "BRL" },
+      "compareAtPrice": null,
+      "availableForSale": true,
+      "sku": "synthetic"
+    }
+  },
+  "hasInventory": false,
+  "storeId": "synthetic"
+}

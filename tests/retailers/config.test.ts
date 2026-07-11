@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { executeExtraction } from "../../src/collection/executor.js";
 import { openDatabase } from "../../src/db/database.js";
 import {
   loadRetailerConfigs,
@@ -43,6 +44,7 @@ describe("live retailer configuration", () => {
       "carrefour",
       "extra-mercado",
       "pao-de-acucar",
+      "st-marche",
     ]);
     for (const config of configs.filter(({ active }) => active)) {
       for (const purpose of ["discovery", "extraction"] as const) {
@@ -80,6 +82,39 @@ describe("live retailer configuration", () => {
     ]));
   });
 
+  it("binds St Marché price and availability to the covered public store", async () => {
+    const config = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "st-marche");
+    expect(config?.storeMapping).toMatchObject({ storeId: "66677604431" });
+    expect(config?.extraction.tier).toBe("api");
+    if (config === undefined || config.extraction.tier !== "api") return;
+    expect(config.extraction.request.query).toMatchObject({
+      store_id: "66677604431",
+      _data: "routes/collections.$collection.products.$handle",
+    });
+    expect(config.extraction.fields.availability).toBe("$.hasInventory");
+    const body = await readFile(
+      resolve("tests/fixtures/st-marche/store-product.json"),
+      "utf8",
+    );
+
+    const result = await executeExtraction(config.extraction, config.fixtureRef, {
+      fetch: async () => new Response(body),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      fields: {
+        title: "Arroz Longo Fino Camil Tipo 1 1Kg",
+        brand: "Camil",
+        price: 5.49,
+        promoPrice: 3.99,
+        unit: "Arroz Longo Fino Camil Tipo 1 1Kg",
+        available: true,
+      },
+    });
+  });
+
   it("registers retailers and immutable versioned strategies idempotently", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
@@ -90,11 +125,12 @@ describe("live retailer configuration", () => {
 
     expect(database.prepare("SELECT COUNT(*) AS n FROM retailers").get()).toEqual({ n: 5 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM strategies").get()).toEqual({ n: 10 });
-    expect(database.prepare("SELECT COUNT(*) AS n FROM strategies WHERE active = 1").get()).toEqual({ n: 6 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM strategies WHERE active = 1").get()).toEqual({ n: 8 });
     expect(database.prepare("SELECT id FROM retailers WHERE active = 1 ORDER BY id").all()).toEqual([
       { id: "carrefour" },
       { id: "extra-mercado" },
       { id: "pao-de-acucar" },
+      { id: "st-marche" },
     ]);
     const provenance = database.prepare(
       `SELECT purpose, provenance FROM strategies

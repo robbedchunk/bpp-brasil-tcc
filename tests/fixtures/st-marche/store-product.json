@@ -1,0 +1,19 @@
+{
+  "fixtureProvenance": "Official Pavão store loader captured 2026-07-11; sanitized to extraction fields",
+  "product": {
+    "id": "gid://shopify/Product/7653635883087",
+    "title": "Arroz Longo Fino Camil Tipo 1 1Kg",
+    "vendor": "Camil",
+    "handle": "arroz-camil-longo-fino-tipo-1-1kg",
+    "selectedVariant": {
+      "id": "gid://shopify/ProductVariant/42337267613775",
+      "price": { "amount": "3.99", "currencyCode": "BRL" },
+      "compareAtPrice": { "amount": "5.49", "currencyCode": "BRL" },
+      "availableForSale": true,
+      "sku": "20030779"
+    }
+  },
+  "hasInventory": true,
+  "storeId": "66677604431",
+  "categoryLevel3": "arroz"
+}
