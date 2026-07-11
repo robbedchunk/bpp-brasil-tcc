@@ -32,7 +32,7 @@ npm run acceptance -- --json
 
 The command reports `pass`, `pending`, or `fail` for M0–M7 and preserves honest
 time-, credential-, site-, and authority-gated criteria. See the generated
-[acceptance report](docs/acceptance-report.md) after Task 16 evidence is recorded.
+[acceptance report](docs/acceptance-report.md) for the current evidence snapshot.
 The currently published research snapshot may legitimately say `no_index_data`
 or `no_overlap`; those states never become invented prices or official values.
 
@@ -76,7 +76,12 @@ npm run research:snapshot
 npm run analysis
 npm run audit:publication -- --json
 npm run acceptance -- --json
+npm run acceptance -- --json --require-complete
 ```
+
+Routine acceptance exits successfully for an honest `pending` report, while
+`--require-complete` exits `3` until every external gate matures. Neither mode
+changes the database or invokes a paid provider.
 
 Live discovery/collection targets retailer sites and must follow the configured
 caps, domain allowlists, robots policy, and off-peak schedule. Model-backed

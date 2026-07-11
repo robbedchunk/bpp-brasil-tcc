@@ -24,6 +24,8 @@
     "research:snapshot": "npm run build && bash ops/run-weekly-index.sh",
     "audit:publication": "tsx scripts/audit-publication.ts",
     "verify:fresh-clone": "bash ops/verify-fresh-clone.sh",
+    "acceptance": "tsx ops/acceptance.ts",
+    "acceptance:drill": "tsx ops/acceptance-drill.ts",
     "test": "vitest run",
     "test:live": "vitest run",
     "typecheck": "tsc --noEmit"

@@ -100,6 +100,27 @@
   publication and requires rotation plus explicit approval before destructive
   history rewriting.
 
+## 2026-07-10 — M7 evidence-based acceptance
+
+- The acceptance report derives M0–M7 from sanitized command receipts,
+  prepared read-only SQLite queries, public file hashes, systemd state, and
+  strict drill receipts. A failure dominates pending, and pending dominates
+  pass; every passing criterion cites evidence.
+- External time, credential, retailer-site, and author-authority gates remain
+  `pending` with an explicit recheck command. Routine monitoring exits zero for
+  honest pending evidence; strict completion exits three and never changes a
+  date, inserts evidence, or calls a paid provider.
+- The alert drill classifies an injected 25-hour age in memory and proves the
+  live heartbeat identity is unchanged. The backup drill uses SQLite online
+  backup and a second restore-read copy; neither drill replaces or edits the
+  production database.
+- Private detailed receipts, alert lines, and backup bytes stay under ignored
+  `var/` paths with mode `0600`. Only primitive sanitized facts, hashes,
+  repository-relative paths, and implementation commit identity are public.
+- Acceptance evidence uses a two-commit protocol: receipts and reports name the
+  clean implementation commit, while a later evidence-only commit may add only
+  public receipts, the JSON snapshot, and its Markdown rendering.
+
 ## 2026-07-10 — M6 index method and public snapshots
 
 - Index calculation is read-only with respect to SQLite. Derived rows are
