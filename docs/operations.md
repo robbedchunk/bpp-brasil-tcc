@@ -31,15 +31,26 @@ user timers in `America/Sao_Paulo`:
 - weekly index/analysis Monday around 08:00;
 - hourly heartbeat check.
 
-All timers are persistent and randomized. Collection, healing, and index work
-use separate locks. Never kill a live owner or start duplicate daily work merely
-to improve acceptance metrics.
+All timers are persistent and randomized. A successful daily collection service
+starts the non-timer `precos-classification.service` through `OnSuccess`; that
+oneshot runs incremental batches of 50 after the collection heartbeat has already
+committed. A missing model credential remains a safe pending exit, while a later
+classification failure cannot roll back or erase collection evidence. Collection,
+classification, healing, and index work use separate locks. Never kill a live
+owner or start duplicate daily work merely to improve acceptance metrics.
 
 ```bash
 bash ops/install-systemd.sh --dry-run
 systemctl --user list-timers --all 'precos-*' --no-pager
 npm run precos -- status --json
 ```
+
+Collection treats HTTP 403/429, CAPTCHA, and denied-domain results as hard
+blocking evidence. Three consecutive hard failures stop new product starts;
+timeout/network evidence requires three consecutive failures. Before those
+limits, starts use exponential delays beginning at one second, with an
+eight-second cap. Already in-flight requests finish and persist normally;
+unstarted products are reported as skipped, not inserted as synthetic failures.
 
 ## Logs, alerts, and health
 

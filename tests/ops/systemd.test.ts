@@ -4,6 +4,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rm,
   stat,
   utimes,
@@ -66,12 +67,29 @@ describe("production schedules", () => {
       expect(timer).toContain("RandomizedDelaySec=");
       expect(timer).toContain("America/Sao_Paulo");
     }
+    expect(result.stdout).toContain("precos-classification.service");
+    expect(result.stdout).not.toContain("precos-classification.timer");
+    expect((await readdir(destination)).filter((path) => path.endsWith(".timer")))
+      .toHaveLength(6);
 
     const service = await readFile(join(destination, "precos-daily.service"), "utf8");
     expect(service).toContain(`WorkingDirectory=${projectRoot}`);
     expect(service).toContain(`ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" daily --json`);
     expect(service).toContain("Environment=TZ=America/Sao_Paulo");
     expect(service).toContain(`EnvironmentFile=-${projectRoot}/.env`);
+    expect(service).toContain("OnSuccess=precos-classification.service");
+    const classificationService = await readFile(
+      join(destination, "precos-classification.service"),
+      "utf8",
+    );
+    expect(classificationService).toContain("After=precos-daily.service");
+    expect(classificationService).toContain(`WorkingDirectory=${projectRoot}`);
+    expect(classificationService).toContain(
+      `ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" classify --batch-size 50 --version 1 --json`,
+    );
+    expect(classificationService).toContain("Environment=TZ=America/Sao_Paulo");
+    expect(classificationService).toContain(`EnvironmentFile=-${projectRoot}/.env`);
+    expect(classificationService).toContain("UMask=0077");
     const healingService = await readFile(join(destination, "precos-healing.service"), "utf8");
     expect(healingService).toContain(
       `ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" heal --pending --json`,
@@ -154,6 +172,7 @@ describe("production schedules", () => {
     const units = ["daily", "healing", "weekly-index", "weekly-discovery", "heartbeat", "backup"]
       .flatMap((name) => ["service", "timer"].map((suffix) =>
         join(destination, `precos-${name}.${suffix}`)));
+    units.push(join(destination, "precos-classification.service"));
     const verification = await run("systemd-analyze", ["verify", ...units], process.env);
     expect(verification.exitCode, verification.stderr).toBe(0);
   });

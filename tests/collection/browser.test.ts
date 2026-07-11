@@ -8,6 +8,7 @@ describe("withRestrictedPage", () => {
     const closeBrowser = vi.fn(async () => undefined);
     const browser = {
       newContext: vi.fn(async () => ({
+        addInitScript: vi.fn(async () => undefined),
         newPage: vi.fn(async () => {
           throw new Error("page setup failed");
         }),
@@ -34,6 +35,7 @@ describe("withRestrictedPage", () => {
       mainFrame: vi.fn(),
     };
     const browserContext = {
+      addInitScript: vi.fn(async () => undefined),
       newPage: vi.fn(async () => page),
       routeWebSocket: vi.fn(async () => undefined),
       route: vi.fn(async () => undefined),

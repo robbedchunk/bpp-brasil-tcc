@@ -84,22 +84,24 @@ const replacements = new Map([
   ["@ENV_FILE@", `-${systemdPath(join(projectRoot, ".env"))}`],
   ["@RUNTIME_PATH@", systemdQuote(`PATH=${dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`)],
 ]);
-const names = ["daily", "healing", "weekly-index", "weekly-discovery", "heartbeat", "backup"];
-for (const name of names) {
-  for (const suffix of ["service", "timer"]) {
-    const unit = `precos-${name}.${suffix}`;
-    let content = readFileSync(join(source, unit), "utf8");
-    for (const [placeholder, value] of replacements) {
-      content = content.replaceAll(placeholder, () => value);
-    }
-    const path = join(destination, unit);
-    writeFileSync(path, content, { mode: 0o644 });
-    chmodSync(path, 0o644);
+const timerNames = ["daily", "healing", "weekly-index", "weekly-discovery", "heartbeat", "backup"];
+const units = [
+  ...timerNames.flatMap((name) => [`precos-${name}.service`, `precos-${name}.timer`]),
+  "precos-classification.service",
+];
+for (const unit of units) {
+  let content = readFileSync(join(source, unit), "utf8");
+  for (const [placeholder, value] of replacements) {
+    content = content.replaceAll(placeholder, () => value);
   }
+  const path = join(destination, unit);
+  writeFileSync(path, content, { mode: 0o644 });
+  chmodSync(path, 0o644);
 }
 NODE
 
 if [[ "$DRY_RUN" == "1" ]]; then
+  printf 'rendered precos-classification.service\n'
   for timer in daily healing weekly-index weekly-discovery heartbeat backup; do
     printf 'rendered precos-%s.timer\n' "$timer"
   done

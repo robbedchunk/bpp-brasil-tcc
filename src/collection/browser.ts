@@ -15,6 +15,16 @@ import {
 } from "./http.js";
 
 const BLOCKED_RESOURCE_TYPES = new Set(["font", "image", "media"]);
+const WEBDRIVER_HARDENING_SCRIPT = `(() => {
+  const navigatorPrototype = Object.getPrototypeOf(navigator);
+  const descriptor = Object.getOwnPropertyDescriptor(navigatorPrototype, "webdriver");
+  if (descriptor === undefined || descriptor.configurable) {
+    Object.defineProperty(navigatorPrototype, "webdriver", {
+      configurable: true,
+      get: () => undefined,
+    });
+  }
+})();`;
 
 export class DomainDeniedError extends Error {
   readonly url: string;
@@ -50,14 +60,23 @@ async function createResources(
   executionContext: ExtractionExecutionContext,
 ): Promise<BrowserResources> {
   const ownsBrowser = executionContext.browser === undefined;
-  const browser = executionContext.browser ?? await chromium.launch({ headless: true });
+  const browser = executionContext.browser ?? await chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  let browserContext: BrowserContext | undefined;
   try {
-    const browserContext = await browser.newContext({
+    browserContext = await browser.newContext({
       userAgent: executionContext.userAgent?.trim() || DEFAULT_RESEARCH_USER_AGENT,
       serviceWorkers: "block",
+      locale: "pt-BR",
+      timezoneId: "America/Sao_Paulo",
+      viewport: { width: 1365, height: 768 },
     });
+    await browserContext.addInitScript({ content: WEBDRIVER_HARDENING_SCRIPT });
     return { browser, browserContext, ownsBrowser };
   } catch (error) {
+    await browserContext?.close().catch(() => undefined);
     if (ownsBrowser) await browser.close().catch(() => undefined);
     throw error;
   }

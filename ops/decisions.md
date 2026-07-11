@@ -176,3 +176,26 @@
   outputs are byte/row/hash reverified before reuse, and manifests enumerate
   every consumed CSV. The weekly oneshot is ordered after both daily collection
   and weekly discovery services.
+
+## 2026-07-10 — Static charter-gap remediation
+
+- Collection uses a retailer-local blocking controller. Three consecutive hard
+  failures (`403`, `429`, CAPTCHA, or domain denial) or three consecutive
+  timeout/network failures stop new starts. Backoff begins at one second,
+  doubles, and is capped at eight seconds. Any nonblocking outcome resets the
+  sequence because parse/missing/invalid-price evidence is drift, not access
+  blocking. In particular, an already-running success received after two fast
+  hard failures resets the sequence before the third-failure stop threshold.
+- The concurrency pool remains between three and five. Work already in flight
+  finishes and persists; only actual attempts affect run counters and failure
+  rows. Summaries expose planned, attempted, skipped, and blocking-stop facts.
+- Browser contexts retain the identifying academic user agent and all existing
+  network controls. The only stealth profile is the charter-authorized minimum:
+  Chromium's `AutomationControlled` signal is disabled, locale/timezone/viewport
+  are stable for São Paulo, and a trusted init script normalizes
+  `navigator.webdriver`. No proxy, challenge bypass, or broad fingerprint
+  emulation was added.
+- Incremental synchronous classification is a separate oneshot started by the
+  daily service's `OnSuccess`. It runs batches of 50 at append-only version 1,
+  adds no seventh timer, remains exit-zero/pending without a key, and cannot roll
+  back the heartbeat already committed by daily collection.

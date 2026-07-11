@@ -506,12 +506,20 @@ describe("collection pipeline", () => {
       }),
     });
 
-    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1, status: "failed" });
+    expect(summary).toMatchObject({
+      planned: 1,
+      attempted: 0,
+      ok: 0,
+      failed: 0,
+      skipped: 1,
+      stoppedForBlocking: false,
+      status: "failed",
+    });
     expect(database.prepare("SELECT status, attempted, ok, failed FROM runs").get()).toEqual({
       status: "failed",
-      attempted: 1,
+      attempted: 0,
       ok: 0,
-      failed: 1,
+      failed: 0,
     });
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations").get()).toEqual({ n: 0 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 1 });
@@ -559,5 +567,352 @@ describe("collection pipeline", () => {
 
     expect(calls).toBe(2);
     expect(observationsBeforeSecond).toBe(1);
+  });
+
+  it.each(["http-403", "http-429", "captcha", "domain-denied"] as const)(
+    "stops unstarted products after persistent hard blocking category %s",
+    async (category) => {
+      const database = openDatabase(":memory:");
+      databases.push(database);
+      seedRetailer(database);
+      seedStrategy(database, "extraction", extractionStrategy);
+      seedProducts(database, 6);
+      let calls = 0;
+
+      const summary = await runCollection("retailer-1", {
+        database,
+        blockingPolicy: {
+          hardFailureLimit: 2,
+          transportFailureLimit: 3,
+          initialDelayMs: 1,
+          maxDelayMs: 2,
+        },
+        sleep: async () => undefined,
+        concurrentMap: async (values, _concurrency, worker) => {
+          const results = [];
+          for (const [index, value] of values.entries()) {
+            results.push(await worker(value, index));
+          }
+          return results;
+        },
+        execute: async () => {
+          calls += 1;
+          return {
+            ok: false,
+            failure: { category, message: "retailer blocked", responded: true },
+          };
+        },
+      });
+
+      expect(calls).toBe(2);
+      expect(summary).toMatchObject({
+        planned: 6,
+        attempted: 2,
+        ok: 0,
+        failed: 2,
+        skipped: 4,
+        stoppedForBlocking: true,
+      });
+      expect(summary.attempted).toBe(summary.ok + summary.failed);
+      expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get())
+        .toEqual({ n: 2 });
+      expect(database.prepare("SELECT attempted, ok, failed FROM runs").get())
+        .toEqual({ attempted: 2, ok: 0, failed: 2 });
+    },
+  );
+
+  it("backs off exponentially within the configured bound before stopping", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 8);
+    const sleeps: number[] = [];
+    let clock = 10_000;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      blockingPolicy: {
+        hardFailureLimit: 3,
+        transportFailureLimit: 3,
+        initialDelayMs: 100,
+        maxDelayMs: 150,
+      },
+      clock: () => clock,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        clock += milliseconds;
+      },
+      concurrentMap: async (values, _concurrency, worker) => {
+        const results = [];
+        for (const [index, value] of values.entries()) {
+          results.push(await worker(value, index));
+        }
+        return results;
+      },
+      execute: async () => ({
+        ok: false,
+        failure: {
+          category: "http-403",
+          message: "blocked",
+          responded: true,
+          statusCode: 403,
+        },
+      }),
+    });
+
+    expect(sleeps).toEqual([100, 150]);
+    expect(summary).toMatchObject({
+      planned: 8,
+      attempted: 3,
+      failed: 3,
+      skipped: 5,
+      stoppedForBlocking: true,
+    });
+  });
+
+  it("defaults to three hard failures with one- and two-second backoffs", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 5);
+    const sleeps: number[] = [];
+    let clock = 10_000;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      clock: () => clock,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+        clock += milliseconds;
+      },
+      concurrentMap: async (values, _concurrency, worker) => {
+        const results = [];
+        for (const [index, value] of values.entries()) {
+          results.push(await worker(value, index));
+        }
+        return results;
+      },
+      execute: async () => ({
+        ok: false,
+        failure: {
+          category: "http-429",
+          message: "throttled",
+          responded: true,
+          statusCode: 429,
+        },
+      }),
+    });
+
+    expect(sleeps).toEqual([1_000, 2_000]);
+    expect(summary).toMatchObject({
+      planned: 5,
+      attempted: 3,
+      failed: 3,
+      skipped: 2,
+      stoppedForBlocking: true,
+    });
+  });
+
+  it("requires repeated timeout/network failures and resets on responding failures", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 7);
+    const categories = ["timeout", "parse", "timeout", "network"] as const;
+    let calls = 0;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      blockingPolicy: {
+        hardFailureLimit: 2,
+        transportFailureLimit: 2,
+        initialDelayMs: 1,
+        maxDelayMs: 2,
+      },
+      sleep: async () => undefined,
+      concurrentMap: async (values, _concurrency, worker) => {
+        const results = [];
+        for (const [index, value] of values.entries()) {
+          results.push(await worker(value, index));
+        }
+        return results;
+      },
+      execute: async () => {
+        const category = categories[calls] ?? "parse";
+        calls += 1;
+        return {
+          ok: false,
+          failure: {
+            category,
+            message: category,
+            responded: category === "parse",
+          },
+        };
+      },
+    });
+
+    expect(calls).toBe(4);
+    expect(summary).toMatchObject({
+      planned: 7,
+      attempted: 4,
+      failed: 4,
+      skipped: 3,
+      stoppedForBlocking: true,
+    });
+  });
+
+  it("allows already in-flight work to finish without starting more products", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 9);
+    let calls = 0;
+    let releaseInitialWave = (): void => undefined;
+    const initialWaveStarted = new Promise<void>((resolve) => {
+      releaseInitialWave = resolve;
+    });
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      concurrency: 3,
+      blockingPolicy: {
+        hardFailureLimit: 1,
+        transportFailureLimit: 2,
+        initialDelayMs: 1,
+        maxDelayMs: 2,
+      },
+      execute: async () => {
+        calls += 1;
+        if (calls === 3) releaseInitialWave();
+        await initialWaveStarted;
+        return {
+          ok: false,
+          failure: {
+            category: "captcha",
+            message: "challenge",
+            responded: true,
+          },
+        };
+      },
+    });
+
+    expect(calls).toBe(3);
+    expect(summary).toMatchObject({
+      planned: 9,
+      attempted: 3,
+      failed: 3,
+      skipped: 6,
+      stoppedForBlocking: true,
+    });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get())
+      .toEqual({ n: 3 });
+  });
+
+  it("never treats responding parse, missing-field, or invalid-price failures as blocking", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 6);
+    const categories = ["parse", "missing-fields", "invalid-price"] as const;
+    let calls = 0;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      blockingPolicy: {
+        hardFailureLimit: 1,
+        transportFailureLimit: 1,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+      },
+      execute: async () => {
+        const category = categories[calls % categories.length]!;
+        calls += 1;
+        return {
+          ok: false,
+          failure: { category, message: category, responded: true },
+        };
+      },
+    });
+
+    expect(calls).toBe(6);
+    expect(summary).toMatchObject({
+      planned: 6,
+      attempted: 6,
+      failed: 6,
+      skipped: 0,
+      stoppedForBlocking: false,
+    });
+  });
+
+  it("lets an already-running success reset two fast hard failures", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 6);
+    let releaseSuccess = (): void => undefined;
+    const successCanFinish = new Promise<void>((resolve) => {
+      releaseSuccess = resolve;
+    });
+    let successStarted = false;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      sleep: async () => undefined,
+      concurrentMap: async (values, _concurrency, worker) => {
+        const initial = values.slice(0, 3).map((value, index) => worker(value, index));
+        while (!successStarted) await new Promise((resolve) => setImmediate(resolve));
+        await Promise.all(initial.slice(0, 2));
+        releaseSuccess();
+        await initial[2];
+        const results = [...initial];
+        for (let index = 3; index < values.length; index += 1) {
+          results.push(worker(values[index]!, index));
+        }
+        return Promise.all(results);
+      },
+      execute: async (_strategy, ref) => {
+        if (ref.externalId === "0" || ref.externalId === "1") {
+          return {
+            ok: false,
+            failure: {
+              category: "http-403",
+              message: "fast block",
+              responded: true,
+              statusCode: 403,
+            },
+          };
+        }
+        if (ref.externalId === "2") {
+          successStarted = true;
+          await successCanFinish;
+        }
+        return {
+          ok: true,
+          fields: {
+            title: `Fresh ${ref.externalId}`,
+            brand: null,
+            price: 10,
+            promoPrice: null,
+            unit: null,
+            available: true,
+          },
+        };
+      },
+    });
+
+    expect(summary).toMatchObject({
+      planned: 6,
+      attempted: 6,
+      ok: 4,
+      failed: 2,
+      skipped: 0,
+      stoppedForBlocking: false,
+    });
   });
 });

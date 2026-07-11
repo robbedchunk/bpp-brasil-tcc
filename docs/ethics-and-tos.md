@@ -11,16 +11,20 @@ session identifiers, address details, and unrelated page state are removed.
 - off-peak daily collection and weekly discovery;
 - page concurrency constrained to 3–5;
 - at most 2,000 product attempts per retailer/day;
-- randomized bounded delays, timeouts, retries, and exponential blocking
-  backoff;
+- randomized bounded delays and timeouts, plus per-retailer exponential blocking
+  backoff before a persistent-blocking stop;
 - identifiable research user agent where practical;
 - robots.txt respected for sitemap and DOM discovery.
 
-Persistent blocking skips the affected retailer rather than escalating. The
-system does not use proxies, CAPTCHA-solving/bypass, stolen sessions, credential
-reuse, fingerprint countermeasures beyond ordinary headless-browser operation,
-or paid anti-blocking services. Any such change requires author approval and is
-outside the current pilot.
+Three consecutive hard access failures, or three consecutive timeout/network
+failures, stop the affected retailer's unstarted remainder. Requests already in
+flight finish and are recorded; skipped products are never fabricated as failed
+attempts. The browser uses only the charter-approved minimal stable São Paulo
+profile (`pt-BR`, `AutomationControlled` disabled, and `navigator.webdriver`
+normalized) while retaining the identifying academic user agent. The system does
+not use proxies, CAPTCHA-solving/bypass, stolen sessions, broader fingerprint
+spoofing, or paid anti-blocking services. Any such change requires author
+approval and is outside the current pilot.
 
 ## Site terms and legal limits
 
