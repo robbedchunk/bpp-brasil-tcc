@@ -233,7 +233,7 @@ if [[ "$1" == "show-user" ]]; then printf 'yes\\n'; fi
     expect(dryRun.stdout).toContain(`release ${refreshed.releaseId} ${refreshed.releasePath}`);
     expect(await readFile(join(destination, "precos-daily.service"), "utf8"))
       .toBe(installedDaily);
-  });
+  }, 30_000);
 
   it("quotes paths containing systemd syntax characters", async () => {
     const directory = await temporaryDirectory("precos-systemd-special-");

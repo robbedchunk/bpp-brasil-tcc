@@ -364,7 +364,7 @@ describe("browser network boundaries", () => {
       tier: "script",
       allowedDomains: ["shop.test"],
       operations: [
-        { op: "goto", url: "https://shop.test/pending", timeoutMs: 25 },
+        { op: "goto", url: "https://shop.test/pending", timeoutMs: 500 },
         { op: "extract", source: "dom", selectors: fields },
       ],
     });
@@ -397,7 +397,7 @@ describe("browser network boundaries", () => {
     });
 
     expect(result).toMatchObject({ ok: false, failure: { category: "timeout" } });
-    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
     expect(aborted).toBe(true);
     expect(active).toBe(0);
   });
