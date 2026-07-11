@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "findings": [
+    {
+      "id": "m5-blocking-stop-adversarial-review",
+      "milestone": "M5",
+      "severity": "critical",
+      "status": "resolved",
+      "fixCommit": "afcbd682cb3fc544dbe89cf84ead302f099d843a"
+    },
+    {
+      "id": "m6-index-binding-review",
+      "milestone": "M6",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "51d1d604fe4f794b3e2ac8ba92d027229739741e"
+    },
+    {
+      "id": "m6-official-weight-provenance-review",
+      "milestone": "M6",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "adf14e5eb33a63124bea2c36992ecc9540d02d16"
+    },
+    {
+      "id": "m7-acceptance-publication-adversarial-review",
+      "milestone": "M7",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    }
+  ]
+}

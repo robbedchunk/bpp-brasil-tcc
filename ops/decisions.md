@@ -203,3 +203,27 @@
   daily service's `OnSuccess`. It runs batches of 50 at append-only version 1,
   adds no seventh timer, remains exit-zero/pending without a key, and cannot roll
   back the heartbeat already committed by daily collection.
+
+## 2026-07-11 — Scheduled evidence and acceptance provenance
+
+- A collection heartbeat qualifies as scheduled evidence only when the
+  installed daily service records `systemd-timer` provenance and the exact
+  timer unit. Wall-clock proximity is not provenance: manual CLI runs are kept
+  as operational evidence but cannot satisfy M2. The service refuses direct
+  manual starts; persistent timer catch-up remains valid outside 03:00–03:15.
+- Future, causally inverted, duplicated, or unknown heartbeat/run/observation
+  links are contradictory evidence. The report uses an installed-unit receipt
+  whose timestamp and aggregate hash bind all 13 rendered service/timer files;
+  schema migration time is never used as schedule activation time.
+- Default acceptance runs only read-only tests and audits. The clean-clone
+  receipt proves one-command analysis regeneration and binds its manifests, so
+  routine status checks never rewrite public analysis output.
+- Critical/important review findings live in the tracked strict
+  `ops/review-findings.json` registry. An open entry, invalid registry, or a
+  resolved entry whose fix commit is not an ancestor of `HEAD` fails the
+  affected milestone; commit subjects and prose claims are not evidence.
+- Public audits detect SQLite by file signature, inspect every cell regardless
+  of declared affinity, and inspect CSV values for raw HTML/private state. Safe
+  backup receipts expose hashes and integrity facts, never the private backup
+  filename. Fresh-clone verification scrubs timer-install, credential, npm,
+  browser, Python, and analysis environment inheritance before cloning.

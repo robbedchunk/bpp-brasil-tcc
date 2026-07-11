@@ -78,6 +78,10 @@ the pure heartbeat classifier with an injected 25-hour age, sends a `[DRILL]`
 event through the configured sink, verifies delivery, and proves production
 heartbeat rows are unchanged.
 
+```bash
+npm run acceptance:drill -- alert --confirm-safe-drill --json
+```
+
 ## Backup and restore-read drill
 
 `ops/backup.sh` uses SQLite's online `.backup`, requires `integrity_check=ok`,

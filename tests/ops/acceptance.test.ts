@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -9,11 +10,14 @@ import { openDatabase } from "../../src/db/database.js";
 import {
   acceptanceExitCode,
   aggregateAcceptanceStatus,
+  buildAcceptanceReport,
   classificationAutomationIsCurrent,
   evaluateM2,
   evaluateM3,
   evaluateM4,
   renderAcceptanceMarkdown,
+  readSystemdInstallationState,
+  reviewFindingState,
   validateAcceptanceReportShape,
   validateTimerDefinitions,
   type AcceptanceReport,
@@ -122,24 +126,34 @@ function seedM4Evidence(database: Database.Database, estimateSource: string): vo
   `).run();
   for (const purpose of ["discovery", "extraction"]) {
     const strategyId = `agent-${purpose}`;
+    const previousStrategyId = `hand-${purpose}`;
     const explorationId = `exploration-${purpose}`;
+    database.prepare(`
+      INSERT INTO strategies(
+        id, retailer_id, purpose, tier, version, strategy_json, provenance,
+        validation_sample_size, validation_successes, validation_rate, active,
+        retired_at
+      ) VALUES (?, 'agent-retailer', ?, 1, 1, '{}', 'hand-written',
+        30, 27, 0.9, 0, '2026-07-10T10:00:00.000Z')
+    `).run(previousStrategyId, purpose);
     database.prepare(`
       INSERT INTO strategies(
         id, retailer_id, purpose, tier, version, strategy_json, provenance,
         model, prompt_version, validation_sample_size, validation_successes,
         validation_rate, active, validated_at, activated_at
-      ) VALUES (?, 'agent-retailer', ?, 1, 1, '{}',
+      ) VALUES (?, 'agent-retailer', ?, 1, 2, '{}',
         'Codex SDK; trusted host validation', 'gpt-test', 'prompt-v1',
         30, 27, 0.9, 1, '2026-07-10T10:00:00.000Z', '2026-07-10T10:00:00.000Z')
     `).run(strategyId, purpose);
     database.prepare(`
       INSERT INTO exploration_runs(
-        id, retailer_id, purpose, trigger, candidate_strategy_id, status,
+        id, retailer_id, purpose, trigger, previous_strategy_id,
+        candidate_strategy_id, status,
         outcome, event_budget, events_used, input_tokens, output_tokens,
         cost_usd, started_at, finished_at
-      ) VALUES (?, 'agent-retailer', ?, 'fixture', ?, 'completed', 'activated',
+      ) VALUES (?, 'agent-retailer', ?, 'fixture', ?, ?, 'finished', 'activated',
         1, 1, 100, 20, 0.1, '2026-07-10T09:00:00.000Z', '2026-07-10T10:00:00.000Z')
-    `).run(explorationId, purpose, strategyId);
+    `).run(explorationId, purpose, previousStrategyId, strategyId);
     database.prepare(`
       INSERT INTO exploration_attempts(
         id, exploration_run_id, attempt_number, model, prompt_version,
@@ -165,8 +179,16 @@ function seedM4Evidence(database: Database.Database, estimateSource: string): vo
         input_tokens, output_tokens, cost_usd, occurred_at, details_json
       ) VALUES (?, 'strategy-exploration', 'agent-retailer', ?, 'codex-sdk',
         'gpt-test', 100, 20, 0.1, '2026-07-10T10:00:00.000Z',
-        '{"attemptNumber":1,"costEstimated":true}')
-    `).run(`ledger-${purpose}`, explorationId);
+        ?)
+    `).run(`ledger-${purpose}`, explorationId, JSON.stringify({
+      attemptNumber: 1,
+      cachedInputTokens: 10,
+      reasoningOutputTokens: 5,
+      costEstimated: true,
+      estimateSource,
+      rateVersion: "rates-v1",
+      promptHash: "a".repeat(64),
+    }));
   }
 }
 
@@ -224,7 +246,13 @@ describe("acceptance status and evidence", () => {
 
     const missing = fixture();
     missing.prepare("UPDATE schema_migrations SET applied_at = '2026-07-09T00:00:00.000Z'").run();
-    expect(evaluateM2(missing, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("fail");
+    expect(evaluateM2(
+      missing,
+      new Date("2026-07-10T12:00:00.000Z"),
+      new Date("2026-07-09T00:00:00.000Z"),
+    ).criterion.status).toBe("fail");
+    expect(evaluateM2(missing, new Date("2026-07-10T12:00:00.000Z")).criterion.status)
+      .toBe("pending");
   });
 
   it("does not let full manual daytime runs qualify as scheduled M2 evidence", () => {
@@ -354,7 +382,7 @@ describe("acceptance status and evidence", () => {
     expect(result.criterion.status).toBe("fail");
   });
 
-  it("does not approve a three-retailer exception from authority alone", () => {
+  it("does not approve a three-retailer exception from an unaudited authority flag", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta", "gamma"]) seedRetailer(database, retailer, 1);
     database.prepare(`
@@ -376,7 +404,7 @@ describe("acceptance status and evidence", () => {
       blockedDayTriggerProven: false,
     } as never);
     expect(result.criterion.status).toBe("pending");
-    expect(result.criterion.reasonCodes).toContain("AUTHORITY_APPROVAL_REQUIRED");
+    expect(result.criterion.reasonCodes).toContain("SITE_VALIDATION_PENDING");
   });
 
   it("fails M3 when all external gates are declared available but collection proof is absent", () => {
@@ -395,6 +423,157 @@ describe("acceptance status and evidence", () => {
       authorityApproved: true,
     }).criterion.status).toBe("fail");
   });
+
+  it("fails an active degraded panel before considering credential or site gates", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) seedRetailer(database, retailer, 1);
+    database.prepare("UPDATE retailers SET degraded = 1, degraded_reason = 'blocked' WHERE id = 'alpha'").run();
+    const result = evaluateM3(database, {
+      credentialConfigured: false,
+      siteValidated: false,
+    });
+    expect(result.criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toContain("UNSAFE_CONFIGURATION");
+  });
+
+  it("fails malformed activated M4 evidence even when the credential is absent", () => {
+    const database = fixture();
+    seedM4Evidence(database, "published rate card");
+    database.exec("DROP TRIGGER cost_ledger_no_update");
+    database.prepare("UPDATE cost_ledger SET retailer_id = NULL WHERE id = 'ledger-extraction'").run();
+    const result = evaluateM4(database, {
+      credentialConfigured: false,
+      spendAuthorized: false,
+      siteValidated: false,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+  });
+
+  it("requires exact 30-reference and 27-success M4 activation evidence", () => {
+    const shortSample = fixture();
+    seedM4Evidence(shortSample, "published rate card");
+    shortSample.exec("DROP TRIGGER exploration_attempts_no_update");
+    shortSample.prepare("UPDATE exploration_attempts SET external_sample_size = 29 WHERE id = 'attempt-extraction'").run();
+    expect(evaluateM4(shortSample, {
+      credentialConfigured: true,
+      spendAuthorized: true,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("fail");
+
+    const tooFewSuccesses = fixture();
+    seedM4Evidence(tooFewSuccesses, "published rate card");
+    tooFewSuccesses.exec("DROP TRIGGER exploration_attempts_no_update");
+    tooFewSuccesses.prepare("UPDATE exploration_attempts SET external_successes = 26, external_score = 0.8666666666666667 WHERE id = 'attempt-extraction'").run();
+    expect(evaluateM4(tooFewSuccesses, {
+      credentialConfigured: true,
+      spendAuthorized: true,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("fail");
+  });
+
+  it("validates tracked review state and fails open critical findings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-review-state-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Review Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "review@example.test"], { cwd: root });
+      await mkdir(join(root, "ops"), { recursive: true });
+      const path = join(root, "ops", "review-findings.json");
+      await writeFile(path, JSON.stringify({
+        schemaVersion: 1,
+        findings: [{ id: "open", milestone: "M5", severity: "critical", status: "open", fixCommit: null }],
+      }));
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "review state"], { cwd: root });
+      const state = reviewFindingState(root, "M5", new Date("2026-07-10T12:00:00.000Z"));
+      expect(state).toMatchObject({ valid: true, openCriticalOrImportant: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("binds schedule activation to the private installed-unit receipt and hashes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-systemd-state-"));
+    const installed = join(root, "installed");
+    try {
+      await mkdir(join(root, "var", "operations"), { recursive: true });
+      await mkdir(installed, { recursive: true });
+      const names = [
+        "precos-backup.service", "precos-backup.timer", "precos-classification.service",
+        "precos-daily.service", "precos-daily.timer", "precos-healing.service",
+        "precos-healing.timer", "precos-heartbeat.service", "precos-heartbeat.timer",
+        "precos-weekly-discovery.service", "precos-weekly-discovery.timer",
+        "precos-weekly-index.service", "precos-weekly-index.timer",
+      ];
+      const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+      const units = [];
+      for (const name of names) {
+        const content = `unit:${name}\n`;
+        await writeFile(join(installed, name), content);
+        units.push({ name, sha256: sha256(content) });
+      }
+      const unitSetSha256 = sha256(units.map((unit) => `${unit.name}\0${unit.sha256}\n`).join(""));
+      const receiptPath = join(root, "var", "operations", "systemd-install.json");
+      await writeFile(receiptPath, JSON.stringify({
+        schemaVersion: 1,
+        installedAt: "2026-07-10T10:00:00.000Z",
+        unitSetSha256,
+        units,
+      }), { mode: 0o600 });
+      await chmod(receiptPath, 0o600);
+      expect(readSystemdInstallationState(root, new Date("2026-07-10T12:00:00.000Z"), installed))
+        .toMatchObject({ valid: true, unitSetSha256 });
+      await writeFile(join(installed, names[0]!), "tampered\n");
+      expect(readSystemdInstallationState(root, new Date("2026-07-10T12:00:00.000Z"), installed).valid)
+        .toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the default report command read-only and never regenerates analysis", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acceptance-read-only-"));
+    const databasePath = join(directory, "precos.sqlite");
+    const database = openDatabase(databasePath);
+    database.close();
+    const before = await readFile(resolve("analysis/output/latest.json"));
+    const commandIds: string[] = [];
+    try {
+      await buildAcceptanceReport({
+        projectRoot: resolve("."),
+        databasePath,
+        now: () => new Date("2026-07-11T03:00:00.000Z"),
+        runCommand: async (id) => {
+          commandIds.push(id);
+          return {
+            id,
+            exitCode: 0,
+            startedAt: "2026-07-11T03:00:00.000Z",
+            finishedAt: "2026-07-11T03:00:01.000Z",
+            outputSha256: "a".repeat(64),
+            facts: { completed: true },
+          };
+        },
+        serviceReader: {
+          async read(units) {
+            return units.map((unit) => ({
+              unit,
+              enabled: false,
+              active: false,
+              result: null,
+              lastStartedAt: null,
+              lastFinishedAt: null,
+            }));
+          },
+        },
+      });
+      expect(commandIds).toEqual(["m1-offline", "m5-healing", "m6-index-analysis"]);
+      expect(await readFile(resolve("analysis/output/latest.json"))).toEqual(before);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("checks corresponding service templates and rejects loose snapshot schemas", async () => {
     const root = await mkdtemp(join(tmpdir(), "acceptance-units-"));

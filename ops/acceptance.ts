@@ -7,6 +7,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { loadConfig } from "../src/config.js";
+import { resolveExplorerApiKey } from "../src/explorer/codex-provider.js";
 import { runAlertDrill, runBackupDrill } from "../src/ops/acceptance-drills.js";
 import {
   acceptanceExitCode,
@@ -183,9 +184,9 @@ async function runReport(args: string[]): Promise<void> {
       runCommand,
       serviceReader,
       credentialConfigured: config.openaiApiKey !== undefined,
+      explorerCredentialConfigured: resolveExplorerApiKey(process.env) !== undefined,
       spendAuthorized: process.env.LIVE_OPENAI === "1",
       siteValidated: process.env.SITE_VALIDATED === "1",
-      authorityApproved: process.env.AUTHORITY_APPROVED === "1",
     });
     const json = `${JSON.stringify(report, null, 2)}\n`;
     const markdown = renderAcceptanceMarkdown(report);

@@ -119,9 +119,9 @@ export interface AcceptanceOptions {
   runCommand: (id: string, command: string, args: string[]) => Promise<CommandEvidence>;
   serviceReader: ServiceStateReader;
   credentialConfigured?: boolean;
+  explorerCredentialConfigured?: boolean;
   spendAuthorized?: boolean;
   siteValidated?: boolean;
-  authorityApproved?: boolean;
 }
 
 export interface PublicDrillReceiptShape extends PublicDrillReceipt {}
@@ -151,6 +151,7 @@ const TIMER_UNITS = [
 ] as const;
 const SERVICE_UNITS = TIMER_UNITS.map((unit) => unit.replace(/\.timer$/u, ".service"));
 const CLASSIFICATION_SERVICE_UNIT = "precos-classification.service";
+const ALL_SYSTEMD_UNITS = [...TIMER_UNITS, ...SERVICE_UNITS, CLASSIFICATION_SERVICE_UNIT].sort();
 const SHA256 = /^[a-f0-9]{64}$/u;
 const COMMIT = /^[a-f0-9]{40}$/u;
 const REASON_CODES = new Set([
@@ -195,6 +196,63 @@ function gitSucceeds(root: string, args: string[]): boolean {
   } catch {
     return false;
   }
+}
+
+export interface SystemdInstallationState {
+  valid: boolean;
+  installedAt: Date | null;
+  unitSetSha256: string | null;
+}
+
+export function readSystemdInstallationState(
+  root: string,
+  now: Date,
+  installedUnitDirectory = resolve(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user"),
+): SystemdInstallationState {
+  const path = join(root, "var/operations/systemd-install.json");
+  const parsed = readJson(path);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
+    || !exactObjectKeys(parsed as Record<string, unknown>, ["installedAt", "schemaVersion", "unitSetSha256", "units"])) {
+    return { valid: false, installedAt: null, unitSetSha256: null };
+  }
+  const receipt = parsed as Record<string, unknown>;
+  const installedAtMs = typeof receipt.installedAt === "string" ? Date.parse(receipt.installedAt) : Number.NaN;
+  if (receipt.schemaVersion !== 1 || !Number.isFinite(installedAtMs) || installedAtMs > now.getTime()
+    || new Date(installedAtMs).toISOString() !== receipt.installedAt
+    || typeof receipt.unitSetSha256 !== "string" || !SHA256.test(receipt.unitSetSha256)
+    || !Array.isArray(receipt.units) || receipt.units.length !== ALL_SYSTEMD_UNITS.length
+    || !existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) {
+    return { valid: false, installedAt: null, unitSetSha256: null };
+  }
+  const names = new Set<string>();
+  const units: Array<{ name: string; sha256: string }> = [];
+  for (const value of receipt.units) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)
+      || !exactObjectKeys(value as Record<string, unknown>, ["name", "sha256"])) {
+      return { valid: false, installedAt: null, unitSetSha256: null };
+    }
+    const unit = value as Record<string, unknown>;
+    if (typeof unit.name !== "string" || !ALL_SYSTEMD_UNITS.includes(unit.name)
+      || names.has(unit.name) || typeof unit.sha256 !== "string" || !SHA256.test(unit.sha256)) {
+      return { valid: false, installedAt: null, unitSetSha256: null };
+    }
+    const installedPath = join(installedUnitDirectory, unit.name);
+    if (!existsSync(installedPath) || hash(readFileSync(installedPath)) !== unit.sha256) {
+      return { valid: false, installedAt: null, unitSetSha256: null };
+    }
+    names.add(unit.name);
+    units.push({ name: unit.name, sha256: unit.sha256 });
+  }
+  units.sort((left, right) => left.name.localeCompare(right.name));
+  const computedSetHash = hash(units.map((unit) => `${unit.name}\0${unit.sha256}\n`).join(""));
+  if (computedSetHash !== receipt.unitSetSha256) {
+    return { valid: false, installedAt: null, unitSetSha256: null };
+  }
+  return {
+    valid: true,
+    installedAt: new Date(installedAtMs),
+    unitSetSha256: receipt.unitSetSha256,
+  };
 }
 
 function evidence(
@@ -459,7 +517,11 @@ function currentScheduledBoundary(first: Date, now: Date, hour: number, minute: 
   return today.getTime() < first.getTime() ? first : today;
 }
 
-export function evaluateM2(database: Database.Database, now: Date): CriterionEvaluation {
+export function evaluateM2(
+  database: Database.Database,
+  now: Date,
+  scheduleActivatedAt: Date | null = null,
+): CriterionEvaluation {
   const id = "m2-two-consecutive-days";
   const contradictions = validateHeartbeatLinks(database, now);
   const evidenceId = "db-m2-heartbeat-linked-collection-runs";
@@ -558,6 +620,7 @@ export function evaluateM2(database: Database.Database, now: Date): CriterionEva
       qualifyingConsecutiveRetailers: passingPair?.[1].size ?? 0,
       qualifyingDayPair: passingPair?.[0] ?? null,
       contradictoryHeartbeats: contradictions.length,
+      scheduleActivatedAt: scheduleActivatedAt?.toISOString() ?? null,
     },
   );
   if (passingPair !== undefined) {
@@ -576,9 +639,11 @@ export function evaluateM2(database: Database.Database, now: Date): CriterionEva
   const latestScheduledDay = latestHeartbeat === undefined ? null : saoPauloDay(latestHeartbeat.scheduled_for);
   const nextBoundaryElapsed = latestScheduledDay !== null
     && now.getTime() >= new Date(`${nextDay(latestScheduledDay)}T07:00:00.000Z`).getTime();
-  const activationRow = database.prepare("SELECT MIN(applied_at) AS activatedAt FROM schema_migrations").get() as { activatedAt: string | null };
-  const firstDeadline = scheduledBoundaryAfter(new Date(activationRow.activatedAt ?? now.toISOString()), 4, 0);
-  const noScheduledHeartbeatElapsed = latestScheduledDay === null && now.getTime() >= firstDeadline.getTime();
+  const firstDeadline = scheduleActivatedAt === null
+    ? null
+    : scheduledBoundaryAfter(scheduleActivatedAt, 4, 0);
+  const noScheduledHeartbeatElapsed = latestScheduledDay === null && firstDeadline !== null
+    && now.getTime() >= firstDeadline.getTime();
   if (hasMissedInteriorDay || nextBoundaryElapsed || noScheduledHeartbeatElapsed) {
     return {
       criterion: criterion(id, "fail", "A scheduled collection boundary elapsed without current qualifying evidence", ["MISSED_SCHEDULED_RUN"], [evidenceId]),
@@ -615,7 +680,8 @@ ORDER BY retailer.id`;
 export interface M3GateOptions {
   credentialConfigured: boolean;
   siteValidated: boolean;
-  authorityApproved: boolean;
+  /** Deprecated input retained for callers; environment flags never prove a swap. */
+  authorityApproved?: boolean;
   decisionsDocumented?: boolean;
   namedBackupDocumented?: boolean;
   blockedDayTriggerProven?: boolean;
@@ -651,7 +717,6 @@ export function evaluateM3(
   const highConfidence = rows.reduce((sum, row) => sum + row.high_confidence_products, 0);
   const ratioPass = activeProducts > 0 && highConfidence * 5 >= activeProducts * 4;
   const panelExceptionPass = retailerFacts.activeRetailers === 3
-    && options.authorityApproved
     && options.decisionsDocumented === true
     && options.namedBackupDocumented === true
     && options.blockedDayTriggerProven === true;
@@ -670,6 +735,13 @@ export function evaluateM3(
     && retailersWithCollectionEvidence === retailerFacts.activeRetailers) {
     return { criterion: criterion(id, "pass", "Panel size and latest-version high-confidence classification meet the charter", [], [evidenceId]), gates: [], evidence: [resultEvidence] };
   }
+  if (retailerFacts.degradedRetailers > 0 || retailerFacts.activeRetailers < 3) {
+    return {
+      criterion: criterion(id, "fail", "The active panel is degraded or below the charter minimum", ["UNSAFE_CONFIGURATION"], [evidenceId]),
+      gates: [],
+      evidence: [resultEvidence],
+    };
+  }
   let kind: PendingGateKind = "site";
   let reason = "SITE_VALIDATION_PENDING";
   let action = "Complete documented regional retailer/site validation without degrading the live panel";
@@ -678,9 +750,9 @@ export function evaluateM3(
     reason = "CREDENTIAL_NOT_CONFIGURED";
     action = "Configure the classification credential privately, then run the normal reviewed classification workflow";
   } else if (retailerFacts.activeRetailers === 3 && !panelExceptionPass) {
-    kind = "authority";
-    reason = "AUTHORITY_APPROVAL_REQUIRED";
-    action = "Record author approval and the documented three-retailer swap evidence";
+    kind = "site";
+    reason = "SITE_VALIDATION_PENDING";
+    action = "Activate a validated fourth retailer or record the exact named-backup swap after three blocked days";
   } else if (options.siteValidated && options.credentialConfigured) {
     return { criterion: criterion(id, "fail", "Available panel/classification evidence does not meet the declared threshold", ["EVIDENCE_CONTRADICTION"], [evidenceId]), gates: [], evidence: [resultEvidence] };
   }
@@ -708,33 +780,64 @@ export function evaluateM4(
     WITH purposes(purpose) AS (VALUES ('discovery'), ('extraction'))
     SELECT retailer.id AS retailer_id, purpose.purpose,
       strategy.id AS strategy_id, strategy.model, strategy.prompt_version,
+      strategy.version AS strategy_version,
       strategy.provenance, strategy.activated_at,
       strategy.validation_sample_size, strategy.validation_rate,
-      exploration.id AS exploration_run_id, exploration.outcome AS exploration_outcome,
+      exploration.id AS exploration_run_id,
+      exploration.retailer_id AS exploration_retailer_id,
+      exploration.purpose AS exploration_purpose,
+      exploration.previous_strategy_id,
+      exploration.status AS exploration_status,
+      exploration.finished_at AS exploration_finished_at,
+      exploration.outcome AS exploration_outcome,
       exploration.input_tokens AS exploration_input_tokens,
       exploration.output_tokens AS exploration_output_tokens,
       exploration.cost_usd AS exploration_cost_usd,
       (SELECT SUM(all_attempt.input_tokens) FROM exploration_attempts AS all_attempt WHERE all_attempt.exploration_run_id = exploration.id) AS attempt_input_total,
       (SELECT SUM(all_attempt.output_tokens) FROM exploration_attempts AS all_attempt WHERE all_attempt.exploration_run_id = exploration.id) AS attempt_output_total,
       (SELECT SUM(all_attempt.cost_usd) FROM exploration_attempts AS all_attempt WHERE all_attempt.exploration_run_id = exploration.id) AS attempt_cost_total,
+      (SELECT SUM(all_ledger.input_tokens) FROM cost_ledger AS all_ledger WHERE all_ledger.exploration_run_id = exploration.id AND all_ledger.category = 'strategy-exploration') AS ledger_input_total,
+      (SELECT SUM(all_ledger.output_tokens) FROM cost_ledger AS all_ledger WHERE all_ledger.exploration_run_id = exploration.id AND all_ledger.category = 'strategy-exploration') AS ledger_output_total,
+      (SELECT SUM(all_ledger.cost_usd) FROM cost_ledger AS all_ledger WHERE all_ledger.exploration_run_id = exploration.id AND all_ledger.category = 'strategy-exploration') AS ledger_cost_total,
+      previous.retailer_id AS previous_retailer_id,
+      previous.purpose AS previous_purpose,
+      previous.version AS previous_version,
+      previous.active AS previous_active,
+      previous.retired_at AS previous_retired_at,
       attempt.attempt_number, attempt.prompt_hash, attempt.external_sample_size,
       attempt.external_successes, attempt.external_score, attempt.input_tokens,
       attempt.cached_input_tokens, attempt.output_tokens, attempt.reasoning_output_tokens,
       attempt.cost_usd, attempt.cost_estimated, attempt.estimate_source,
       attempt.rate_version, attempt.model AS attempt_model,
       attempt.prompt_version AS attempt_prompt_version,
+      attempt.created_at AS attempt_created_at,
       attempt.outcome AS attempt_outcome,
       reservation.id AS reservation_id, reservation.status AS reservation_status,
+      reservation.category AS reservation_category,
+      reservation.retailer_id AS reservation_retailer_id,
+      reservation.exploration_run_id AS reservation_exploration_run_id,
+      reservation.amount_usd AS reservation_amount_usd,
       reservation.actual_cost_usd AS reservation_actual_cost_usd,
-      ledger.id AS ledger_id, ledger.provider AS ledger_provider,
+      ledger.id AS ledger_id, ledger.category AS ledger_category,
+      ledger.retailer_id AS ledger_retailer_id,
+      ledger.exploration_run_id AS ledger_exploration_run_id,
+      ledger.provider AS ledger_provider,
       ledger.model AS ledger_model, ledger.input_tokens AS ledger_input_tokens,
-      ledger.output_tokens AS ledger_output_tokens, ledger.cost_usd AS ledger_cost_usd
+      ledger.output_tokens AS ledger_output_tokens, ledger.cost_usd AS ledger_cost_usd,
+      ledger.occurred_at AS ledger_occurred_at,
+      json_extract(ledger.details_json, '$.cachedInputTokens') AS ledger_cached_input_tokens,
+      json_extract(ledger.details_json, '$.reasoningOutputTokens') AS ledger_reasoning_output_tokens,
+      json_extract(ledger.details_json, '$.costEstimated') AS ledger_cost_estimated,
+      json_extract(ledger.details_json, '$.estimateSource') AS ledger_estimate_source,
+      json_extract(ledger.details_json, '$.rateVersion') AS ledger_rate_version,
+      json_extract(ledger.details_json, '$.promptHash') AS ledger_prompt_hash
     FROM retailers AS retailer
     CROSS JOIN purposes AS purpose
     LEFT JOIN strategies AS strategy ON strategy.retailer_id = retailer.id
       AND strategy.purpose = purpose.purpose AND strategy.active = 1
     LEFT JOIN exploration_runs AS exploration ON exploration.candidate_strategy_id = strategy.id
       AND exploration.outcome = 'activated'
+    LEFT JOIN strategies AS previous ON previous.id = exploration.previous_strategy_id
     LEFT JOIN exploration_attempts AS attempt ON attempt.exploration_run_id = exploration.id
       AND attempt.outcome = 'activated'
     LEFT JOIN model_budget_reservations AS reservation ON reservation.exploration_run_id = exploration.id
@@ -744,15 +847,28 @@ export function evaluateM4(
     WHERE retailer.active = 1
     ORDER BY retailer.id, purpose.purpose, attempt.attempt_number
   `).all() as Array<Record<string, unknown>>;
-  const validPairs = new Set(rows.filter((row) =>
+  const validRows = rows.filter((row) =>
     typeof row.strategy_id === "string"
     && typeof row.model === "string"
     && typeof row.prompt_version === "string"
     && row.provenance === "Codex SDK; trusted host validation"
     && typeof row.activated_at === "string"
+    && typeof row.strategy_version === "number" && Number.isSafeInteger(row.strategy_version)
     && row.validation_sample_size === 30
     && typeof row.validation_rate === "number" && Number.isFinite(row.validation_rate) && row.validation_rate >= 0.9
     && row.exploration_outcome === "activated"
+    && row.exploration_status === "finished"
+    && row.exploration_retailer_id === row.retailer_id
+    && row.exploration_purpose === row.purpose
+    && typeof row.exploration_finished_at === "string"
+    && Date.parse(String(row.exploration_finished_at)) >= Date.parse(String(row.activated_at))
+    && typeof row.previous_strategy_id === "string"
+    && row.previous_retailer_id === row.retailer_id
+    && row.previous_purpose === row.purpose
+    && typeof row.previous_version === "number"
+    && Number(row.previous_version) < Number(row.strategy_version)
+    && row.previous_active === 0
+    && row.previous_retired_at === row.activated_at
     && typeof row.prompt_hash === "string"
     && /^[a-f0-9]{64}$/u.test(row.prompt_hash)
     && row.attempt_model === row.model
@@ -769,6 +885,9 @@ export function evaluateM4(
     && row.exploration_input_tokens === row.attempt_input_total
     && row.exploration_output_tokens === row.attempt_output_total
     && row.exploration_cost_usd === row.attempt_cost_total
+    && row.exploration_input_tokens === row.ledger_input_total
+    && row.exploration_output_tokens === row.ledger_output_total
+    && row.exploration_cost_usd === row.ledger_cost_total
     && (row.cost_estimated === 0 || row.cost_estimated === 1)
     && typeof row.estimate_source === "string" && row.estimate_source !== ""
     && typeof row.rate_version === "string" && row.rate_version !== ""
@@ -777,25 +896,63 @@ export function evaluateM4(
     && typeof row.external_score === "number" && Number.isFinite(row.external_score) && row.external_score >= 0.9
     && row.attempt_outcome === "activated"
     && typeof row.reservation_id === "string"
+    && row.reservation_category === "strategy-exploration"
+    && row.reservation_retailer_id === row.retailer_id
+    && row.reservation_exploration_run_id === row.exploration_run_id
     && row.reservation_status === "settled"
+    && typeof row.reservation_amount_usd === "number"
+    && Number.isFinite(row.reservation_amount_usd)
+    && Number(row.reservation_amount_usd) >= Number(row.reservation_actual_cost_usd)
+    && Number(row.reservation_amount_usd) <= 5
     && typeof row.reservation_actual_cost_usd === "number" && Number.isFinite(row.reservation_actual_cost_usd)
     && row.reservation_actual_cost_usd === row.exploration_cost_usd
     && typeof row.ledger_id === "string"
+    && row.ledger_category === "strategy-exploration"
+    && row.ledger_retailer_id === row.retailer_id
+    && row.ledger_exploration_run_id === row.exploration_run_id
     && row.ledger_provider === "codex-sdk"
     && row.ledger_model === row.model
     && typeof row.ledger_input_tokens === "number" && row.ledger_input_tokens === row.input_tokens
     && typeof row.ledger_output_tokens === "number" && row.ledger_output_tokens === row.output_tokens
     && typeof row.ledger_cost_usd === "number" && Number.isFinite(row.ledger_cost_usd) && row.ledger_cost_usd === row.cost_usd
-  ).map((row) => `${String(row.retailer_id)}/${String(row.purpose)}`));
+    && row.ledger_occurred_at === row.attempt_created_at
+    && row.ledger_cached_input_tokens === row.cached_input_tokens
+    && row.ledger_reasoning_output_tokens === row.reasoning_output_tokens
+    && row.ledger_cost_estimated === row.cost_estimated
+    && row.ledger_estimate_source === row.estimate_source
+    && row.ledger_rate_version === row.rate_version
+    && row.ledger_prompt_hash === row.prompt_hash
+  );
+  const validPairCounts = new Map<string, number>();
+  for (const row of validRows) {
+    const pair = `${String(row.retailer_id)}/${String(row.purpose)}`;
+    validPairCounts.set(pair, (validPairCounts.get(pair) ?? 0) + 1);
+  }
+  const validPairs = new Set([...validPairCounts]
+    .filter(([, count]) => count === 1)
+    .map(([pair]) => pair));
+  const activatedRows = rows.filter((row) => typeof row.exploration_run_id === "string"
+    && row.exploration_outcome === "activated");
+  const malformedActivatedRows = activatedRows.length - validRows.length;
+  const duplicateActivatedPairs = [...validPairCounts.values()].filter((count) => count !== 1).length;
   const requiredPairs = activeRetailers * 2;
   const evidenceId = "db-m4-agent-activated-strategies";
   const resultEvidence = evidence(evidenceId, "database-query", "m4-agent-activated-strategies", now.toISOString(), {
     activeRetailers,
     requiredPurposePairs: requiredPairs,
     qualifyingPurposePairs: validPairs.size,
+    malformedActivatedRows,
+    duplicateActivatedPairs,
     credentialGateConfigured: options.credentialConfigured,
     liveSpendAuthorized: options.spendAuthorized,
   });
+  if (malformedActivatedRows > 0 || duplicateActivatedPairs > 0) {
+    return {
+      criterion: criterion(id, "fail", "Activated exploration evidence is malformed, misbound, or duplicated", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
+      gates: [],
+      evidence: [resultEvidence],
+    };
+  }
   if (requiredPairs > 0 && validPairs.size === requiredPairs) {
     return { criterion: criterion(id, "pass", "Every active retailer/purpose has immutable activated agent evidence and cost accounting", [], [evidenceId]), gates: [], evidence: [resultEvidence] };
   }
@@ -878,6 +1035,63 @@ function readJson(path: string): unknown {
   } catch {
     return null;
   }
+}
+
+interface ReviewFindingState {
+  valid: boolean;
+  total: number;
+  openCriticalOrImportant: number;
+  evidence: AcceptanceEvidence;
+}
+
+export function reviewFindingState(
+  root: string,
+  milestone: "M5" | "M6" | "M7",
+  now: Date,
+): ReviewFindingState {
+  const relativePath = "ops/review-findings.json";
+  const path = join(root, relativePath);
+  let valid = gitSucceeds(root, ["ls-files", "--error-unmatch", relativePath]);
+  let findings: Array<Record<string, unknown>> = [];
+  const parsed = readJson(path);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
+    || !exactObjectKeys(parsed as Record<string, unknown>, ["findings", "schemaVersion"])
+    || (parsed as Record<string, unknown>).schemaVersion !== 1
+    || !Array.isArray((parsed as Record<string, unknown>).findings)) {
+    valid = false;
+  } else {
+    findings = (parsed as { findings: Array<Record<string, unknown>> }).findings;
+  }
+  const ids = new Set<string>();
+  for (const finding of findings) {
+    const resolved = finding.status === "resolved";
+    if (typeof finding !== "object" || finding === null || Array.isArray(finding)
+      || !exactObjectKeys(finding, ["fixCommit", "id", "milestone", "severity", "status"])
+      || typeof finding.id !== "string" || finding.id === "" || ids.has(finding.id)
+      || !["M5", "M6", "M7"].includes(String(finding.milestone))
+      || !["critical", "important", "minor"].includes(String(finding.severity))
+      || !["open", "resolved"].includes(String(finding.status))
+      || (resolved && (typeof finding.fixCommit !== "string" || !COMMIT.test(finding.fixCommit)
+        || !gitSucceeds(root, ["merge-base", "--is-ancestor", finding.fixCommit, "HEAD"])))
+      || (!resolved && finding.fixCommit !== null)) {
+      valid = false;
+    }
+    if (typeof finding.id === "string") ids.add(finding.id);
+  }
+  const scoped = findings.filter((finding) => finding.milestone === milestone);
+  const openCriticalOrImportant = scoped.filter((finding) => finding.status === "open"
+    && (finding.severity === "critical" || finding.severity === "important")).length;
+  const evidenceId = `file-${milestone.toLowerCase()}-review-findings`;
+  return {
+    valid,
+    total: scoped.length,
+    openCriticalOrImportant,
+    evidence: evidence(evidenceId, "file", relativePath, now.toISOString(), {
+      registryValid: valid,
+      scopedFindings: scoped.length,
+      openCriticalOrImportant,
+    }, existsSync(path) ? hash(readFileSync(path)) : undefined),
+  };
 }
 
 function readDrillReceipt(path: string, expectedDrill: "alert" | "backup"): PublicDrillReceipt | null {
@@ -970,14 +1184,53 @@ function m6Evaluation(
   root: string,
   database: Database.Database,
   command: CommandEvidence,
-  regeneration: CommandEvidence,
+  evaluatedCommit: string,
+  now: Date,
 ): CriterionEvaluation {
   const base = commandAcceptance("m6-index-analysis", command, "Golden index, official comparison, exports, and analysis checks pass");
-  const regenerationEvidence = commandEvidenceToAcceptance(regeneration);
+  const review = reviewFindingState(root, "M6", now);
+  base.evidence.push(review.evidence);
+  base.criterion.evidenceIds = [...base.criterion.evidenceIds, review.evidence.id].sort();
+  if (!review.valid || review.openCriticalOrImportant > 0) {
+    base.criterion = criterion(
+      "m6-index-analysis",
+      "fail",
+      "A critical/important M6 review finding is open or the review registry is invalid",
+      ["REVIEW_FINDING_OPEN"],
+      base.criterion.evidenceIds,
+    );
+    return base;
+  }
+  const freshPath = join(root, "data/acceptance/evidence/fresh-clone.json");
+  let regenerationValid = false;
+  let regenerationObservedAt = now.toISOString();
+  let freshReceiptHash: string | undefined;
+  try {
+    const receipt = validateFreshCloneReceipt(readJson(freshPath));
+    regenerationObservedAt = receipt.completedAt;
+    const analysisCheck = receipt.checks.find((check) => check.id === "analysis");
+    regenerationValid = receipt.sourceCommit === evaluatedCommit
+      && analysisCheck?.exitCode === 0
+      && receipt.artifacts.length === 2;
+    freshReceiptHash = hash(readFileSync(freshPath));
+  } catch {
+    regenerationValid = false;
+  }
+  const regenerationEvidence = evidence(
+    "receipt-m6-analysis-regenerate",
+    "receipt",
+    "data/acceptance/evidence/fresh-clone.json",
+    regenerationObservedAt,
+    {
+      freshCloneMatchesEvaluatedCommit: regenerationValid,
+      analysisCommandSucceeded: regenerationValid,
+    },
+    freshReceiptHash,
+  );
   base.evidence.push(regenerationEvidence);
   base.criterion.evidenceIds = [...base.criterion.evidenceIds, regenerationEvidence.id].sort();
-  if (base.criterion.status === "fail" || regeneration.exitCode !== 0) {
-    base.criterion = criterion("m6-index-analysis", "fail", "Index/analysis tests or one-command offline regeneration failed", ["OFFLINE_CHECK_FAILED"], base.criterion.evidenceIds);
+  if (base.criterion.status === "fail" || !regenerationValid) {
+    base.criterion = criterion("m6-index-analysis", "fail", "Index/analysis tests or clean-clone one-command regeneration evidence failed", ["OFFLINE_CHECK_FAILED"], base.criterion.evidenceIds);
     return base;
   }
   const exportLatest = join(root, "data/exports/latest.json");
@@ -1041,8 +1294,9 @@ function m6Evaluation(
   const statuses = analysisManifest.statuses as { noIndexData?: boolean; noOfficialOverlap?: boolean } | undefined;
   const exportStatus = String(exportManifest.status ?? "");
   const sidraStatus = exportSources?.sidra?.status;
+  const officialUnavailable = exportStatus === "official_unavailable" || sidraStatus === "unavailable";
   const statusConsistent = (exportStatus === "no_index_data") === (statuses?.noIndexData === true)
-    && (sidraStatus === "no_overlap") === (statuses?.noOfficialOverlap === true);
+    && (sidraStatus === "no_overlap" || officialUnavailable) === (statuses?.noOfficialOverlap === true);
   const countsMatch = Object.entries(expectedCounts).every(([key, value]) => actualCounts[key] === value)
     && Object.keys(actualCounts).length === Object.keys(expectedCounts).length;
   const expectedMaxima = exportSources?.database?.maxima ?? {};
@@ -1054,7 +1308,7 @@ function m6Evaluation(
     && manifestFilesValid(exportManifest, dirname(exportManifestPath), "files")
     && manifestFilesValid(analysisManifest, dirname(analysisManifestPath), "outputs")
     && statusConsistent;
-  const fileEvidence = evidence("file-m6-current-binding", "file", "data/exports/latest.json+analysis/output/latest.json", regeneration.finishedAt, {
+  const fileEvidence = evidence("file-m6-current-binding", "file", "data/exports/latest.json+analysis/output/latest.json", regenerationObservedAt, {
     databaseCountsMatch: countsMatch,
     databaseMaximaMatch: maximaMatch,
     analysisInputManifestMatches: analysisInput?.manifestSha256 === exportPointer.manifestSha256,
@@ -1063,12 +1317,22 @@ function m6Evaluation(
     statusAndOverlapConsistent: statusConsistent,
     exportStatus,
     sidraStatus: sidraStatus ?? null,
-    reviewRepairCommitPresent: git(root, ["log", "-1", "--format=%H", "--grep=close index and analysis review findings"]) !== "",
   }, hash(readFileSync(analysisManifestPath)));
   base.evidence.push(fileEvidence);
   base.criterion.evidenceIds = [...base.criterion.evidenceIds, fileEvidence.id].sort();
-  if (!bindingValid || fileEvidence.facts.reviewRepairCommitPresent !== true) {
-    base.criterion = criterion("m6-index-analysis", "fail", "Current database, export manifest, analysis inputs/status, artifacts, or review closure are not bound", ["EVIDENCE_CONTRADICTION"], base.criterion.evidenceIds);
+  if (!bindingValid) {
+    base.criterion = criterion("m6-index-analysis", "fail", "Current database, export manifest, analysis inputs/status, or artifacts are not bound", ["EVIDENCE_CONTRADICTION"], base.criterion.evidenceIds);
+  } else if (officialUnavailable) {
+    base.criterion = criterion("m6-index-analysis", "pending", "Current artifacts are valid but the official overlap source is unavailable", ["OFFICIAL_OVERLAP_NOT_AVAILABLE"], base.criterion.evidenceIds);
+    base.gates = [gate(
+      "m6-index-analysis",
+      "site",
+      "OFFICIAL_OVERLAP_NOT_AVAILABLE",
+      regenerationObservedAt,
+      "Retry the reviewed SIDRA export when the official endpoint is available",
+      "npm run research:snapshot && npm run acceptance -- --json",
+      base.criterion.evidenceIds,
+    )];
   }
   return base;
 }
@@ -1206,8 +1470,8 @@ function m7Evaluation(
     const result = state?.result;
     return result !== null && result !== undefined && result !== "success";
   });
-  const activationRow = database.prepare("SELECT MIN(applied_at) AS activatedAt FROM schema_migrations").get() as { activatedAt: string | null };
-  const activation = activationRow.activatedAt === null ? now : new Date(activationRow.activatedAt);
+  const installation = readSystemdInstallationState(root, now);
+  const activation = installation.installedAt ?? now;
   const firstDailyStart = scheduledBoundaryAfter(activation, 3, 0);
   const firstDailyDeadline = scheduledBoundaryAfter(activation, 4, 0);
   const firstBackupStart = scheduledBoundaryAfter(activation, 4, 15);
@@ -1269,9 +1533,13 @@ function m7Evaluation(
     && newestBackupAfterCurrentWindow && scheduledBackupIntegrityValid && backupBoundToService;
   let backupFileHealthy = false;
   let backupAgeHours: number | null = null;
-  if (backup?.facts.backupPath !== undefined && typeof backup.facts.backupPath === "string") {
-    const candidate = resolve(root, backup.facts.backupPath);
-    if (candidate.startsWith(`${root}${sep}`) && existsSync(candidate)) {
+  if (typeof backup?.facts.backupArtifactIdSha256 === "string"
+    && typeof backup.facts.backupSha256 === "string" && existsSync(backupDirectory)) {
+    const candidateName = readdirSync(backupDirectory)
+      .filter((name) => /^precos-drill-\d{14}-[a-f0-9-]+\.sqlite$/iu.test(name))
+      .find((name) => hash(name) === backup.facts.backupArtifactIdSha256);
+    if (candidateName !== undefined) {
+      const candidate = join(backupDirectory, candidateName);
       const metadata = statSync(candidate);
       backupAgeHours = (now.getTime() - metadata.mtimeMs) / 3_600_000;
       try {
@@ -1281,7 +1549,8 @@ function m7Evaluation(
         backupDatabase.close();
         backupFileHealthy = (metadata.mode & 0o777) === 0o600
           && quick.length === 1 && Object.values(quick[0] ?? {})[0] === "ok"
-          && foreignKeys.length === 0 && backupAgeHours <= 26;
+          && foreignKeys.length === 0 && backupAgeHours <= 26
+          && hash(readFileSync(candidate)) === backup.facts.backupSha256;
       } catch {
         backupFileHealthy = false;
       }
@@ -1294,6 +1563,9 @@ function m7Evaluation(
     freshCloneMatches: freshMatches,
     sixTimersEnabledAndActive: timersHealthy,
     timerDefinitionsValid,
+    systemdInstallReceiptValid: installation.valid,
+    systemdInstalledAt: installation.installedAt?.toISOString() ?? null,
+    systemdUnitSetSha256: installation.unitSetSha256,
     renderedUnitFiles: timerDefinitions.installedCount,
     failedServiceUnits: serviceFailures.length,
     alertDrillMatches: alertMatches,
@@ -1312,48 +1584,58 @@ function m7Evaluation(
     backupScheduledServiceSucceeded,
     scheduledBackupBoundToService: backupBoundToService,
   });
-  if (publication.status === "fail") {
-    return { criterion: criterion(id, "fail", "Publication audit reports a public safety defect", ["SECRET_OR_PRIVATE_ARTIFACT"], [evidenceId]), gates: [], evidence: [item] };
+  const review = reviewFindingState(root, "M7", now);
+  const criterionEvidenceIds = [evidenceId, review.evidence.id];
+  const evaluationEvidence = [item, review.evidence];
+  if (!review.valid || review.openCriticalOrImportant > 0) {
+    return {
+      criterion: criterion(id, "fail", "A critical/important M7 review finding is open or the review registry is invalid", ["REVIEW_FINDING_OPEN"], criterionEvidenceIds),
+      gates: [],
+      evidence: evaluationEvidence,
+    };
   }
-  if (!timersHealthy || !timerDefinitionsValid || serviceFailures.length > 0
+  if (publication.status === "fail") {
+    return { criterion: criterion(id, "fail", "Publication audit reports a public safety defect", ["SECRET_OR_PRIVATE_ARTIFACT"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
+  }
+  if (!timersHealthy || !timerDefinitionsValid || !installation.valid || serviceFailures.length > 0
     || (alertReceiptExists && !alertMatches)
     || (backupReceiptExists && (!backupMatches || !backupFileHealthy))
     || !freshMatches) {
-    return { criterion: criterion(id, "fail", "Required static operations, receipt integrity, or timer evidence is invalid", ["EVIDENCE_CONTRADICTION"], [evidenceId]), gates: [], evidence: [item] };
+    return { criterion: criterion(id, "fail", "Required static operations, receipt integrity, or timer evidence is invalid", ["EVIDENCE_CONTRADICTION"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
   }
   if (now.getTime() < currentDailyDeadline.getTime() || now.getTime() < currentBackupDeadline.getTime()
     || dailyService?.active === true || backupService?.active === true) {
     return {
-      criterion: criterion(id, "pending", "The first applicable scheduled daily/backup windows have not both elapsed", ["SCHEDULED_RUN_NOT_YET_DUE"], [evidenceId]),
-      gates: [gate(id, "time", "SCHEDULED_RUN_NOT_YET_DUE", activation.toISOString(), "Let both installed São Paulo schedules reach their first real windows", "npm run acceptance -- --json", [evidenceId])],
-      evidence: [item],
+      criterion: criterion(id, "pending", "The first applicable scheduled daily/backup windows have not both elapsed", ["SCHEDULED_RUN_NOT_YET_DUE"], criterionEvidenceIds),
+      gates: [gate(id, "time", "SCHEDULED_RUN_NOT_YET_DUE", activation.toISOString(), "Let both installed São Paulo schedules reach their first real windows", "npm run acceptance -- --json", criterionEvidenceIds)],
+      evidence: evaluationEvidence,
     };
   }
   if ((latestHeartbeat === undefined || !dailyScheduledServiceSucceeded) && now.getTime() >= currentDailyDeadline.getTime()) {
-    return { criterion: criterion(id, "fail", "The first daily window elapsed without a collection heartbeat", ["MISSED_SCHEDULED_RUN"], [evidenceId]), gates: [], evidence: [item] };
+    return { criterion: criterion(id, "fail", "The first daily window elapsed without a collection heartbeat", ["MISSED_SCHEDULED_RUN"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
   }
   if (!realBackupCurrent && now.getTime() >= currentBackupDeadline.getTime()) {
-    return { criterion: criterion(id, "fail", "The first backup window elapsed without a current integrity-valid backup", ["MISSED_SCHEDULED_RUN"], [evidenceId]), gates: [], evidence: [item] };
+    return { criterion: criterion(id, "fail", "The first backup window elapsed without a current integrity-valid backup", ["MISSED_SCHEDULED_RUN"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
   }
   if (latestHeartbeat === undefined || !realBackupCurrent) {
     const reason = "SCHEDULED_RUN_NOT_YET_DUE";
     return {
-      criterion: criterion(id, "pending", "The first applicable production heartbeat/backup window has not elapsed", [reason], [evidenceId]),
-      gates: [gate(id, "time", reason, activation.toISOString(), "Let the installed timers reach their first real São Paulo windows", "npm run acceptance -- --json", [evidenceId])],
-      evidence: [item],
+      criterion: criterion(id, "pending", "The first applicable production heartbeat/backup window has not elapsed", [reason], criterionEvidenceIds),
+      gates: [gate(id, "time", reason, activation.toISOString(), "Let the installed timers reach their first real São Paulo windows", "npm run acceptance -- --json", criterionEvidenceIds)],
+      evidence: evaluationEvidence,
     };
   }
   if (alert === null || backup === null) {
     return {
-      criterion: criterion(id, "pending", "Explicit safe production drills await author execution", ["AUTHORITY_APPROVAL_REQUIRED"], [evidenceId]),
-      gates: [gate(id, "authority", "AUTHORITY_APPROVAL_REQUIRED", null, "Run both explicit safe drills after reviewing their production target", "npm run acceptance:drill -- alert --confirm-safe-drill --json && npm run acceptance:drill -- backup --confirm-safe-drill --json", [evidenceId])],
-      evidence: [item],
+      criterion: criterion(id, "pending", "Explicit safe production drills await author execution", ["AUTHORITY_APPROVAL_REQUIRED"], criterionEvidenceIds),
+      gates: [gate(id, "authority", "AUTHORITY_APPROVAL_REQUIRED", null, "Run both explicit safe drills after reviewing their production target", "npm run acceptance:drill -- alert --confirm-safe-drill --json && npm run acceptance:drill -- backup --confirm-safe-drill --json", criterionEvidenceIds)],
+      evidence: evaluationEvidence,
     };
   }
   if (!heartbeatFresh) {
-    return { criterion: criterion(id, "fail", "The latest real collection heartbeat is older than 24 hours", ["MISSED_SCHEDULED_RUN"], [evidenceId]), gates: [], evidence: [item] };
+    return { criterion: criterion(id, "fail", "The latest real collection heartbeat is older than 24 hours", ["MISSED_SCHEDULED_RUN"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
   }
-  return { criterion: criterion(id, "pass", "Publication, six timers, safe drills, backup, and heartbeat evidence are current", [], [evidenceId]), gates: [], evidence: [item] };
+  return { criterion: criterion(id, "pass", "Publication, six timers, safe drills, backup, and heartbeat evidence are current", [], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
 }
 
 export async function buildAcceptanceReport(options: AcceptanceOptions): Promise<AcceptanceReport> {
@@ -1364,7 +1646,6 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
   const now = options.now();
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
-    const m6RegenerateCommand = await options.runCommand("m6-analysis-regenerate", "npm", ["run", "analysis"]);
     const m1Command = await options.runCommand("m1-offline", "npm", ["test", "--", "tests/normalize", "tests/strategies", "tests/collection", "tests/discovery", "tests/retailers", "tests/pipeline/collect.test.ts", "tests/pipeline/discover.test.ts"]);
     const m5Command = await options.runCommand("m5-healing", "npm", ["test", "--", "tests/healing", "tests/ops/systemd.test.ts"]);
     const m6Command = await options.runCommand("m6-index-analysis", "npm", ["test", "--", "tests/index", "tests/analysis"]);
@@ -1381,22 +1662,35 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     if (inventory.facts.inventoryComplete !== true) {
       m1.criterion = criterion("m1-offline-determinism", "fail", "Offline suite or required tier/mutation fixture inventory is incomplete", ["REQUIRED_ARTIFACT_MISSING"], m1.criterion.evidenceIds);
     }
-    const m2 = evaluateM2(database, now);
+    const systemdInstallation = readSystemdInstallationState(root, now);
+    const m2 = evaluateM2(
+      database,
+      now,
+      systemdInstallation.valid ? systemdInstallation.installedAt : null,
+    );
     const m3 = evaluateM3(database, {
       credentialConfigured: options.credentialConfigured ?? false,
       siteValidated: options.siteValidated ?? false,
-      authorityApproved: options.authorityApproved ?? false,
-      decisionsDocumented: /three consecutive days/iu.test(readFileSync(join(root, "ops/decisions.md"), "utf8")),
-      namedBackupDocumented: database.prepare("SELECT 1 FROM retailers WHERE active = 0 AND lower(name) LIKE '%sonda%' LIMIT 1").get() !== undefined,
+      decisionsDocumented: /three-retailer[\s\S]{0,160}swap[\s\S]{0,160}(?:sonda|mambo|shibata)|(?:sonda|mambo|shibata)[\s\S]{0,160}three-retailer[\s\S]{0,160}swap/iu
+        .test(readFileSync(join(root, "ops/decisions.md"), "utf8")),
+      namedBackupDocumented: database.prepare(`
+        SELECT 1 FROM retailers
+        WHERE active = 1 AND (lower(name) LIKE '%sonda%'
+          OR lower(name) LIKE '%mambo%' OR lower(name) LIKE '%shibata%')
+        LIMIT 1
+      `).get() !== undefined,
       blockedDayTriggerProven: hasThreeConsecutiveDays(database.prepare(`
-        SELECT retailer_id, collection_day FROM runs
-        WHERE status = 'failed'
+        SELECT run.retailer_id, run.collection_day FROM runs AS run
+        JOIN retailers AS retailer ON retailer.id = run.retailer_id
+        WHERE retailer.active = 0 AND run.status = 'failed'
           AND error_category IN ('http-403', 'http-429', 'captcha', 'domain-denied', 'timeout', 'network')
-        ORDER BY retailer_id, collection_day
+        ORDER BY run.retailer_id, run.collection_day
       `).all() as Array<{ retailer_id: string; collection_day: string }>),
     }, now);
-    const operationsActivationRow = database.prepare("SELECT MIN(applied_at) AS activatedAt FROM schema_migrations").get() as { activatedAt: string | null };
-    const operationsActivation = new Date(operationsActivationRow.activatedAt ?? now.toISOString());
+    const operationsActivation = systemdInstallation.valid
+      && systemdInstallation.installedAt !== null
+      ? systemdInstallation.installedAt
+      : now;
     const currentDailyStart = currentScheduledBoundary(scheduledBoundaryAfter(operationsActivation, 3, 0), now, 3, 0);
     const dailyState = services.find((service) => service.unit === "precos-daily.service");
     const classificationState = services.find((service) => service.unit === CLASSIFICATION_SERVICE_UNIT);
@@ -1426,16 +1720,23 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
       m3.gates = [];
     }
     const m4 = evaluateM4(database, {
-      credentialConfigured: options.credentialConfigured ?? false,
+      credentialConfigured: options.explorerCredentialConfigured
+        ?? options.credentialConfigured
+        ?? false,
       spendAuthorized: options.spendAuthorized ?? false,
       siteValidated: options.siteValidated ?? false,
     }, now);
     const m5 = commandAcceptance("m5-automatic-healing", m5Command, "Isolated sabotage, drift/blocking, recovery, and timer suites pass");
+    const m5Review = reviewFindingState(root, "M5", now);
+    m5.evidence.push(m5Review.evidence);
+    m5.criterion.evidenceIds = [...m5.criterion.evidenceIds, m5Review.evidence.id].sort();
     const healingTimer = services.find((service) => service.unit === "precos-healing.timer");
-    if (m5.criterion.status === "pass" && (healingTimer?.enabled !== true || healingTimer.active !== true)) {
+    if (!m5Review.valid || m5Review.openCriticalOrImportant > 0) {
+      m5.criterion = criterion("m5-automatic-healing", "fail", "A critical/important M5 review finding is open or the review registry is invalid", ["REVIEW_FINDING_OPEN"], m5.criterion.evidenceIds);
+    } else if (m5.criterion.status === "pass" && (healingTimer?.enabled !== true || healingTimer.active !== true)) {
       m5.criterion = criterion("m5-automatic-healing", "fail", "Healing tests pass but the independent worker timer is not enabled and active", ["UNSAFE_CONFIGURATION"], m5.criterion.evidenceIds);
     }
-    const m6 = m6Evaluation(root, database, m6Command, m6RegenerateCommand);
+    const m6 = m6Evaluation(root, database, m6Command, evaluatedCommit, now);
     const m7 = m7Evaluation(root, database, evaluatedCommit, now, publication, services);
     const evaluations = [m0, m1, m2, m3, m4, m5, m6, m7];
     const milestones = Object.fromEntries(MILESTONES.map((milestone, index) => {
@@ -1444,7 +1745,7 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
       return [milestone, { status: evaluation.criterion.status, criteria: [evaluation.criterion] }];
     })) as Record<MilestoneId, MilestoneAcceptance>;
     const allEvidence = evaluations.flatMap((evaluation) => evaluation.evidence);
-    for (const command of [m1Command, m5Command, m6Command, m6RegenerateCommand]) {
+    for (const command of [m1Command, m5Command, m6Command]) {
       const item = commandEvidenceToAcceptance(command);
       if (!allEvidence.some((candidate) => candidate.id === item.id)) allEvidence.push(item);
     }

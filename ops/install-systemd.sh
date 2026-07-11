@@ -118,3 +118,32 @@ systemctl --user enable --now \
   precos-weekly-discovery.timer \
   precos-heartbeat.timer \
   precos-backup.timer
+
+INSTALL_RECEIPT="$PROJECT_ROOT/var/operations/systemd-install.json"
+install -d -m 0700 "$(dirname "$INSTALL_RECEIPT")"
+"$NODE_PATH" --input-type=module - "$UNIT_DESTINATION" "$INSTALL_RECEIPT" <<'NODE'
+import { createHash } from "node:crypto";
+import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const [unitDirectory, destination] = process.argv.slice(2);
+if (unitDirectory === undefined || destination === undefined) throw new Error("missing install receipt path");
+const timerNames = ["backup", "daily", "healing", "heartbeat", "weekly-discovery", "weekly-index"];
+const names = [
+  ...timerNames.flatMap((name) => [`precos-${name}.service`, `precos-${name}.timer`]),
+  "precos-classification.service",
+].sort();
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const units = names.map((name) => ({ name, sha256: sha256(readFileSync(join(unitDirectory, name))) }));
+const unitSetSha256 = sha256(units.map((unit) => `${unit.name}\0${unit.sha256}\n`).join(""));
+const receipt = {
+  schemaVersion: 1,
+  installedAt: new Date().toISOString(),
+  unitSetSha256,
+  units,
+};
+const temporary = `${destination}.tmp-${process.pid}`;
+writeFileSync(temporary, `${JSON.stringify(receipt)}\n`, { mode: 0o600 });
+chmodSync(temporary, 0o600);
+renameSync(temporary, destination);
+NODE
