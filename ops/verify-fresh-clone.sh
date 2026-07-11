@@ -79,7 +79,7 @@ exports_manifest="data/exports/$exports_snapshot/manifest.json"
 [[ -f "$clone_root/$analysis_manifest" && -f "$clone_root/$exports_manifest" ]]
 analysis_hash="$(sha256sum "$clone_root/$analysis_manifest" | cut -d' ' -f1)"
 exports_hash="$(sha256sum "$clone_root/$exports_manifest" | cut -d' ' -f1)"
-completed_at="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+completed_at="$(node --input-type=module -e 'process.stdout.write(new Date().toISOString())')"
 
 arguments=("$source_commit" "$completed_at" "$node_version" "$npm_version" "$python_version")
 for index in "${!check_ids[@]}"; do

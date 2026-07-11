@@ -22,6 +22,8 @@ describe("fresh-clone verifier", () => {
     expect(script).toContain("browser-profile");
     expect(script).toContain("var/acceptance");
     expect(script).toContain("manifest.json");
+    expect(script).toContain("new Date().toISOString()");
+    expect(script).not.toContain("date -u +%Y-%m-%dT%H:%M:%S.%3NZ");
     expect(script).not.toContain('analysis_latest="analysis/output/latest.json"');
     expect(script).not.toContain("systemctl --user enable");
   });
