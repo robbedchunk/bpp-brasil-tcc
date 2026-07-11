@@ -81,6 +81,7 @@ describe("production schedules", () => {
     const result = await run("bash", ["ops/install-systemd.sh", "--dry-run"], {
       ...process.env,
       SYSTEMD_UNIT_DIR: destination,
+      SYSTEMD_INSTALL_RECEIPT: join(home, "missing-install-receipt.json"),
     });
 
     expect(result.exitCode).toBe(0);
@@ -172,6 +173,7 @@ describe("production schedules", () => {
     const result = await run("bash", ["ops/install-systemd.sh", "--dry-run"], {
       ...process.env,
       HOME: home,
+      SYSTEMD_INSTALL_RECEIPT: join(home, "missing-install-receipt.json"),
     });
 
     expect(result.exitCode).toBe(0);
