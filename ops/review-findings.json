@@ -124,8 +124,8 @@
       "id": "m7-st-marche-store-aware-activation",
       "milestone": "M7",
       "severity": "critical",
-      "status": "open",
-      "fixCommit": null
+      "status": "resolved",
+      "fixCommit": "e1966e038c99bcbec367378469b430073cf0350c"
     }
   ]
 }
