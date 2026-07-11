@@ -63,6 +63,7 @@ describe("opt-in live Codex SDK acceptance", () => {
           eventBudgetUsd: 5,
           attempt: 1,
           maxAttempts: 1,
+          hasOldStrategy: false,
         }),
       });
       expect(result.status).toBe("candidate");

@@ -54,7 +54,7 @@ import { createTrustedCandidateValidator } from "./trusted-validator.js";
 
 const TRUSTED_SAMPLE_SIZE = 30;
 const TRUSTED_ACTIVATION_SCORE = 0.9;
-export const EXPLORER_PROMPT_VERSION = "strategy-explorer-v4";
+export const EXPLORER_PROMPT_VERSION = "strategy-explorer-v5";
 
 export interface ExplorerRate {
   inputUsdPerMillion: number;
@@ -466,6 +466,7 @@ export async function exploreRetailer(
       eventBudgetUsd,
       attempt: 1,
       maxAttempts,
+      hasOldStrategy: context.previousStrategy !== null,
     });
     if (dependencies.generator === undefined) {
       attempts = 1;
@@ -565,6 +566,7 @@ export async function exploreRetailer(
         eventBudgetUsd,
         attempt,
         maxAttempts,
+        hasOldStrategy: context.previousStrategy !== null,
       });
       let sandbox: Awaited<ReturnType<typeof createSandboxPackage>> | undefined;
       let result: GenerationResult;

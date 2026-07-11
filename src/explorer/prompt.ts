@@ -6,6 +6,7 @@ export interface ExplorerPromptInput {
   eventBudgetUsd: number;
   attempt: number;
   maxAttempts: number;
+  hasOldStrategy: boolean;
 }
 
 export function buildExplorerPrompt(input: ExplorerPromptInput): string {
@@ -16,12 +17,18 @@ export function buildExplorerPrompt(input: ExplorerPromptInput): string {
     ? "{productUrl}, {externalId}, {sourceCategory}"
     : "{page}, {pageSize}, {offset}, {from}, {to}, {cursor}, {segment}";
   return [
-    `Create one deterministic ${input.purpose} strategy for the supplied redacted samples.`,
-    `Try tiers in this order: ${tiers}. Stop at the lowest robust tier.`,
+    ...(input.hasOldStrategy
+      ? [
+          "old-strategy.json is the currently ACTIVE strategy: reproduce it exactly, including regionalContext, query parameters such as sc, headers, and field paths. These are public sanitized runtime configuration, not credentials or secrets; copy them verbatim. Depart ONLY in parts failures.json proves failing.",
+          `Only if failures.json shows the old approach itself failing may you change approach; then try tiers in this order: ${tiers}.`,
+        ]
+      : [
+          `Create one deterministic ${input.purpose} strategy for the supplied redacted samples.`,
+          `Try tiers in this order: ${tiers}. Stop at the lowest robust tier.`,
+        ]),
     `Network access is limited to: ${input.allowedDomains.join(", ")}.`,
     "Use polite, read-only probing; do not seek credentials, environment files, auth state, or unrelated paths.",
     `Allowed ${input.purpose} URL placeholders: ${placeholders}.`,
-    "If present, old-strategy.json is the currently ACTIVE strategy: DEFAULT to reproducing it exactly, including regionalContext, query parameters (such as sc), headers, and field paths. Its regionalContext values and store/channel query parameters are public runtime configuration, not credentials or secrets; copy them verbatim. Nothing in old-strategy.json is sensitive because it is already sanitized. Depart ONLY in the specific parts that failures.json shows failing; keep every other part unchanged. A matching regeneration is acceptable because the trusted host revalidates it live.",
     "Read AGENTS.md, strategy-schema.md, samples.json, and optional old-strategy.json/failures.json.",
     ...(input.attempt > 1
       ? ["If failures.json has priorAttempts, read them and use a DIFFERENT approach after a failure of the same tier."]

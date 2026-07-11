@@ -125,6 +125,7 @@ describe("disposable exploration package", () => {
       eventBudgetUsd: 5,
       attempt: 1,
       maxAttempts: 3,
+      hasOldStrategy: false,
     });
     const discovery = buildExplorerPrompt({
       purpose: "discovery",
@@ -132,6 +133,7 @@ describe("disposable exploration package", () => {
       eventBudgetUsd: 5,
       attempt: 1,
       maxAttempts: 3,
+      hasOldStrategy: false,
     });
 
     expect(extraction.indexOf("api")).toBeLessThan(extraction.indexOf("embedded-json"));
@@ -143,11 +145,26 @@ describe("disposable exploration package", () => {
     expect(extraction).toContain("USD 5");
     expect(extraction).toContain("{productUrl}, {externalId}, {sourceCategory}");
     expect(discovery).toContain("{page}, {pageSize}, {offset}, {from}, {to}, {cursor}, {segment}");
-    expect(extraction).toContain("currently ACTIVE strategy");
-    expect(extraction).toContain("DEFAULT to reproducing it exactly");
-    expect(extraction).toContain("public runtime configuration, not credentials or secrets");
     expect(extraction).not.toMatch(/self[- ]?certif|activation score/iu);
     expect(extraction.length).toBeLessThan(1_500);
+  });
+
+  it("uses adaptation-first instructions only when an active strategy exists", () => {
+    const input = {
+      purpose: "extraction" as const,
+      allowedDomains: ["shop.test"],
+      eventBudgetUsd: 5,
+      attempt: 1,
+      maxAttempts: 3,
+    };
+    const adaptation = buildExplorerPrompt({ ...input, hasOldStrategy: true });
+    const fresh = buildExplorerPrompt({ ...input, hasOldStrategy: false });
+
+    expect(adaptation.split("\n")[0]).toContain("currently ACTIVE strategy");
+    expect(adaptation).toContain("Only if failures.json shows the old approach itself failing");
+    expect(adaptation).not.toContain("Create one deterministic extraction strategy");
+    expect(fresh.split("\n")[0]).toBe("Create one deterministic extraction strategy for the supplied redacted samples.");
+    expect(fresh).toContain("Try tiers in this order");
   });
 
   it("redacts bounded prior exploration attempts in failures.json", async () => {
