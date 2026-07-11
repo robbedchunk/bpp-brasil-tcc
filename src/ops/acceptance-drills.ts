@@ -432,6 +432,7 @@ function systemdFailureCommand(unit: string): { command: string; args: string[] 
       "--user",
       `--unit=${unit}`,
       "--wait",
+      "--expand-environment=no",
       "--property=Type=exec",
       "/bin/sh",
       "-c",

@@ -2736,6 +2736,7 @@ function m7Evaluation(
       "--user",
       `--unit=${alertUnit}`,
       "--wait",
+      "--expand-environment=no",
       "--property=Type=exec",
       "/bin/sh",
       "-c",

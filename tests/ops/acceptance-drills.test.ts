@@ -148,6 +148,7 @@ describe("safe acceptance drills", () => {
       "--user",
       "--unit=precos-alert-drill-eeeeeeeeeeee.service",
       "--wait",
+      "--expand-environment=no",
       "--property=Type=exec",
       "/bin/sh",
       "-c",
