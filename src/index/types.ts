@@ -167,7 +167,11 @@ export interface ExportManifest {
   snapshotDirectory: string;
   files: ExportedFileEvidence[];
   sources: {
-    ipcaWeights: { rows: number; totalWeight: typeof TOTAL_FOOD_AT_HOME_WEIGHT; archiveSha256: string | null };
+    ipcaWeights: {
+      rows: 84;
+      totalWeight: typeof TOTAL_FOOD_AT_HOME_WEIGHT;
+      archiveSha256: string;
+    };
     sidra: SidraSourceEvidence;
     database: DatabaseSourceEvidence;
   };

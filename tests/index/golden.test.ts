@@ -68,4 +68,25 @@ describe("hand-computed experimental index", () => {
     expect(series.productRelatives.find((point) => point.productId === "a1"))
       .toMatchObject({ numeratorCents: 1_100, denominatorCents: 1_000 });
   });
+
+  it("preserves Decimal precision until the published output boundary", () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedRetailer(database, "r1");
+    seedItem(database, "item-a", "1101002", "Item A", "12.1181");
+    seedProduct(database, { id: "p1", retailerId: "r1", itemId: "item-a" });
+    seedProduct(database, { id: "p2", retailerId: "r1", itemId: "item-a" });
+    seedRun(database, { id: "d1", retailerId: "r1", day: "2026-06-01", attempted: 2 });
+    seedRun(database, { id: "d2", retailerId: "r1", day: "2026-06-02", attempted: 2 });
+    seedObservation(database, { id: "p1-d1", productId: "p1", runId: "d1", day: "2026-06-01", price: 997 });
+    seedObservation(database, { id: "p2-d1", productId: "p2", runId: "d1", day: "2026-06-01", price: 991 });
+    seedObservation(database, { id: "p1-d2", productId: "p1", runId: "d2", day: "2026-06-02", price: 900 });
+    seedObservation(database, { id: "p2-d2", productId: "p2", runId: "d2", day: "2026-06-02", price: 901 });
+
+    const series = buildDailyIndex(database);
+
+    expect(series.retailerSubitems[0]?.relative).toBe("0.905939600135");
+    expect(series.subitems[0]?.relative).toBe("0.905939600135");
+    expect(series.aggregate[1]?.dailyRelative).toBe("0.905939600135");
+  });
 });

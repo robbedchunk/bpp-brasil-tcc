@@ -4,7 +4,8 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REQUIREMENTS="$PROJECT_ROOT/analysis/requirements.txt"
 PYTHON="${ANALYSIS_PYTHON:-$(command -v python3)}"
-VENV="${ANALYSIS_VENV:-$PROJECT_ROOT/var/analysis-venv}"
+DEFAULT_VENV="$PROJECT_ROOT/var/analysis-venv"
+VENV="${ANALYSIS_VENV:-$DEFAULT_VENV}"
 MARKER="$VENV/.environment-version"
 
 if [[ "$PYTHON" != /* || "$VENV" != /* ]]; then
@@ -29,21 +30,30 @@ if [[ -x "$VENV/bin/python" && -f "$MARKER" ]] \
   exit 0
 fi
 
-install -d -m 0700 "$(dirname "$VENV")"
-INSTALLED_PYTHON_VERSION=""
-if [[ -x "$VENV/bin/python" ]]; then
-  INSTALLED_PYTHON_VERSION="$("$VENV/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-fi
-if [[ -x "$VENV/bin/python" && "$INSTALLED_PYTHON_VERSION" != "$PYTHON_VERSION" ]]; then
+authorized_test_venv() {
+  [[ -n "${ANALYSIS_TEST_ROOT:-}" && "$ANALYSIS_TEST_ROOT" == /* ]] || return 1
+  local test_root temporary_root resolved_venv
+  test_root="$(realpath -m -- "$ANALYSIS_TEST_ROOT")"
+  temporary_root="$(realpath -m -- "${TMPDIR:-/tmp}")"
+  resolved_venv="$(realpath -m -- "$VENV")"
+  [[ "$test_root" == "$temporary_root"/precos-analysis-* ]] || return 1
+  [[ "$resolved_venv" == "$test_root"/* ]]
+}
+
+if [[ -e "$VENV" || -L "$VENV" ]]; then
+  if [[ "$VENV" != "$DEFAULT_VENV" ]] && ! authorized_test_venv; then
+    printf 'analysis-setup: refusing to remove an unauthorized virtual environment.\n' >&2
+    exit 1
+  fi
   if [[ "$VENV" == "/" || "$VENV" == "" ]]; then
     printf 'analysis-setup: refusing unsafe virtual-environment removal.\n' >&2
     exit 1
   fi
   rm -rf -- "$VENV"
 fi
-if [[ ! -x "$VENV/bin/python" ]]; then
-  "$PYTHON" -m venv "$VENV"
-fi
+
+install -d -m 0700 "$(dirname "$VENV")"
+"$PYTHON" -m venv "$VENV"
 "$VENV/bin/python" -m pip install \
   --disable-pip-version-check \
   --requirement "$REQUIREMENTS"

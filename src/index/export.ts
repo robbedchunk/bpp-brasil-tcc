@@ -1,6 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { basename, join, parse as parsePath, relative, resolve, sep } from "node:path";
 
 import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
@@ -84,6 +93,29 @@ function ensureInside(root: string, candidate: string): void {
   throw new Error("Export path escapes output root");
 }
 
+export async function assertSafeOutputPath(value: string): Promise<void> {
+  const absolute = resolve(value);
+  const root = parsePath(absolute).root;
+  let current = root;
+  for (const component of relative(root, absolute).split(sep).filter(Boolean)) {
+    current = join(current, component);
+    try {
+      const metadata = await lstat(current);
+      if (metadata.isSymbolicLink()) {
+        throw new Error(`Export output contains a symbolic link component: ${current}`);
+      }
+    } catch (error) {
+      if (
+        typeof error === "object"
+        && error !== null
+        && "code" in error
+        && error.code === "ENOENT"
+      ) return;
+      throw error;
+    }
+  }
+}
+
 interface ObservationRange {
   first_day: string | null;
   last_day: string | null;
@@ -117,17 +149,64 @@ function databaseEvidence(database: Database.Database): ExportManifest["sources"
 }
 
 function ipcaEvidence(database: Database.Database): ExportManifest["sources"]["ipcaWeights"] {
-  const row = database.prepare(`
-    SELECT COUNT(*) AS rows,
-           COUNT(DISTINCT source_archive_sha256) AS hash_count,
-           MIN(source_archive_sha256) AS source_hash
+  const rows = database.prepare(`
+    SELECT id, code, weight_text, source_archive_sha256
     FROM ipca_items WHERE in_scope = 1
-  `).get() as { rows: number; hash_count: number; source_hash: string | null };
+    ORDER BY code, id
+  `).all() as Array<{
+    id: string;
+    code: string;
+    weight_text: string | null;
+    source_archive_sha256: string | null;
+  }>;
+  if (rows.length !== 84) {
+    throw new Error(`IPCA weight contract requires exactly 84 in-scope rows; received ${rows.length}`);
+  }
+  if (new Set(rows.map((row) => row.id)).size !== 84 || new Set(rows.map((row) => row.code)).size !== 84) {
+    throw new Error("IPCA weight contract requires 84 unique rows and subitem codes");
+  }
+  let total = new D(0);
+  const provenance = new Set<string>();
+  for (const row of rows) {
+    if (row.weight_text === null || !/^(?:0|[1-9]\d*)\.\d{4}$/u.test(row.weight_text)) {
+      throw new Error(`IPCA weight ${row.code} must have exactly four decimal places`);
+    }
+    total = total.plus(row.weight_text);
+    if (
+      row.source_archive_sha256 === null
+      || !/^[0-9a-f]{64}$/u.test(row.source_archive_sha256)
+    ) {
+      throw new Error(`IPCA weight ${row.code} lacks a verified provenance hash`);
+    }
+    provenance.add(row.source_archive_sha256);
+  }
+  if (!total.eq(TOTAL_FOOD_AT_HOME_WEIGHT)) {
+    throw new Error(
+      `IPCA weight contract totals ${total.toFixed(4)}, expected ${TOTAL_FOOD_AT_HOME_WEIGHT}`,
+    );
+  }
+  if (provenance.size !== 1) {
+    throw new Error("IPCA weights must share one verified provenance hash");
+  }
+  const archiveSha256 = provenance.values().next().value;
+  if (archiveSha256 === undefined) throw new Error("IPCA provenance hash is absent");
   return {
-    rows: row.rows,
+    rows: 84,
     totalWeight: TOTAL_FOOD_AT_HOME_WEIGHT,
-    archiveSha256: row.hash_count === 1 ? row.source_hash : null,
+    archiveSha256,
   };
+}
+
+export class OfficialSourceUnavailableError extends Error {
+  override readonly name = "OfficialSourceUnavailableError";
+  readonly manifest: ExportManifest;
+
+  constructor(manifest: ExportManifest, sourceMessage: string | undefined) {
+    super(sourceMessage === undefined
+      ? "Official SIDRA comparison is unavailable; an honest snapshot was published"
+      : `Official SIDRA comparison is unavailable; an honest snapshot was published: ${sourceMessage}`);
+    this.manifest = manifest;
+  }
 }
 
 function localMonthlyComparison(
@@ -317,6 +396,8 @@ export async function exportResearchData(
   const outputRoot = resolve(options.outputRoot);
   const snapshotsRoot = join(outputRoot, "snapshots");
   ensureInside(outputRoot, snapshotsRoot);
+  await assertSafeOutputPath(outputRoot);
+  await assertSafeOutputPath(snapshotsRoot);
   const currentMonth = monthFromDay(saoPauloDay(now));
   const databaseSnapshot = database.transaction(() => {
     const range = observationRange(database);
@@ -335,6 +416,11 @@ export async function exportResearchData(
       database: databaseEvidence(database),
     };
   }).deferred();
+  await mkdir(outputRoot, { recursive: true, mode: 0o700 });
+  await assertSafeOutputPath(outputRoot);
+  if (await realpath(outputRoot) !== outputRoot) {
+    throw new Error("Export output real path differs from its validated path");
+  }
   const range = databaseSnapshot.range;
   const startMonth = range.first_day === null ? currentMonth : monthFromDay(range.first_day);
   const endMonth = range.last_day === null ? currentMonth : monthFromDay(range.last_day);
@@ -345,7 +431,6 @@ export async function exportResearchData(
     sidra = await sidraClient.fetchSeries(startMonth, endMonth);
   } catch (error) {
     sidraError = error instanceof Error ? error.message : String(error);
-    if (options.requireOfficial === true) throw error;
     await options.alertSink?.send({
       severity: "warning",
       title: "Official SIDRA comparison unavailable",
@@ -372,6 +457,10 @@ export async function exportResearchData(
   ensureInside(outputRoot, finalDirectory);
   ensureInside(outputRoot, temporaryDirectory);
   await mkdir(snapshotsRoot, { recursive: true, mode: 0o700 });
+  await assertSafeOutputPath(snapshotsRoot);
+  if (await realpath(snapshotsRoot) !== snapshotsRoot) {
+    throw new Error("Export snapshots real path differs from its validated path");
+  }
   await mkdir(temporaryDirectory, { mode: 0o700 });
   try {
     const files: ExportedFileEvidence[] = [];
@@ -437,6 +526,9 @@ export async function exportResearchData(
       snapshotDirectory,
       manifestSha256: sha256(manifestBytes),
     });
+    if (sidra === null && options.requireOfficial === true) {
+      throw new OfficialSourceUnavailableError(manifest, sidraError);
+    }
     return manifest;
   } catch (error) {
     await rm(temporaryDirectory, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -105,11 +105,35 @@ describe("reproducible thesis analysis", () => {
     expect(manifest.summaries.dailySuccessRates["r1:2026-05-30"]).toBe(0.75);
     expect(manifest.plotting.successRateDateLimits).toEqual(["2026-05-29", "2026-06-03"]);
     expect(manifest.plotting.successRateDateLocator).toBe("daily");
+    expect(manifest.plotting.successRateHealingLegend).toEqual([
+      "detecção de deriva", "recuperação automática",
+    ]);
+    expect(manifest.plotting.indexFootnote).toMatch(/promocional.*sete dias.*média igual.*POF/iu);
     expect(manifest.caveats).toContain("não é intervalo de confiança");
     expect(manifest.caveats).toContain("sem validação estatística");
+    expect(manifest.inputs).toHaveLength(required.length);
+    expect(manifest.inputs.map((input: { path: string }) => input.path)).toEqual([...required]);
+    for (const input of manifest.inputs) {
+      expect(input).toEqual(expect.objectContaining({
+        path: expect.any(String),
+        sha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        bytes: expect.any(Number),
+        rows: expect.any(Number),
+        columns: expect.any(Array),
+      }));
+    }
     const healing = await readFile(join(snapshot, "healing-events.csv"), "utf8");
-    expect(healing).toContain("heal-1,Mercado Um,recovered,true");
-    expect(healing).toContain("heal-2,Mercado Dois,open,false");
+    expect(healing.split("\n")[0]).toBe(
+      "event_id,retailer_name,onset_run_id,drift_started_at,detected_at,recovered_at,status,healed_automatically,attempts,tier_transition,duration_hours",
+    );
+    expect(healing).toContain("heal-1,Mercado Um,run-1");
+    expect(healing).toContain(",recovered,true,");
+    expect(healing).toContain("heal-2,Mercado Dois,run-4");
+    expect(healing).toContain(",open,false,");
+    const coverage = await readFile(join(snapshot, "index-coverage-and-dispersion.csv"), "utf8");
+    expect(coverage.split("\n")[0]).toBe(
+      "date,chain_segment,index_level,covered_weight_pct_total_ipca,total_food_at_home_weight_pct_total_ipca,coverage_fraction,covered_subitem_count,retailer_count,product_pair_count,descriptive_low_relative,descriptive_high_relative,unclassified_count,no_healthy_run_count,unavailable_count,carried_expired_count,no_denominator_count,invalid_price_count",
+    );
   });
 
   it("produces byte-identical artifacts for the same input", async () => {
@@ -151,7 +175,55 @@ describe("reproducible thesis analysis", () => {
     await writeInputManifest(input);
     const second = await runAnalysis(input, output);
     expect(second.exitCode).not.toBe(0);
-    expect(second.stderr).toMatch(/snapshot.*changed|input.*manifest/i);
+    expect(second.stderr).toMatch(/snapshot.*changed|input.*manifest|bound.*input/i);
+  });
+
+  it.each(["modified", "missing"])(
+    "refuses to republish latest when an existing output is %s",
+    async (mode) => {
+      const input = await fixture();
+      const output = await mkdtemp(join(tmpdir(), `precos-analysis-${mode}-output-`));
+      roots.push(output);
+      expect((await runAnalysis(input, output)).exitCode).toBe(0);
+      const artifact = join(output, "snapshots", "fixture-snapshot", "success-rate.png");
+      if (mode === "modified") await writeFile(artifact, "tampered");
+      else await rm(artifact);
+      await rm(join(output, "latest.json"));
+
+      const second = await runAnalysis(input, output);
+
+      expect(second.exitCode).not.toBe(0);
+      expect(second.stderr).toMatch(/output|artifact|hash|missing/i);
+      await expect(readFile(join(output, "latest.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it.each([
+    ["snapshot ID", { snapshotId: "wrong-snapshot" }],
+    ["manifest hash", { manifestSha256: "0".repeat(64) }],
+    ["snapshot path", { snapshotDirectory: "snapshots/../fixture-snapshot" }],
+  ])("binds input latest.json to its %s", async (_name, override) => {
+    const direct = await fixture();
+    const exportsRoot = await mkdtemp(join(tmpdir(), "precos-analysis-latest-input-"));
+    const output = await mkdtemp(join(tmpdir(), "precos-analysis-latest-output-"));
+    roots.push(exportsRoot, output);
+    const snapshot = join(exportsRoot, "snapshots", "fixture-snapshot");
+    await mkdir(join(exportsRoot, "snapshots"));
+    await cp(direct, snapshot, { recursive: true });
+    const manifestBytes = await readFile(join(snapshot, "manifest.json"));
+    await writeFile(join(exportsRoot, "latest.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      snapshotId: "fixture-snapshot",
+      snapshotDirectory: "snapshots/fixture-snapshot",
+      manifestSha256: hash(manifestBytes),
+      ...override,
+    })}\n`);
+
+    const result = await runAnalysis(exportsRoot, output);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/latest|snapshot|manifest|path|hash/i);
+    await expect(readFile(join(output, "latest.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects negative coverage instead of plotting invalid evidence", async () => {

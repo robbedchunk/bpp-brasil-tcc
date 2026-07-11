@@ -14,6 +14,7 @@ const DECIMAL_VALUE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u;
 const MONTH = /^(\d{4})-(0[1-9]|1[0-2])$/u;
 const PERIOD = /^(\d{4})(0[1-9]|1[0-2])$/u;
 const SPECIAL_VALUE = /^(?:-|\.\.|\.\.\.|X|[A-WY-Z])$/u;
+const JSON_MEDIA_TYPE = /^\s*application\/json(?:\s*;[\s\S]*)?\s*$/iu;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -44,6 +45,87 @@ function periodToMonth(period: string): string {
   return `${match[1]}-${match[2]}`;
 }
 
+function jsonStringAt(text: string, start: number): { value: string; end: number } {
+  if (text[start] !== '"') throw new Error("SIDRA JSON string was expected");
+  let escaped = false;
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      const token = text.slice(start, index + 1);
+      return { value: JSON.parse(token) as string, end: index + 1 };
+    }
+  }
+  throw new Error("SIDRA response contains an unterminated JSON string");
+}
+
+function whitespaceEnd(text: string, start: number): number {
+  let index = start;
+  while (/\s/u.test(text[index] ?? "")) index += 1;
+  return index;
+}
+
+function jsonValueEnd(text: string, start: number): number {
+  if (text[start] === '"') return jsonStringAt(text, start).end;
+  if (text[start] === "{" || text[start] === "[") {
+    const stack = [text[start]];
+    let index = start + 1;
+    while (index < text.length && stack.length > 0) {
+      const character = text[index];
+      if (character === '"') {
+        index = jsonStringAt(text, index).end;
+        continue;
+      }
+      if (character === "{" || character === "[") stack.push(character);
+      else if (character === "}" || character === "]") stack.pop();
+      index += 1;
+    }
+    if (stack.length !== 0) throw new Error("SIDRA response contains an unterminated JSON value");
+    return index;
+  }
+  let index = start;
+  while (index < text.length && !/[\s,}\]]/u.test(text[index] ?? "")) index += 1;
+  return index;
+}
+
+function assertUniqueRawSeriesKeys(text: string): void {
+  for (let index = 0; index < text.length;) {
+    if (text[index] !== '"') {
+      index += 1;
+      continue;
+    }
+    const property = jsonStringAt(text, index);
+    index = property.end;
+    let cursor = whitespaceEnd(text, property.end);
+    if (property.value !== "serie" || text[cursor] !== ":") continue;
+    cursor = whitespaceEnd(text, cursor + 1);
+    if (text[cursor] !== "{") continue;
+    cursor = whitespaceEnd(text, cursor + 1);
+    const keys = new Set<string>();
+    while (cursor < text.length && text[cursor] !== "}") {
+      const key = jsonStringAt(text, cursor);
+      if (keys.has(key.value)) {
+        const label = PERIOD.test(key.value) ? periodToMonth(key.value) : key.value;
+        throw new Error(`Duplicate SIDRA month key in raw serie: ${label}`);
+      }
+      keys.add(key.value);
+      cursor = whitespaceEnd(text, key.end);
+      if (text[cursor] !== ":") throw new Error("SIDRA serie contains an invalid JSON member");
+      cursor = whitespaceEnd(text, cursor + 1);
+      cursor = whitespaceEnd(text, jsonValueEnd(text, cursor));
+      if (text[cursor] === ",") cursor = whitespaceEnd(text, cursor + 1);
+      else if (text[cursor] !== "}") throw new Error("SIDRA serie contains invalid JSON separators");
+    }
+  }
+}
+
 export function parseOfficialSeries(
   body: Uint8Array,
   startMonth: string,
@@ -54,9 +136,11 @@ export function parseOfficialSeries(
   if (start > end) throw new Error("SIDRA startMonth must not exceed endMonth");
   if (body.byteLength > MAX_BODY_BYTES) throw new Error("SIDRA response exceeds the 2 MiB size limit");
   const responseSha256 = createHash("sha256").update(body).digest("hex");
+  const text = Buffer.from(body).toString("utf8");
+  assertUniqueRawSeriesKeys(text);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(Buffer.from(body).toString("utf8"));
+    parsed = JSON.parse(text);
   } catch {
     throw new Error("SIDRA response is not valid JSON");
   }
@@ -180,7 +264,7 @@ export async function fetchOfficialSeries(
       });
       if (response.status !== 200) throw new Error(`SIDRA returned HTTP ${response.status}`);
       const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-      if (!contentType.includes("application/json")) throw new Error("SIDRA returned a non-JSON content type");
+      if (!JSON_MEDIA_TYPE.test(contentType)) throw new Error("SIDRA returned a non-JSON content type");
       return parseOfficialSeries(await boundedBytes(response), startMonth, endMonth);
     } catch (error) {
       lastError = error;

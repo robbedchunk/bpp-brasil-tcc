@@ -155,3 +155,24 @@
 - Success rates and healing counts are descriptive operational evidence.
   Retailer dispersion is likewise descriptive; no plot or table represents it
   as a confidence interval, statistical validation, or causal model result.
+
+## 2026-07-10 — M6 review repair boundary
+
+- Decimal values remain at 40-digit internal precision through product
+  relatives, retailer Jevons means, subitem means, covered-weight aggregation,
+  dispersion, and chaining. Twelve-decimal formatting occurs only at the
+  published type boundary.
+- A latest same-day unavailable or invalid observation is authoritative and
+  cannot be replaced by an older carry. Coverage exclusions use one explicit
+  reason per excluded classified product, including baseline/no-movement days.
+- Publication now requires all 84 unique in-scope POF rows, four-decimal source
+  weights summing exactly to `12.1181`, and one verified provenance digest.
+  `--require-official` still publishes an honest `official_unavailable`
+  snapshot before returning a failing result.
+- SIDRA parsing detects duplicate raw month keys before ordinary JSON parsing
+  and accepts only the exact `application/json` media type with optional
+  parameters. Export output paths reject symlink components.
+- Analysis pointers bind snapshot path, ID, and manifest digest. Existing
+  outputs are byte/row/hash reverified before reuse, and manifests enumerate
+  every consumed CSV. The weekly oneshot is ordered after both daily collection
+  and weekly discovery services.

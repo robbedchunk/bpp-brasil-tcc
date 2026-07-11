@@ -64,6 +64,18 @@ COLORS = {
     "light": "#DCEAF7",
 }
 PNG_METADATA = {"Software": "bpp-brasil-tcc M6 reproducible analysis"}
+SHA256_PATTERN = frozenset("0123456789abcdef")
+OUTPUT_NAMES = [
+    "success-rate.png", "healing-events.csv", "index-vs-ipca.png",
+    "index-coverage-and-dispersion.csv",
+]
+SUCCESS_RATE_HEALING_LEGEND = ["detecção de deriva", "recuperação automática"]
+INDEX_FOOTNOTE = (
+    "Preço promocional quando positivo; carregamento por produto por até sete "
+    "dias; média igual entre varejistas; pesos POF renormalizados.\n"
+    "Índice experimental; sem validação estatística. Faixa descritiva; não é "
+    "intervalo de confiança. CEP do painel e área SNIPC São Paulo N7 diferem."
+)
 CAVEATS = [
     "sem validação estatística",
     "não é intervalo de confiança",
@@ -93,15 +105,34 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def valid_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in SHA256_PATTERN for character in value)
+    )
+
+
 def resolve_input(path: Path) -> tuple[Path, dict[str, Any], bytes]:
     root = path.resolve()
     latest_path = root / "latest.json"
+    latest: dict[str, Any] | None = None
     if latest_path.is_file():
         latest = read_json(latest_path)
+        latest_snapshot_id = latest.get("snapshotId")
         relative_snapshot = latest.get("snapshotDirectory")
-        if not isinstance(relative_snapshot, str) or Path(relative_snapshot).is_absolute():
+        if (
+            latest.get("schemaVersion") != 1
+            or not isinstance(latest_snapshot_id, str)
+            or not latest_snapshot_id
+            or "/" in latest_snapshot_id
+            or ".." in latest_snapshot_id
+            or relative_snapshot != f"snapshots/{latest_snapshot_id}"
+            or Path(str(relative_snapshot)).is_absolute()
+            or not valid_sha256(latest.get("manifestSha256"))
+        ):
             raise ValueError("latest snapshot path must be relative")
-        snapshot = inside(root, root / relative_snapshot)
+        snapshot = inside(root, root / str(relative_snapshot))
     else:
         snapshot = root
     manifest_path = snapshot / "manifest.json"
@@ -112,10 +143,19 @@ def resolve_input(path: Path) -> tuple[Path, dict[str, Any], bytes]:
     snapshot_id = manifest.get("snapshotId")
     if not isinstance(snapshot_id, str) or not snapshot_id or "/" in snapshot_id or ".." in snapshot_id:
         raise ValueError("unsafe input snapshot ID")
+    if latest is not None:
+        if latest.get("snapshotId") != snapshot_id:
+            raise ValueError("latest snapshot ID does not match the input manifest")
+        if latest.get("manifestSha256") != sha256(manifest_bytes):
+            raise ValueError("latest manifest hash does not match the input manifest")
+        if manifest.get("snapshotDirectory") != latest.get("snapshotDirectory"):
+            raise ValueError("latest snapshot path does not match the input manifest")
     return snapshot, manifest, manifest_bytes
 
 
-def verified_frames(snapshot: Path, manifest: dict[str, Any]) -> dict[str, pd.DataFrame]:
+def verified_frames(
+    snapshot: Path, manifest: dict[str, Any]
+) -> tuple[dict[str, pd.DataFrame], list[dict[str, Any]]]:
     listed = manifest.get("files")
     if not isinstance(listed, list):
         raise ValueError("input manifest files must be an array")
@@ -129,6 +169,7 @@ def verified_frames(snapshot: Path, manifest: dict[str, Any]) -> dict[str, pd.Da
         evidence[name] = item
 
     frames: dict[str, pd.DataFrame] = {}
+    inputs: list[dict[str, Any]] = []
     for name, expected_columns in REQUIRED_COLUMNS.items():
         item = evidence.get(name)
         if item is None:
@@ -153,7 +194,14 @@ def verified_frames(snapshot: Path, manifest: dict[str, Any]) -> dict[str, pd.Da
             keep_default_na=False,
             na_filter=False,
         )
-    return frames
+        inputs.append({
+            "path": name,
+            "sha256": item["sha256"],
+            "bytes": item["bytes"],
+            "rows": item["rows"],
+            "columns": expected_columns,
+        })
+    return frames, inputs
 
 
 def parse_nonnegative_integer(frame: pd.DataFrame, column: str, label: str) -> pd.Series:
@@ -327,12 +375,28 @@ def save_success_rate(
                     color=palette[index % len(palette)], label=f"{retailer_name} ({retailer_id})")
         ax.axhline(70, color=COLORS["red"], linestyle="--", linewidth=1.5, label="limiar de deriva (70%)")
         if not healing.empty:
+            detection_label = SUCCESS_RATE_HEALING_LEGEND[0]
+            recovery_label = SUCCESS_RATE_HEALING_LEGEND[1]
             for row in healing.sort_values(["detected_at", "event_id"]).itertuples():
                 detected = pd.to_datetime(row.detected_at, utc=True, errors="raise").tz_convert("America/Sao_Paulo").tz_localize(None)
-                ax.axvline(detected, color=COLORS["orange"], alpha=0.45, linewidth=1)
+                ax.axvline(
+                    detected,
+                    color=COLORS["orange"],
+                    alpha=0.45,
+                    linewidth=1,
+                    label=detection_label,
+                )
+                detection_label = None
                 if row.recovered_at:
                     recovered = pd.to_datetime(row.recovered_at, utc=True, errors="raise").tz_convert("America/Sao_Paulo").tz_localize(None)
-                    ax.axvline(recovered, color=COLORS["green"], alpha=0.45, linewidth=1)
+                    ax.axvline(
+                        recovered,
+                        color=COLORS["green"],
+                        alpha=0.45,
+                        linewidth=1,
+                        label=recovery_label,
+                    )
+                    recovery_label = None
         ax.set_ylim(-2, 102)
         lower = daily["date"].min() - pd.Timedelta(days=1)
         upper = daily["date"].max() + pd.Timedelta(days=1)
@@ -428,8 +492,8 @@ def save_index_comparison(
     ax_monthly.set_title("Variação mensal em meses fechados comuns")
     ax_monthly.set_ylabel("Variação mensal (%)")
     ax_monthly.set_xlabel("Mês")
-    fig.text(0.01, 0.012, "Índice experimental; sem validação estatística. Faixa descritiva; não é intervalo de confiança. CEP do painel e área SNIPC São Paulo N7 diferem.", color=COLORS["gray"], fontsize=9)
-    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    fig.text(0.01, 0.012, INDEX_FOOTNOTE, color=COLORS["gray"], fontsize=8.5)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
     fig.savefig(path, dpi=100, metadata=PNG_METADATA)
     plt.close(fig)
     return no_index, no_overlap
@@ -444,8 +508,9 @@ def stable_csv(path: Path, columns: list[str], rows: list[list[Any]]) -> None:
 
 def healing_table(path: Path, healing: pd.DataFrame) -> None:
     columns = [
-        "event_id", "retailer_name", "status", "healed_automatically", "detected_at",
-        "recovered_at", "attempts", "tier_transition", "duration_hours",
+        "event_id", "retailer_name", "onset_run_id", "drift_started_at",
+        "detected_at", "recovered_at", "status", "healed_automatically",
+        "attempts", "tier_transition", "duration_hours",
     ]
     rows: list[list[Any]] = []
     for row in healing.sort_values(["detected_at", "event_id"]).itertuples():
@@ -454,31 +519,55 @@ def healing_table(path: Path, healing: pd.DataFrame) -> None:
         transition = "" if not row.tier_from else f"{row.tier_from}→{row.tier_to or '?'}"
         healed = row.status == "recovered" and bool(row.successor_strategy_id)
         rows.append([
-            row.event_id, row.retailer_name, row.status, str(healed).lower(), row.detected_at,
-            row.recovered_at, attempts, transition, duration_hours,
+            row.event_id, row.retailer_name, row.onset_run_id, row.drift_started_at,
+            row.detected_at, row.recovered_at, row.status, str(healed).lower(),
+            attempts, transition, duration_hours,
         ])
     stable_csv(path, columns, rows)
 
 
 def coverage_table(path: Path, aggregate: pd.DataFrame, coverage: pd.DataFrame) -> None:
     columns = [
-        "date", "chain_segment", "index_level", "coverage_fraction", "retailer_count",
-        "product_pair_count", "descriptive_low_relative", "descriptive_high_relative",
+        "date", "chain_segment", "index_level", "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca", "coverage_fraction",
+        "covered_subitem_count", "retailer_count", "product_pair_count",
+        "descriptive_low_relative", "descriptive_high_relative", "unclassified_count",
+        "no_healthy_run_count", "unavailable_count", "carried_expired_count",
+        "no_denominator_count", "invalid_price_count",
     ]
-    if aggregate.empty:
+    if aggregate.empty and coverage.empty:
         stable_csv(path, columns, [])
         return
-    selected = aggregate[[
-        "date", "chain_segment", "index_level", "retailer_count", "product_pair_count",
-        "descriptive_low_relative", "descriptive_high_relative",
-    ]].copy()
-    coverage_values = coverage[["date", "coverage_fraction"]] if not coverage.empty else pd.DataFrame(columns=["date", "coverage_fraction"])
-    merged = selected.merge(coverage_values, on="date", how="left").sort_values(["date", "chain_segment"])
+    aggregate_values = aggregate[[
+        "date", "chain_segment", "index_level", "descriptive_low_relative",
+        "descriptive_high_relative",
+    ]] if not aggregate.empty else pd.DataFrame(columns=[
+        "date", "chain_segment", "index_level", "descriptive_low_relative",
+        "descriptive_high_relative",
+    ])
+    coverage_values = coverage[[
+        "date", "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca", "coverage_fraction",
+        "covered_subitem_count", "retailer_count", "product_pair_count",
+        "unclassified_count", "no_healthy_run_count", "unavailable_count",
+        "carried_expired_count", "no_denominator_count", "invalid_price_count",
+    ]] if not coverage.empty else pd.DataFrame(columns=[
+        "date", "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca", "coverage_fraction",
+        "covered_subitem_count", "retailer_count", "product_pair_count",
+        "unclassified_count", "no_healthy_run_count", "unavailable_count",
+        "carried_expired_count", "no_denominator_count", "invalid_price_count",
+    ])
+    merged = coverage_values.merge(
+        aggregate_values,
+        on="date",
+        how="outer",
+        validate="one_to_one",
+    ).sort_values("date")
     stable_csv(path, columns, [[
-        row.date, row.chain_segment, row.index_level, row.coverage_fraction,
-        row.retailer_count, row.product_pair_count, row.descriptive_low_relative,
-        row.descriptive_high_relative,
-    ] for row in merged.itertuples()])
+        "" if pd.isna(getattr(row, column)) else getattr(row, column)
+        for column in columns
+    ] for row in merged.itertuples(index=False)])
 
 
 def output_evidence(directory: Path, names: list[str]) -> list[dict[str, Any]]:
@@ -491,6 +580,57 @@ def output_evidence(directory: Path, names: list[str]) -> list[dict[str, Any]]:
                 rows = max(0, sum(1 for _ in csv.reader(handle)) - 1)
         evidence.append({"path": name, "sha256": sha256(data), "bytes": len(data), "rows": rows})
     return evidence
+
+
+def verify_existing_output(
+    directory: Path,
+    manifest: dict[str, Any],
+    snapshot_id: str,
+    input_manifest_sha256: str,
+    inputs: list[dict[str, Any]],
+) -> None:
+    input_evidence = manifest.get("input")
+    if (
+        manifest.get("schemaVersion") != 1
+        or manifest.get("snapshotId") != snapshot_id
+        or not isinstance(input_evidence, dict)
+        or input_evidence.get("snapshotId") != snapshot_id
+        or input_evidence.get("manifestSha256") != input_manifest_sha256
+        or manifest.get("inputs") != inputs
+    ):
+        raise ValueError("existing output manifest is not bound to the current input")
+    listed = manifest.get("outputs")
+    if not isinstance(listed, list) or len(listed) != len(OUTPUT_NAMES):
+        raise ValueError("existing output manifest has incomplete artifact evidence")
+    evidence: dict[str, dict[str, Any]] = {}
+    for item in listed:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise ValueError("existing output manifest contains invalid artifact evidence")
+        name = item["path"]
+        if name in evidence or name not in OUTPUT_NAMES or Path(name).name != name:
+            raise ValueError("existing output manifest contains an unsafe or duplicate path")
+        evidence[name] = item
+    for name in OUTPUT_NAMES:
+        item = evidence.get(name)
+        if item is None:
+            raise ValueError(f"existing output artifact is missing from the manifest: {name}")
+        path = inside(directory, directory / name)
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError as error:
+            raise ValueError(f"existing output artifact is missing: {name}") from error
+        if (
+            item.get("bytes") != len(data)
+            or not valid_sha256(item.get("sha256"))
+            or item.get("sha256") != sha256(data)
+        ):
+            raise ValueError(f"existing output artifact hash/size mismatch: {name}")
+        expected_rows = None
+        if name.endswith(".csv"):
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                expected_rows = max(0, sum(1 for _ in csv.reader(handle)) - 1)
+        if item.get("rows") != expected_rows:
+            raise ValueError(f"existing output artifact row count mismatch: {name}")
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -509,7 +649,7 @@ def atomic_json(path: Path, value: Any) -> None:
 
 def generate(input_path: Path, output_root: Path) -> dict[str, Any]:
     snapshot, input_manifest, input_manifest_bytes = resolve_input(input_path)
-    frames = verified_frames(snapshot, input_manifest)
+    frames, inputs = verified_frames(snapshot, input_manifest)
     validate_frames(frames)
     snapshot_id = str(input_manifest["snapshotId"])
     output_root = output_root.resolve()
@@ -517,14 +657,21 @@ def generate(input_path: Path, output_root: Path) -> dict[str, Any]:
     snapshots_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     final = inside(output_root, snapshots_root / snapshot_id)
     if final.exists():
-        manifest = read_json(final / "manifest.json")
-        if manifest.get("input", {}).get("manifestSha256") != sha256(input_manifest_bytes):
-            raise ValueError("input manifest changed for an existing snapshot ID")
+        manifest_path = final / "manifest.json"
+        manifest = read_json(manifest_path)
+        verify_existing_output(
+            final,
+            manifest,
+            snapshot_id,
+            sha256(input_manifest_bytes),
+            inputs,
+        )
+        manifest_bytes = manifest_path.read_bytes()
         atomic_json(output_root / "latest.json", {
             "schemaVersion": 1,
             "snapshotId": snapshot_id,
             "snapshotDirectory": f"snapshots/{snapshot_id}",
-            "manifestSha256": sha256((final / "manifest.json").read_bytes()),
+            "manifestSha256": sha256(manifest_bytes),
         })
         return {
             "status": input_manifest.get("status", "complete"),
@@ -549,10 +696,6 @@ def generate(input_path: Path, output_root: Path) -> dict[str, Any]:
             temporary / "index-vs-ipca.png", aggregate, coverage, monthly
         )
         coverage_table(temporary / "index-coverage-and-dispersion.csv", aggregate, coverage)
-        output_names = [
-            "success-rate.png", "healing-events.csv", "index-vs-ipca.png",
-            "index-coverage-and-dispersion.csv",
-        ]
         manifest = {
             "schemaVersion": 1,
             "snapshotId": snapshot_id,
@@ -562,6 +705,7 @@ def generate(input_path: Path, output_root: Path) -> dict[str, Any]:
                 "manifestSha256": sha256(input_manifest_bytes),
                 "snapshotId": snapshot_id,
             },
+            "inputs": inputs,
             "versions": {
                 "python": sys.version.split()[0],
                 "pandas": pd.__version__,
@@ -575,6 +719,8 @@ def generate(input_path: Path, output_root: Path) -> dict[str, Any]:
                 "indexComparisonPixels": [1600, 1200],
                 "successRateDateLimits": success_date_limits,
                 "successRateDateLocator": "daily",
+                "successRateHealingLegend": SUCCESS_RATE_HEALING_LEGEND,
+                "indexFootnote": INDEX_FOOTNOTE,
             },
             "statuses": {
                 "noIndexData": no_index,
@@ -582,7 +728,7 @@ def generate(input_path: Path, output_root: Path) -> dict[str, Any]:
             },
             "summaries": {"dailySuccessRates": daily_summaries},
             "caveats": CAVEATS,
-            "outputs": output_evidence(temporary, output_names),
+            "outputs": output_evidence(temporary, OUTPUT_NAMES),
         }
         manifest_path = temporary / "manifest.json"
         manifest_path.write_text(

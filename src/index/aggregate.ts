@@ -8,6 +8,7 @@ import {
   loadIndexInput,
   validBaselineProducts,
   type DayExclusions,
+  type IndexInput,
   type IndexedProduct,
 } from "./relatives.js";
 import {
@@ -35,6 +36,26 @@ function blankExclusions(unclassifiedCount = 0): DayExclusions {
   };
 }
 
+function initialExclusions(
+  input: IndexInput,
+  day: string,
+  previousDay: string | null,
+  requiresPreviousDay: boolean,
+): DayExclusions {
+  const exclusions = blankExclusions();
+  for (const [retailerId, count] of input.unclassifiedByRetailer) {
+    const todayHealthy = input.healthyRetailerDays.has(`${retailerId}\u0000${day}`);
+    const previousHealthy = previousDay !== null
+      && input.healthyRetailerDays.has(`${retailerId}\u0000${previousDay}`);
+    if (todayHealthy && (!requiresPreviousDay || previousHealthy)) {
+      exclusions.unclassifiedCount += count;
+    } else {
+      exclusions.noHealthyRunCount += count;
+    }
+  }
+  return exclusions;
+}
+
 function geometricMean(values: readonly string[]): Decimal {
   const sum = values.reduce((total, value) => total.plus(new D(value).ln()), new D(0));
   return sum.div(values.length).exp();
@@ -49,7 +70,15 @@ function itemMetadata(products: readonly IndexedProduct[]): Map<string, IndexedP
 function aggregateRelatives(
   relatives: readonly ProductRelative[],
   products: readonly IndexedProduct[],
-): { retailerPoints: RetailerSubitemPoint[]; subitemPoints: SubitemPoint[] } {
+): {
+  retailerPoints: RetailerSubitemPoint[];
+  subitemPoints: SubitemPoint[];
+  preciseSubitems: Map<string, {
+    relative: Decimal;
+    retailerMinimum: Decimal;
+    retailerMaximum: Decimal;
+  }>;
+} {
   const metadata = itemMetadata(products);
   const retailerGroups = new Map<string, ProductRelative[]>();
   for (const relative of relatives) {
@@ -58,10 +87,12 @@ function aggregateRelatives(
     group.push(relative);
     retailerGroups.set(key, group);
   }
-  const retailerPoints = [...retailerGroups.values()].map((group): RetailerSubitemPoint => {
+  const preciseRetailers = [...retailerGroups.values()].map((group) => {
     const first = group[0];
     if (first === undefined) throw new Error("Empty retailer relative group");
-    return {
+    const value = geometricMean(group.map((relative) =>
+      new D(relative.numeratorCents).div(relative.denominatorCents).toString()));
+    const point: RetailerSubitemPoint = {
       day: first.day,
       previousDay: first.previousDay,
       retailerId: first.retailerId,
@@ -69,26 +100,44 @@ function aggregateRelatives(
         ?.retailerName ?? first.retailerId,
       ipcaItemId: first.ipcaItemId,
       ipcaCode: first.ipcaCode,
-      relative: geometricMean(group.map((value) => value.relative)).toFixed(12),
+      relative: value.toFixed(12),
       productPairCount: group.length,
     };
+    return { point, value };
   }).sort((left, right) =>
-    left.day.localeCompare(right.day) || left.ipcaCode.localeCompare(right.ipcaCode)
-    || left.retailerId.localeCompare(right.retailerId));
+    left.point.day.localeCompare(right.point.day)
+    || left.point.ipcaCode.localeCompare(right.point.ipcaCode)
+    || left.point.retailerId.localeCompare(right.point.retailerId));
+  const retailerPoints = preciseRetailers.map(({ point }) => point);
 
-  const itemGroups = new Map<string, RetailerSubitemPoint[]>();
-  for (const point of retailerPoints) {
+  const itemGroups = new Map<string, typeof preciseRetailers>();
+  for (const precise of preciseRetailers) {
+    const { point } = precise;
     const key = `${point.day}\u0000${point.ipcaItemId}`;
     const group = itemGroups.get(key) ?? [];
-    group.push(point);
+    group.push(precise);
     itemGroups.set(key, group);
   }
+  const preciseSubitems = new Map<string, {
+    relative: Decimal;
+    retailerMinimum: Decimal;
+    retailerMaximum: Decimal;
+  }>();
   const subitemPoints = [...itemGroups.values()].map((group): SubitemPoint => {
-    const first = group[0];
+    const first = group[0]?.point;
     if (first === undefined) throw new Error("Empty subitem relative group");
     const item = metadata.get(first.ipcaItemId);
     if (item === undefined) throw new Error(`Missing IPCA metadata for ${first.ipcaItemId}`);
-    const values = group.map((point) => new D(point.relative));
+    const values = group.map(({ value }) => value);
+    const relative = values.reduce((sum, value) => sum.plus(value), new D(0))
+      .div(values.length);
+    const retailerMinimum = D.min(...values);
+    const retailerMaximum = D.max(...values);
+    preciseSubitems.set(first.ipcaItemId, {
+      relative,
+      retailerMinimum,
+      retailerMaximum,
+    });
     return {
       day: first.day,
       previousDay: first.previousDay,
@@ -96,14 +145,14 @@ function aggregateRelatives(
       ipcaCode: item.ipcaCode,
       ipcaName: item.ipcaName,
       weightText: item.weightText,
-      relative: values.reduce((sum, value) => sum.plus(value), new D(0)).div(values.length).toFixed(12),
+      relative: relative.toFixed(12),
       retailerCount: group.length,
-      productPairCount: group.reduce((sum, point) => sum + point.productPairCount, 0),
-      retailerMinRelative: D.min(...values).toFixed(12),
-      retailerMaxRelative: D.max(...values).toFixed(12),
+      productPairCount: group.reduce((sum, { point }) => sum + point.productPairCount, 0),
+      retailerMinRelative: retailerMinimum.toFixed(12),
+      retailerMaxRelative: retailerMaximum.toFixed(12),
     };
   }).sort((left, right) => left.day.localeCompare(right.day) || left.ipcaCode.localeCompare(right.ipcaCode));
-  return { retailerPoints, subitemPoints };
+  return { retailerPoints, subitemPoints, preciseSubitems };
 }
 
 function coveragePoint(
@@ -186,13 +235,10 @@ export function buildDailyIndex(
   let previousDay: string | null = null;
 
   for (const day of input.days) {
-    const unclassified = [...input.unclassifiedByRetailer.entries()]
-      .filter(([retailerId]) => input.healthyRetailerDays.has(`${retailerId}\u0000${day}`))
-      .reduce((sum, [, count]) => sum + count, 0);
-    const exclusions = blankExclusions(unclassified);
     if (previousDay === null || dayDifference(day, previousDay) !== 1) needsBaseline = true;
+    const exclusions = initialExclusions(input, day, previousDay, !needsBaseline);
     if (needsBaseline) {
-      const valid = validBaselineProducts(input, day);
+      const valid = validBaselineProducts(input, day, exclusions);
       const baseline = baselinePoint(day, segment + 1, valid, exclusions);
       if (baseline !== null) {
         segment += 1;
@@ -241,15 +287,24 @@ export function buildDailyIndex(
     }
     const coveredWeight = todayItems.reduce((sum, item) => sum.plus(item.weightText), new D(0));
     const weighted = todayItems.reduce(
-      (sum, item) => sum.plus(new D(item.relative).mul(item.weightText)),
+      (sum, item) => sum.plus(
+        (grouped.preciseSubitems.get(item.ipcaItemId)?.relative ?? new D(item.relative))
+          .mul(item.weightText),
+      ),
       new D(0),
     ).div(coveredWeight);
     const withDispersion = todayItems.every((item) => item.retailerCount >= 2);
     const low = withDispersion
-      ? todayItems.reduce((sum, item) => sum.plus(new D(item.retailerMinRelative).mul(item.weightText)), new D(0)).div(coveredWeight)
+      ? todayItems.reduce((sum, item) => sum.plus(
+        (grouped.preciseSubitems.get(item.ipcaItemId)?.retailerMinimum
+          ?? new D(item.retailerMinRelative)).mul(item.weightText),
+      ), new D(0)).div(coveredWeight)
       : null;
     const high = withDispersion
-      ? todayItems.reduce((sum, item) => sum.plus(new D(item.retailerMaxRelative).mul(item.weightText)), new D(0)).div(coveredWeight)
+      ? todayItems.reduce((sum, item) => sum.plus(
+        (grouped.preciseSubitems.get(item.ipcaItemId)?.retailerMaximum
+          ?? new D(item.retailerMaxRelative)).mul(item.weightText),
+      ), new D(0)).div(coveredWeight)
       : null;
     previousLevel = previousLevel.mul(weighted);
     aggregate.push({

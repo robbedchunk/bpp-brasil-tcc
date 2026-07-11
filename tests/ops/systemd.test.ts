@@ -89,7 +89,9 @@ describe("production schedules", () => {
     );
     expect(weeklyIndexService).toContain('ExecStart="/usr/bin/bash"');
     expect(weeklyIndexService).toContain(`"${join(projectRoot, "ops", "run-weekly-index.sh")}"`);
-    expect(weeklyIndexService).toContain("After=network-online.target precos-daily.service");
+    expect(weeklyIndexService).toContain(
+      "After=network-online.target precos-daily.service precos-weekly-discovery.service",
+    );
     expect(weeklyIndexService).toContain("UMask=0077");
     const weeklyIndexTimer = await readFile(
       join(destination, "precos-weekly-index.timer"),

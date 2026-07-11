@@ -1,6 +1,6 @@
 [Unit]
 Description=Export the experimental index and thesis analysis weekly
-After=network-online.target precos-daily.service
+After=network-online.target precos-daily.service precos-weekly-discovery.service
 Wants=network-online.target
 
 [Service]

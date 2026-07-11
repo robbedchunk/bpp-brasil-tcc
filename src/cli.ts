@@ -72,7 +72,11 @@ import {
 } from "./healing/heal.js";
 import { monitorRun } from "./healing/monitor.js";
 import { buildDailyIndex } from "./index/aggregate.js";
-import { exportResearchData as runExportResearchData } from "./index/export.js";
+import {
+  assertSafeOutputPath,
+  OfficialSourceUnavailableError,
+  exportResearchData as runExportResearchData,
+} from "./index/export.js";
 import { OfficialSidraClient } from "./index/sidra.js";
 import { strictDay } from "./index/relatives.js";
 import type {
@@ -696,6 +700,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       ) {
         throw new Error("--output must stay inside PROJECT_ROOT");
       }
+      if (options.export === true) await assertSafeOutputPath(configuredOutput);
       const result = await withProcessLock(
         dependencies.indexLockPath
           ?? resolve(applicationConfig.projectRoot, "var/precos-index.lock"),
@@ -724,17 +729,26 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
             fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
             now,
           });
-          return (dependencies.exportResearchData ?? runExportResearchData)(database, {
-            outputRoot: configuredOutput,
-            now,
-            sidraClient: dependencies.sidraClient ?? new OfficialSidraClient(),
-            alertSink: sink,
-            requireOfficial: options.requireOfficial === true,
-            ...(options.through === undefined ? {} : { throughDay: options.through }),
-            ...(options.classificationVersion === undefined
-              ? {}
-              : { classificationVersion: options.classificationVersion }),
-          });
+          try {
+            return await (dependencies.exportResearchData ?? runExportResearchData)(database, {
+              outputRoot: configuredOutput,
+              now,
+              sidraClient: dependencies.sidraClient ?? new OfficialSidraClient(),
+              alertSink: sink,
+              requireOfficial: options.requireOfficial === true,
+              ...(options.through === undefined ? {} : { throughDay: options.through }),
+              ...(options.classificationVersion === undefined
+                ? {}
+                : { classificationVersion: options.classificationVersion }),
+            });
+          } catch (error) {
+            if (error instanceof OfficialSourceUnavailableError) {
+              stdout(options.json === true
+                ? `${JSON.stringify(error.manifest)}\n`
+                : `index: ${error.manifest.status}\n`);
+            }
+            throw error;
+          }
         }),
       );
       stdout(options.json === true

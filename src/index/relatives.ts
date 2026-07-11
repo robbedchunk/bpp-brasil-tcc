@@ -41,6 +41,13 @@ export interface EffectivePrice {
   carried: boolean;
 }
 
+type MissingPriceReason = "unavailable" | "invalid" | "expired" | "absent";
+
+interface PriceResolution {
+  price: EffectivePrice | null;
+  missingReason: MissingPriceReason | null;
+}
+
 export interface DayExclusions {
   unclassifiedCount: number;
   noHealthyRunCount: number;
@@ -203,7 +210,10 @@ export function loadIndexInput(
           WHERE candidate.product_id = p.id ${versionClause} ${cutoffClause}
           ORDER BY candidate.version DESC, candidate.created_at DESC, candidate.id DESC
           LIMIT 1
-        ) AND c.ipca_item_id IS NOT NULL
+        ) AND c.ipca_item_id IS NOT NULL AND EXISTS (
+          SELECT 1 FROM ipca_items item
+          WHERE item.id = c.ipca_item_id AND item.in_scope = 1
+        )
       )
       GROUP BY p.retailer_id
     `).all({
@@ -237,15 +247,48 @@ export function effectivePrice(
   actuals: readonly ActualPrice[],
   targetDay: string,
 ): EffectivePrice | null {
+  return resolveEffectivePrice(actuals, targetDay).price;
+}
+
+function resolveEffectivePrice(
+  actuals: readonly ActualPrice[],
+  targetDay: string,
+): PriceResolution {
+  const sameDay = [...actuals].reverse().find((actual) => actual.day === targetDay);
+  if (sameDay !== undefined) {
+    if (!sameDay.available) return { price: null, missingReason: "unavailable" };
+    const cents = effectiveCents(sameDay);
+    return cents === null
+      ? { price: null, missingReason: "invalid" }
+      : {
+          price: { cents, sourceDay: sameDay.day, carried: false },
+          missingReason: null,
+        };
+  }
+
   for (let index = actuals.length - 1; index >= 0; index -= 1) {
     const actual = actuals[index];
-    if (actual === undefined || actual.day > targetDay) continue;
-    const age = dayDifference(targetDay, actual.day);
-    if (age > 7) return null;
+    if (actual === undefined || actual.day >= targetDay) continue;
     const cents = effectiveCents(actual);
-    if (cents !== null) return { cents, sourceDay: actual.day, carried: age > 0 };
+    if (cents === null) continue;
+    const age = dayDifference(targetDay, actual.day);
+    if (age > 7) return { price: null, missingReason: "expired" };
+    return {
+      price: { cents, sourceDay: actual.day, carried: true },
+      missingReason: null,
+    };
   }
-  return null;
+  return { price: null, missingReason: "absent" };
+}
+
+function recordNumeratorExclusion(
+  exclusions: DayExclusions,
+  reason: MissingPriceReason,
+): void {
+  if (reason === "unavailable") exclusions.unavailableCount += 1;
+  else if (reason === "invalid") exclusions.invalidPriceCount += 1;
+  else if (reason === "expired") exclusions.carriedExpiredCount += 1;
+  else exclusions.noDenominatorCount += 1;
 }
 
 export function buildProductRelativesForDay(
@@ -263,24 +306,21 @@ export function buildProductRelativesForDay(
       continue;
     }
     const actuals = input.actualsByProduct.get(product.productId) ?? [];
-    const latestToday = [...actuals].reverse().find((actual) => actual.day === day);
-    if (latestToday !== undefined && !latestToday.available) exclusions.unavailableCount += 1;
-    if (latestToday !== undefined && latestToday.available && effectiveCents(latestToday) === null) {
-      exclusions.invalidPriceCount += 1;
-    }
-    const numerator = effectivePrice(actuals, day);
-    if (numerator === null) {
-      if (actuals.some((actual) => actual.day < day) && actuals.every((actual) =>
-        actual.day > day || dayDifference(day, actual.day) > 7 || effectiveCents(actual) === null)) {
-        exclusions.carriedExpiredCount += 1;
-      }
+    const numeratorResolution = resolveEffectivePrice(actuals, day);
+    if (numeratorResolution.price === null) {
+      recordNumeratorExclusion(
+        exclusions,
+        numeratorResolution.missingReason ?? "absent",
+      );
       continue;
     }
-    const denominator = effectivePrice(actuals, previousDay);
-    if (denominator === null) {
+    const denominatorResolution = resolveEffectivePrice(actuals, previousDay);
+    if (denominatorResolution.price === null) {
       exclusions.noDenominatorCount += 1;
       continue;
     }
+    const numerator = numeratorResolution.price;
+    const denominator = denominatorResolution.price;
     output.push({
       day,
       previousDay,
@@ -302,8 +342,26 @@ export function buildProductRelativesForDay(
   return output;
 }
 
-export function validBaselineProducts(input: IndexInput, day: string): IndexedProduct[] {
-  return input.products.filter((product) =>
-    input.healthyRetailerDays.has(`${product.retailerId}\u0000${day}`)
-    && effectivePrice(input.actualsByProduct.get(product.productId) ?? [], day) !== null);
+export function validBaselineProducts(
+  input: IndexInput,
+  day: string,
+  exclusions: DayExclusions,
+): IndexedProduct[] {
+  const valid: IndexedProduct[] = [];
+  for (const product of input.products) {
+    if (!input.healthyRetailerDays.has(`${product.retailerId}\u0000${day}`)) {
+      exclusions.noHealthyRunCount += 1;
+      continue;
+    }
+    const resolution = resolveEffectivePrice(
+      input.actualsByProduct.get(product.productId) ?? [],
+      day,
+    );
+    if (resolution.price === null) {
+      recordNumeratorExclusion(exclusions, resolution.missingReason ?? "absent");
+      continue;
+    }
+    valid.push(product);
+  }
+  return valid;
 }

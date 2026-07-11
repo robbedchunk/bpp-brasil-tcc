@@ -1,9 +1,21 @@
+import { readFileSync } from "node:fs";
+
 import type Database from "better-sqlite3";
 
+import { loadIpcaItems } from "../../scripts/load-ipca-items.js";
 import { openDatabase } from "../../src/db/database.js";
+
+const authoritativeWeights = readFileSync(new URL(
+  "../../data/reference/ipca_pof2017_2018_sp_food_at_home_weights.csv",
+  import.meta.url,
+), "utf8");
 
 export function indexDatabase(): Database.Database {
   return openDatabase(":memory:");
+}
+
+export function seedAuthoritativeWeights(database: Database.Database): void {
+  loadIpcaItems(database, authoritativeWeights);
 }
 
 export function seedRetailer(database: Database.Database, id: string): void {

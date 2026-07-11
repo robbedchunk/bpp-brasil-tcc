@@ -250,6 +250,7 @@ exit 1
       ...process.env,
       ANALYSIS_PYTHON: fakePython,
       ANALYSIS_VENV: venv,
+      ANALYSIS_TEST_ROOT: directory,
       ANALYSIS_SETUP_LOG: logPath,
     };
 
@@ -258,6 +259,16 @@ exit 1
     expect(await run("bash", ["ops/setup-analysis.sh"], env))
       .toEqual({ exitCode: 0, stderr: "", stdout: "analysis-setup: ready.\n" });
     expect((await readFile(logPath, "utf8")).trim().split("\n")).toHaveLength(1);
+    await writeFile(join(venv, "stale-package.txt"), "must disappear");
+    await writeFile(
+      join(venv, ".environment-version"),
+      `requirements_sha256=${"0".repeat(64)}\npython_version=3.14\n`,
+    );
+    expect(await run("bash", ["ops/setup-analysis.sh"], env))
+      .toEqual({ exitCode: 0, stderr: "", stdout: "analysis-setup: ready.\n" });
+    expect((await readFile(logPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    await expect(readFile(join(venv, "stale-package.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(join(venv, "old-python-package.txt"), "must disappear too");
     await writeFile(
       fakePython,
       (await readFile(fakePython, "utf8"))
@@ -265,8 +276,38 @@ exit 1
     );
     expect(await run("bash", ["ops/setup-analysis.sh"], env))
       .toEqual({ exitCode: 0, stderr: "", stdout: "analysis-setup: ready.\n" });
-    expect((await readFile(logPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    expect((await readFile(logPath, "utf8")).trim().split("\n")).toHaveLength(3);
+    await expect(readFile(join(venv, "old-python-package.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(join(venv, ".environment-version"), "utf8"))
       .toMatch(/^requirements_sha256=[0-9a-f]{64}\npython_version=3\.15\n$/u);
+  });
+
+  it("refuses to delete an arbitrary analysis environment", async () => {
+    const directory = await temporaryDirectory("precos-analysis-unsafe-");
+    const fakePython = join(directory, "python3");
+    const venv = join(directory, "not-authorized", "venv");
+    const sentinel = join(venv, "preserve.txt");
+    await mkdir(join(venv, "bin"), { recursive: true });
+    await writeFile(sentinel, "preserve");
+    await writeFile(fakePython, `#!/usr/bin/env bash
+if [[ "\${1:-}" == "-c" ]]; then printf '3.14\n'; exit 0; fi
+exit 1
+`);
+    await writeFile(join(venv, "bin", "python"), `#!/usr/bin/env bash
+if [[ "\${1:-}" == "-c" ]]; then printf '3.13\n'; exit 0; fi
+exit 1
+`);
+    await chmod(fakePython, 0o755);
+    await chmod(join(venv, "bin", "python"), 0o755);
+
+    const result = await run("bash", ["ops/setup-analysis.sh"], {
+      ...process.env,
+      ANALYSIS_PYTHON: fakePython,
+      ANALYSIS_VENV: venv,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/refus|safe|authorized/i);
+    expect(await readFile(sentinel, "utf8")).toBe("preserve");
   });
 });

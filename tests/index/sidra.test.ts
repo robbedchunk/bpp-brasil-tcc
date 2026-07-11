@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 import { fetchOfficialSeries, parseOfficialSeries } from "../../src/index/sidra.js";
 
 const fixtureUrl = new URL("../fixtures/sidra/table-7060.json", import.meta.url);
+const duplicateFixtureUrl = new URL(
+  "../fixtures/sidra/table-7060-duplicate-month.json",
+  import.meta.url,
+);
 
 describe("official SIDRA table 7060", () => {
   it("validates identity and preserves exact requested monthly values", async () => {
@@ -41,6 +45,13 @@ describe("official SIDRA table 7060", () => {
     expect(result.missingMonths).toEqual([{ month: "2026-05", sourceValue: "..." }]);
   });
 
+  it("rejects duplicate raw serie month keys before JSON parsing can collapse them", async () => {
+    const body = await readFile(duplicateFixtureUrl);
+
+    expect(() => parseOfficialSeries(body, "2026-05", "2026-06"))
+      .toThrow(/duplicate.*2026-05/i);
+  });
+
   it("uses bounded, no-redirect official requests", async () => {
     const body = await readFile(fixtureUrl);
     const calls: Array<{ url: string; init?: RequestInit }> = [];
@@ -60,5 +71,24 @@ describe("official SIDRA table 7060", () => {
       status: 200,
       headers: { "content-type": "application/json" },
     }), "2026-04", "2026-06")).rejects.toThrow(/large|size|bytes/i);
+  });
+
+  it.each(["application/jsonp", "text/application/json"])(
+    "rejects the inexact JSON media type %s",
+    async (contentType) => {
+      const body = await readFile(fixtureUrl);
+      await expect(fetchOfficialSeries(async () => new Response(body, {
+        status: 200,
+        headers: { "content-type": contentType },
+      }), "2026-04", "2026-06")).rejects.toThrow(/content type|JSON/i);
+    },
+  );
+
+  it("accepts application/json with media-type parameters", async () => {
+    const body = await readFile(fixtureUrl);
+    await expect(fetchOfficialSeries(async () => new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }), "2026-04", "2026-06")).resolves.toMatchObject({ status: "available" });
   });
 });

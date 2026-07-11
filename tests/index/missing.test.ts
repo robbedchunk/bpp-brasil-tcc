@@ -54,8 +54,9 @@ describe("index missingness", () => {
 
     const series = buildDailyIndex(database);
     const relative = series.productRelatives.find((point) => point.day === "2026-06-02");
-    expect(relative).toMatchObject({ numeratorCents: 1_000, numeratorCarried: true });
-    expect(Number(relative?.relative)).toBe(1);
+    expect(relative).toBeUndefined();
+    expect(series.coverage.find((point) => point.day === "2026-06-02"))
+      .toMatchObject({ unavailableCount: 1, productPairCount: 0 });
   });
 
   it("does not carry an absent retailer and starts a new chain after a panel gap", () => {
@@ -98,5 +99,55 @@ describe("index missingness", () => {
     expect(buildDailyIndex(database, { classificationVersion: 1 }).productRelatives).toHaveLength(1);
     database.prepare("UPDATE products SET in_scope = 0 WHERE id = 'p1'").run();
     expect(buildDailyIndex(database, { classificationVersion: 1 }).productRelatives).toEqual([]);
+  });
+
+  it("accounts for mutually exclusive baseline exclusions and never excludes a carried contributor", () => {
+    const database = baseDatabase();
+    seedProduct(database, { id: "unavailable", retailerId: "r1", itemId: "item-a" });
+    seedProduct(database, { id: "invalid", retailerId: "r1", itemId: "item-a" });
+    seedProduct(database, { id: "no-price", retailerId: "r1", itemId: "item-a" });
+    seedProduct(database, { id: "unclassified", retailerId: "r1", itemId: null });
+    seedRetailer(database, "r2");
+    seedProduct(database, { id: "no-run", retailerId: "r2", itemId: null });
+    seedRun(database, { id: "d1", retailerId: "r1", day: "2026-06-01", attempted: 4 });
+    seedRun(database, { id: "d2", retailerId: "r1", day: "2026-06-02", attempted: 4 });
+    seedObservation(database, { id: "good-d1", productId: "p1", runId: "d1", day: "2026-06-01", price: 1_000 });
+    seedObservation(database, { id: "unavailable-d1", productId: "unavailable", runId: "d1", day: "2026-06-01", price: 1_000, available: false });
+    seedObservation(database, { id: "invalid-d1", productId: "invalid", runId: "d1", day: "2026-06-01", price: 0 });
+
+    const series = buildDailyIndex(database);
+    expect(series.coverage.find((point) => point.day === "2026-06-01")).toMatchObject({
+      productPairCount: 0,
+      unclassifiedCount: 1,
+      noHealthyRunCount: 1,
+      unavailableCount: 1,
+      invalidPriceCount: 1,
+      noDenominatorCount: 1,
+      carriedExpiredCount: 0,
+    });
+    expect(series.coverage.find((point) => point.day === "2026-06-02")).toMatchObject({
+      productPairCount: 1,
+      unclassifiedCount: 1,
+      noHealthyRunCount: 1,
+      unavailableCount: 0,
+      invalidPriceCount: 0,
+      noDenominatorCount: 3,
+      carriedExpiredCount: 0,
+    });
+  });
+
+  it("records an expired carry on a new baseline day without fabricating coverage", () => {
+    const database = baseDatabase();
+    seedRun(database, { id: "d1", retailerId: "r1", day: "2026-06-01" });
+    seedRun(database, { id: "d9", retailerId: "r1", day: "2026-06-09" });
+    seedObservation(database, { id: "p1-d1", productId: "p1", runId: "d1", day: "2026-06-01", price: 1_000 });
+
+    const series = buildDailyIndex(database);
+
+    expect(series.coverage.find((point) => point.day === "2026-06-09")).toMatchObject({
+      coveredSubitemCount: 0,
+      carriedExpiredCount: 1,
+      noDenominatorCount: 0,
+    });
   });
 });

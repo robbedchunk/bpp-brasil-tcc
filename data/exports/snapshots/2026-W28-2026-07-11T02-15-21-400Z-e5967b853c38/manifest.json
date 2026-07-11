@@ -1,0 +1,281 @@
+{
+  "schemaVersion": 1,
+  "snapshotId": "2026-W28-2026-07-11T02-15-21-400Z-e5967b853c38",
+  "generatedAt": "2026-07-11T02:15:21.400Z",
+  "timezone": "America/Sao_Paulo",
+  "methodVersion": "tcc-food-at-home-v1",
+  "status": "no_index_data",
+  "snapshotDirectory": "snapshots/2026-W28-2026-07-11T02-15-21-400Z-e5967b853c38",
+  "files": [
+    {
+      "path": "aggregate_daily.csv",
+      "sha256": "24b25007e5b71b73e3bf579e65f160b3a6443a8b1b5238544f846043c76f9b84",
+      "bytes": 271,
+      "rows": 0,
+      "columns": [
+        "date",
+        "previous_date",
+        "chain_segment",
+        "daily_relative",
+        "index_level",
+        "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca",
+        "coverage_fraction",
+        "covered_subitem_count",
+        "retailer_count",
+        "product_pair_count",
+        "descriptive_low_relative",
+        "descriptive_high_relative",
+        "method_version"
+      ]
+    },
+    {
+      "path": "classification_coverage.csv",
+      "sha256": "bb3de1092e97355fa0c418424495f502ed31d08eea32c4479dc268d5a8cbabf5",
+      "bytes": 208,
+      "rows": 2,
+      "columns": [
+        "retailer_id",
+        "retailer_name",
+        "total_in_scope_products",
+        "classified_products",
+        "unclassified_products",
+        "classification_rate",
+        "latest_version"
+      ]
+    },
+    {
+      "path": "coverage_daily.csv",
+      "sha256": "9b88cac1585ecc88c449e4012f98273c98737b65cdfc2c3efc6a7989370cfc76",
+      "bytes": 331,
+      "rows": 1,
+      "columns": [
+        "date",
+        "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca",
+        "coverage_fraction",
+        "covered_subitem_count",
+        "retailer_count",
+        "product_pair_count",
+        "unclassified_count",
+        "no_healthy_run_count",
+        "unavailable_count",
+        "carried_expired_count",
+        "no_denominator_count",
+        "invalid_price_count"
+      ]
+    },
+    {
+      "path": "failures.csv",
+      "sha256": "aa37986a198ad01ef35a0777a77a31aee79052114f43da7b88df6928e3f1ed95",
+      "bytes": 240,
+      "rows": 2,
+      "columns": [
+        "collection_day",
+        "retailer_id",
+        "retailer_name",
+        "run_id",
+        "category",
+        "count"
+      ]
+    },
+    {
+      "path": "healing_events.csv",
+      "sha256": "6fcccd844454cae26945581b88a5ed317be8a0d32d843c8821cc6211c4ef3825",
+      "bytes": 192,
+      "rows": 0,
+      "columns": [
+        "event_id",
+        "retailer_id",
+        "retailer_name",
+        "purpose",
+        "status",
+        "onset_run_id",
+        "previous_strategy_id",
+        "successor_strategy_id",
+        "attempts",
+        "tier_from",
+        "tier_to",
+        "drift_started_at",
+        "detected_at",
+        "recovered_at",
+        "duration_seconds"
+      ]
+    },
+    {
+      "path": "model_costs.csv",
+      "sha256": "0eee6df23552df28bd407cd8e24fc33b8e135d10769ef042e01ea6bd169453bc",
+      "bytes": 90,
+      "rows": 0,
+      "columns": [
+        "month",
+        "retailer_id",
+        "category",
+        "provider",
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cost_usd",
+        "event_count"
+      ]
+    },
+    {
+      "path": "monthly_comparison.csv",
+      "sha256": "8831bc11380fa79c39c875d222a6a004ad89ce755e942928c8de48f4c54beb3b",
+      "bytes": 90,
+      "rows": 0,
+      "columns": [
+        "month",
+        "experimental_variation_pct",
+        "official_variation_pct",
+        "status",
+        "experimental_chain_segment"
+      ]
+    },
+    {
+      "path": "official_ipca_monthly.csv",
+      "sha256": "1bd58e7ae8960558f884b4af2a907a1eb2ed4f91b3f2b73d265e89026badf86e",
+      "bytes": 134,
+      "rows": 0,
+      "columns": [
+        "month",
+        "variation_pct",
+        "variable_id",
+        "territorial_level",
+        "area_code",
+        "area_name",
+        "classification_id",
+        "category_id",
+        "source_url",
+        "source_response_sha256"
+      ]
+    },
+    {
+      "path": "product_relatives.csv",
+      "sha256": "f273f15ae4cce8bdb6d8aa9a4f597234fe4e5d6395cc3778ba3c7ad1a0464339",
+      "bytes": 233,
+      "rows": 0,
+      "columns": [
+        "date",
+        "previous_date",
+        "retailer_id",
+        "product_id",
+        "ipca_item_id",
+        "ipca_code",
+        "classification_id",
+        "classification_version",
+        "numerator_cents",
+        "denominator_cents",
+        "numerator_source_date",
+        "denominator_source_date",
+        "numerator_carried",
+        "denominator_carried",
+        "relative"
+      ]
+    },
+    {
+      "path": "retailer_subitem_daily.csv",
+      "sha256": "e6b1868c650ef5d233581ed2f154f1b41598d959c5560e39cc35bee7b61cce86",
+      "bytes": 96,
+      "rows": 0,
+      "columns": [
+        "date",
+        "previous_date",
+        "retailer_id",
+        "retailer_name",
+        "ipca_item_id",
+        "ipca_code",
+        "relative",
+        "product_pair_count"
+      ]
+    },
+    {
+      "path": "runs.csv",
+      "sha256": "eafb2d9cb0b6e0f65d31538ac11ed401772e463be6871a6ebbddabc8c3b6e490",
+      "bytes": 1643,
+      "rows": 8,
+      "columns": [
+        "run_id",
+        "retailer_id",
+        "retailer_name",
+        "collection_day",
+        "stage",
+        "status",
+        "attempted",
+        "ok",
+        "failed",
+        "success_rate",
+        "strategy_id",
+        "strategy_version",
+        "started_at",
+        "finished_at",
+        "error_category"
+      ]
+    },
+    {
+      "path": "subitem_daily.csv",
+      "sha256": "30addc012b4a5628868e63f4521d27ea6e2d87c15c913901f064604e71051283",
+      "bytes": 161,
+      "rows": 0,
+      "columns": [
+        "date",
+        "previous_date",
+        "ipca_item_id",
+        "ipca_code",
+        "ipca_name",
+        "weight_pct_total_ipca",
+        "relative",
+        "retailer_count",
+        "product_pair_count",
+        "retailer_min_relative",
+        "retailer_max_relative"
+      ]
+    }
+  ],
+  "sources": {
+    "ipcaWeights": {
+      "rows": 84,
+      "totalWeight": "12.1181",
+      "archiveSha256": "0ba845113682c96015a0e93daf4b10bc93aad82c2c1d6ea406282af958bf9104"
+    },
+    "sidra": {
+      "status": "no_overlap",
+      "endpoint": "https://servicodados.ibge.gov.br/api/v3/agregados/7060/periodos/all/variaveis/63?localidades=N7%5B3501%5D&classificacao=315%5B7171%5D",
+      "responseSha256": "08366b19ebbed96fa5ed46b27748689cab7a6c5704f125945b1e1ece886e3ba8",
+      "fetchedRange": {
+        "startMonth": "2026-07",
+        "endMonth": "2026-07"
+      },
+      "missingMonths": []
+    },
+    "database": {
+      "counts": {
+        "retailers": 5,
+        "strategies": 17,
+        "products": 60,
+        "observations": 62,
+        "runs": 8,
+        "run_failures": 60,
+        "ipca_items": 84,
+        "classifications": 0,
+        "exploration_runs": 0,
+        "healing_events": 0,
+        "cost_ledger": 0
+      },
+      "maxima": {
+        "observations": "2026-07-10T15:56:22.148Z",
+        "runs": "2026-07-10T15:56:22.148Z",
+        "classifications": null,
+        "healing_events": null,
+        "cost_ledger": null
+      }
+    }
+  },
+  "parameters": {
+    "promoPreferred": true,
+    "carryForwardDays": 7,
+    "withinRetailer": "jevons",
+    "acrossRetailers": "arithmetic_equal",
+    "acrossSubitems": "covered_weight_laspeyres_chain"
+  }
+}

@@ -21,3 +21,23 @@ Outputs are immutable per input snapshot: `success-rate.png`,
 inputs produce labelled no-data figures. The retailer range is descriptive and
 is not a confidence interval; the experimental index makes no statistical
 validation claim.
+
+The input `latest.json` is accepted only when its snapshot ID, relative path,
+and manifest hash all identify the same immutable snapshot. Reusing an existing
+analysis snapshot re-verifies every output byte count, row count, and SHA-256
+before republishing its pointer. The analysis manifest records the five
+consumed CSVs with their required columns and integrity evidence as well as the
+four generated artifacts.
+
+The healing table retains onset-run, drift-start, detection, and recovery
+timestamps. The coverage/dispersion table retains source coverage rows even
+when no aggregate index point exists and includes covered weights, sample
+counts, descriptive bounds, and every exclusion count. Figure annotations label
+drift detection and recovery separately; the index footnote documents promo
+preference, seven-day product carry, equal retailer weighting, renormalized POF
+weights, the non-validation caveat, and the CEP/SNIPC geography difference.
+
+`ops/setup-analysis.sh` rebuilds the pinned environment whenever the
+requirements digest or Python major/minor version changes. Destructive rebuilds
+are restricted to the project `var/analysis-venv` path or an explicitly
+identified disposable test root.
