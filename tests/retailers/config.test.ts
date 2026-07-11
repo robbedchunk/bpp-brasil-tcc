@@ -396,9 +396,9 @@ describe("live retailer configuration", () => {
        WHERE retailer_id = 'pao-de-acucar' ORDER BY purpose`,
     ).all() as Array<{ purpose: string; provenance: string }>;
     expect(provenance.find(({ purpose }) => purpose === "discovery")?.provenance)
-      .toMatch(/official store-61 alimentos category page/i);
+      .toMatch(/pinned trusted-live-host successor validation/i);
     expect(provenance.find(({ purpose }) => purpose === "extraction")?.provenance)
-      .toMatch(/bestPrices/i);
+      .toMatch(/pinned trusted-live-host successor validation/i);
   });
 
   it("stages an immutable inactive successor without changing live activation", () => {
@@ -610,7 +610,7 @@ describe("live retailer configuration", () => {
        ORDER BY version`,
     ).all()).toEqual([
       { version: 1, active: 0, retired: 1 },
-      { version: 2, active: 1, retired: 0 },
+      { version: current.strategyVersions.extraction, active: 1, retired: 0 },
     ]);
   });
 

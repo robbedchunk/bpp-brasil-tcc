@@ -45,8 +45,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 4,
-    "extraction": 3
+    "discovery": 5,
+    "extraction": 4
   },
   "discovery": {
     "schemaVersion": 1,
@@ -151,23 +151,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T07:05:27.209Z",
+      "validatedAt": "2026-07-11T10:11:44.492Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "The trusted DOM-crawl selectors returned 30/30 canonical store-aware references across declared food collection pages; bounded next-page selectors extend the same validated mechanism without admitting household, beauty, or cleaning collections.",
-      "receiptPath": "data/validation/st-marche-discovery-v4.json",
-      "receiptSha256": "7a6298caf77a061c81ae54284110199fe6f9122aa6ef88d5518da90ac72d293c"
+      "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/st-marche-discovery-v5.json",
+      "receiptSha256": "667b9e42df631976f6ddc542fa72043e580242bd7a3af3a46602b55a8475a836"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T07:05:43.649Z",
+      "validatedAt": "2026-07-11T10:11:59.950Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Trusted sequential execution of the public Pavão store loader produced 30/30 complete offers; top-level hasInventory changed across official store IDs and is the regional availability field.",
-      "receiptPath": "data/validation/st-marche-extraction-v3.json",
-      "receiptSha256": "45ba6180e7574247180dd3aef039669e6b6e6a700971cdcb23bff7fb7eca7171"
+      "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/st-marche-extraction-v4.json",
+      "receiptSha256": "b07f90017a28f686db56fe35fdb1df0696ad990cab900ca47ef95be596e1dd7c"
     }
   }
 }

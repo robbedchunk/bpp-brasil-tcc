@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 2,
-    "extraction": 2
+    "discovery": 3,
+    "extraction": 3
   },
   "discovery": {
     "schemaVersion": 1,
@@ -147,23 +147,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T06:52:59.068Z",
+      "validatedAt": "2026-07-11T10:09:33.239Z",
       "sampleSize": 30,
-      "successes": 30,
-      "score": 1,
-      "evidence": "Trusted execution of the official store-923 Alimentos category page returned 30/30 canonical IDs and URLs; declarative segment provenance supplies the authoritative food category.",
-      "receiptPath": "data/validation/extra-mercado-discovery-v2.json",
-      "receiptSha256": "5625f3bbd5b09d15d76d821535d33ae382ed6639f5d97d0f0f8faa0066da6aba"
+      "successes": 27,
+      "score": 0.9,
+      "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/extra-mercado-discovery-v3.json",
+      "receiptSha256": "37c796b3d3b3144e2d97f530f541c7925f815806c6aca7c6a0da602d19e652ef"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T06:53:13.692Z",
+      "validatedAt": "2026-07-11T10:09:47.817Z",
       "sampleSize": 30,
-      "successes": 29,
-      "score": 0.9666666666666667,
-      "evidence": "Extraction v2 independently requested 30 discovered IDs through official store-923 bestPrices, sequentially paced; HTTP responses mapped 30/30 valid title, brand, price, stock and unit fields.",
-      "receiptPath": "data/validation/extra-mercado-extraction-v2.json",
-      "receiptSha256": "95842b6b55574191ca168069326b5278f464cf371e38ced65f605ccf42b2b357"
+      "successes": 28,
+      "score": 0.9333333333333333,
+      "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/extra-mercado-extraction-v3.json",
+      "receiptSha256": "4a397aebaa3263b1a40623ac7b0afcf7082ac5783e5a3879064a36e971a92375"
     }
   }
 }

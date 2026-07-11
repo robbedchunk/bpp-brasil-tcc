@@ -39,8 +39,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 5,
-    "extraction": 4
+    "discovery": 6,
+    "extraction": 5
   },
   "discovery": {
     "schemaVersion": 1,
@@ -183,23 +183,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T06:52:14.683Z",
+      "validatedAt": "2026-07-11T10:08:34.912Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Trusted execution of the official account-host category endpoint returned 30/30 canonical records with explicit Mercearia category paths; the same declarative request is bounded across seven food-at-home segments.",
-      "receiptPath": "data/validation/carrefour-discovery-v5.json",
-      "receiptSha256": "fbd41811e4e351700d20af49742265e1ecd4bf6ffc90055d60e0ba5b2c0f5e63"
+      "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/carrefour-discovery-v6.json",
+      "receiptSha256": "6a5dd4a590ed2f52c0c297b834fa758f484e0038021a703888f0dd90b1a67c78"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T06:52:29.479Z",
+      "validatedAt": "2026-07-11T10:08:49.684Z",
       "sampleSize": 30,
       "successes": 28,
       "score": 0.9333333333333333,
-      "evidence": "Trusted sequential validation with the public CEP-derived regional context produced 28/30 complete offers; all 30 responses contained validated catalog seller 1, while two unavailable products had no positive price. No cookie is stored in the strategy or evidence.",
-      "receiptPath": "data/validation/carrefour-extraction-v4.json",
-      "receiptSha256": "fc2202d5fcdc80df3e720714be7e1d50fa5197bd196b01de3d12577fe9b16a90"
+      "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/carrefour-extraction-v5.json",
+      "receiptSha256": "7411b8b44b80ab2db4939db71fb5fe9810e73f51d001253e11c57e73e1382998"
     }
   }
 }

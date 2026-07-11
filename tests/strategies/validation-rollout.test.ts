@@ -278,6 +278,11 @@ function activatedEvidenceCount(database: ReturnType<typeof openDatabase>): numb
   ).get() as { count: number }).count;
 }
 
+function discoveryReceiptName(setup: Awaited<ReturnType<typeof fixture>>): string {
+  const config = setup.loadConfig();
+  return `${config.id}-discovery-v${config.strategyVersions.discovery}.json`;
+}
+
 describe("trusted validation rollout recovery", () => {
   it("resumes after receipt publication without rerunning the signed attempt", async () => {
     const setup = await fixture();
@@ -315,7 +320,7 @@ describe("trusted validation rollout recovery", () => {
     })).rejects.toThrow(/crash after config/u);
     expect(setup.validationCalls()).toBe(2);
     const receipt = await readFile(
-      join(setup.outputDirectory, "extra-mercado-discovery-v2.json"),
+      join(setup.outputDirectory, discoveryReceiptName(setup)),
       "utf8",
     );
 
@@ -326,7 +331,7 @@ describe("trusted validation rollout recovery", () => {
 
     expect(setup.validationCalls()).toBe(2);
     expect(await readFile(
-      join(setup.outputDirectory, "extra-mercado-discovery-v2.json"),
+      join(setup.outputDirectory, discoveryReceiptName(setup)),
       "utf8",
     )).toBe(receipt);
     expect(setup.loadConfig().validation.discovery.receiptSha256)
@@ -369,7 +374,7 @@ describe("trusted validation rollout recovery", () => {
         }
       },
     })).rejects.toThrow(/crash after receipt/u);
-    const path = join(setup.outputDirectory, "extra-mercado-discovery-v2.json");
+    const path = join(setup.outputDirectory, discoveryReceiptName(setup));
     const tampered = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     tampered.validatedAt = "2026-07-11T08:00:01.000Z";
     await writeFile(path, `${JSON.stringify(tampered)}\n`);
@@ -395,7 +400,8 @@ describe("trusted validation rollout recovery", () => {
     expect(setup.validationCalls()).toBe(1);
     const attemptPath = join(
       setup.outputDirectory,
-      "attempts/extra-mercado-discovery-v2.json",
+      "attempts",
+      discoveryReceiptName(setup),
     );
     const manifest = JSON.parse(await readFile(
       join(setup.outputDirectory, "attempts/manifest.json"),
@@ -414,7 +420,7 @@ describe("trusted validation rollout recovery", () => {
       }],
     });
     await expect(readFile(
-      join(setup.outputDirectory, "extra-mercado-discovery-v2.json"),
+      join(setup.outputDirectory, discoveryReceiptName(setup)),
     )).rejects.toMatchObject({ code: "ENOENT" });
 
     await expect(executeValidationRollout({

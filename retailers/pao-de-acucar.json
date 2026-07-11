@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 4,
-    "extraction": 2
+    "discovery": 5,
+    "extraction": 3
   },
   "discovery": {
     "schemaVersion": 1,
@@ -147,23 +147,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T07:01:10.099Z",
+      "validatedAt": "2026-07-11T10:10:35.513Z",
       "sampleSize": 30,
-      "successes": 30,
-      "score": 1,
-      "evidence": "Trusted execution of the official store-61 Alimentos category page returned 30/30 canonical IDs and URLs; declarative segment provenance supplies the authoritative food category.",
-      "receiptPath": "data/validation/pao-de-acucar-discovery-v4.json",
-      "receiptSha256": "565bfa2e815f764e6225921540b42ddb6354d8e3646891a499e8ded1b5009372"
+      "successes": 27,
+      "score": 0.9,
+      "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/pao-de-acucar-discovery-v5.json",
+      "receiptSha256": "3d91e399b85f42cea56d9e45666fa5d62733623896b0202ab793841345a2009e"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T06:54:32.829Z",
+      "validatedAt": "2026-07-11T10:10:50.087Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Extraction v2 independently requested 30 discovered IDs through official store-61 bestPrices, sequentially paced; HTTP responses mapped 30/30 valid title, brand, price, stock and unit fields.",
-      "receiptPath": "data/validation/pao-de-acucar-extraction-v2.json",
-      "receiptSha256": "326dd81445ec776004270afdb28909f2c0cc264f4caffb0936d33df4bc8ccf89"
+      "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
+      "receiptPath": "data/validation/pao-de-acucar-extraction-v3.json",
+      "receiptSha256": "a734467221d445aed5297cdf75ad0a4f600ba841d02efcdd56db7372ef010c5f"
     }
   }
 }

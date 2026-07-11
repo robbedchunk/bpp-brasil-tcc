@@ -47,9 +47,18 @@ function fixture(): string {
     join(root, "data/validation/successor-plans.json"),
   );
   for (const retailerId of new Set(plan.plans.map((entry) => entry.retailerId))) {
-    copyFileSync(
+    const config = JSON.parse(readFileSync(
       join(projectRoot, `retailers/${retailerId}.json`),
+      "utf8",
+    ));
+    for (const entry of plan.plans.filter((candidate) => candidate.retailerId === retailerId)) {
+      config.strategyVersions[entry.purpose] = entry.fromVersion;
+      config.validation[entry.purpose].receiptPath =
+        `data/validation/${retailerId}-${entry.purpose}-v${entry.fromVersion}.json`;
+    }
+    writeFileSync(
       join(root, `retailers/${retailerId}.json`),
+      `${JSON.stringify(config, null, 2)}\n`,
     );
   }
   for (const name of [
