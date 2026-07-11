@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OpenAIProductClassifier } from "../../src/classify/openai-provider.js";
 import type { ClassificationInput } from "../../src/classify/provider.js";
@@ -16,6 +16,11 @@ const input: ClassificationInput = {
   ],
 };
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
 async function fixtureResponse(): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(
     new URL("../fixtures/openai/classification-response.json", import.meta.url),
@@ -24,6 +29,52 @@ async function fixtureResponse(): Promise<Record<string, unknown>> {
 }
 
 describe("OpenAI structured classification provider", () => {
+  it("honors OPENAI_BASE_URL through the openai-node client", async () => {
+    const baseUrl = "http://127.0.0.1:48123/custom/v1";
+    let requestedUrl = "";
+    vi.stubEnv("OPENAI_BASE_URL", baseUrl);
+    vi.stubGlobal("fetch", async (request: string | URL | Request) => {
+      requestedUrl = request instanceof Request ? request.url : request.toString();
+      return new Response(JSON.stringify({
+        id: "resp_endpoint_regression",
+        object: "response",
+        status: "completed",
+        model: "gpt-5.6-luna",
+        output: [{
+          id: "message_endpoint_regression",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{
+            type: "output_text",
+            text: JSON.stringify({
+              results: [{
+                productId: "product-1",
+                ipcaItemId: "ipca-arroz",
+                confidence: 0.97,
+                rationaleCode: "exact_food_match",
+              }],
+            }),
+          }],
+        }],
+        usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const provider = new OpenAIProductClassifier({
+      apiKey: "test-key",
+      env: { OPENAI_API_KEY: "test-key" },
+    });
+
+    await expect(provider.classify([input])).resolves.toMatchObject({
+      provider: "openai",
+      usage: { inputTokens: 11, outputTokens: 7 },
+    });
+    expect(requestedUrl).toBe(`${baseUrl}/responses`);
+  });
+
   it("uses responses.parse with a strict required root object and store disabled", async () => {
     let captured: any;
     const client = {

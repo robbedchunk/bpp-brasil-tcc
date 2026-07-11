@@ -1799,6 +1799,39 @@ describe("acceptance status and evidence", () => {
       expect(validateTimerDefinitions(root, installed).valid).toBe(false);
       await writeFile(dailyPath, daily.replace("OnFailure=precos-classification.service\n", ""));
       expect(validateTimerDefinitions(root, installed).valid).toBe(false);
+
+      await writeFile(dailyPath, daily);
+      const copiedRoot = join(installed, "source");
+      await mkdir(join(copiedRoot, "ops"), { recursive: true });
+      for (const timer of [
+        "precos-backup.timer",
+        "precos-daily.timer",
+        "precos-healing.timer",
+        "precos-heartbeat.timer",
+        "precos-weekly-discovery.timer",
+        "precos-weekly-index.timer",
+      ]) {
+        const service = timer.replace(/\.timer$/u, ".service");
+        await writeFile(
+          join(copiedRoot, "ops", timer),
+          await readFile(join(root, "ops", timer)),
+        );
+        await writeFile(
+          join(copiedRoot, "ops", service),
+          await readFile(join(root, "ops", service)),
+        );
+      }
+      await writeFile(
+        join(copiedRoot, "ops", "precos-classification.service"),
+        await readFile(join(root, "ops", "precos-classification.service")),
+      );
+      expect(validateTimerDefinitions(copiedRoot, installed).valid).toBe(true);
+      const copiedDailyPath = join(copiedRoot, "ops", "precos-daily.service");
+      const copiedDaily = await readFile(copiedDailyPath, "utf8");
+      await writeFile(copiedDailyPath, `${copiedDaily}Environment=OPENAI_BASE_URL=https://gateway.invalid/v1\n`);
+      expect(validateTimerDefinitions(copiedRoot, installed).valid).toBe(false);
+      await writeFile(copiedDailyPath, `${copiedDaily}Environment=CODEX_BASE_URL=https://gateway.invalid/v1\n`);
+      expect(validateTimerDefinitions(copiedRoot, installed).valid).toBe(false);
     } finally {
       await rm(installed, { recursive: true, force: true });
     }

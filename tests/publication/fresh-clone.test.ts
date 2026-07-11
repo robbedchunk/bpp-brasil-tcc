@@ -58,14 +58,16 @@ describe("fresh-clone verifier", () => {
     const output = execFileSync("bash", ["-c", [
       'source "$1"',
       'sanitize_fresh_clone_environment "/tmp/isolated-home"',
-      'for name in OPENAI_API_KEY CODEX_API_KEY NTFY_TOPIC LIVE_OPENAI INSTALL_TIMERS SYSTEMD_UNIT_DIR PRECOS_SCHEDULE_SOURCE ANALYSIS_VENV ANALYSIS_TEST_ROOT PLAYWRIGHT_BROWSERS_PATH VIRTUAL_ENV PYTHONPATH NPM_TOKEN NODE_AUTH_TOKEN NPM_CONFIG_USERCONFIG npm_config_userconfig NODE_OPTIONS NODE_PATH BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT; do [[ -z "${!name+x}" ]] || exit 41; done',
+      'for name in OPENAI_API_KEY OPENAI_BASE_URL CODEX_API_KEY CODEX_BASE_URL NTFY_TOPIC LIVE_OPENAI INSTALL_TIMERS SYSTEMD_UNIT_DIR PRECOS_SCHEDULE_SOURCE ANALYSIS_VENV ANALYSIS_TEST_ROOT PLAYWRIGHT_BROWSERS_PATH VIRTUAL_ENV PYTHONPATH NPM_TOKEN NODE_AUTH_TOKEN NPM_CONFIG_USERCONFIG npm_config_userconfig NODE_OPTIONS NODE_PATH BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT; do [[ -z "${!name+x}" ]] || exit 41; done',
       'printf "%s\\n" "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"',
     ].join("\n"), "bash", helper], {
       encoding: "utf8",
       env: {
         ...process.env,
         OPENAI_API_KEY: "must-disappear",
+        OPENAI_BASE_URL: "https://openai-gateway.invalid/v1",
         CODEX_API_KEY: "must-disappear",
+        CODEX_BASE_URL: "https://codex-gateway.invalid/v1",
         NTFY_TOPIC: "must-disappear",
         LIVE_OPENAI: "1",
         INSTALL_TIMERS: "1",

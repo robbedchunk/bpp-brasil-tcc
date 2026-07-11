@@ -3064,7 +3064,7 @@ export function validateTimerDefinitions(
       && /UMask=0077/u.test(service)
       && /ExecStartPre=@NODE_PATH@ @RELEASE_VERIFY_PATH@ verify @RELEASE_ROOT_QUOTED@ @PUBLIC_KEY_PATH@/u.test(service)
       && /ExecStart=@(?:NODE|BASH)_PATH@/u.test(service)
-      && !/(?:OPENAI_API_KEY|CODEX_API_KEY|NTFY_TOPIC)\s*=/u.test(`${timer}\n${service}`);
+      && !/(?:OPENAI_API_KEY|OPENAI_BASE_URL|CODEX_API_KEY|CODEX_BASE_URL|NTFY_TOPIC)\s*=/u.test(`${timer}\n${service}`);
     if (name === "healing") valid &&= /After=.*precos-daily\.service/u.test(service);
     if (name === "weekly-index") valid &&= /After=.*precos-weekly-discovery\.service/u.test(service);
     if (name === "backup") valid &&= /RefuseManualStart=yes/u.test(service);

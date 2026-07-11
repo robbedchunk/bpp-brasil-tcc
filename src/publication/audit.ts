@@ -163,7 +163,7 @@ const SECRET_RULES: SecretRule[] = [
   { id: "SECRET_OPENAI_KEY", pattern: /\bsk-(?:(?:proj|svcacct)-)?[A-Za-z0-9_-]{20,}\b/gu },
   {
     id: "SECRET_CONFIGURED_ENV",
-    pattern: /^(?:OPENAI_API_KEY|CODEX_API_KEY|NTFY_TOPIC)[ \t]*=[ \t]*[^\s#][^\r\n]*$/gmu,
+    pattern: /^(?:OPENAI_API_KEY|OPENAI_BASE_URL|CODEX_API_KEY|CODEX_BASE_URL|NTFY_TOPIC)[ \t]*=[ \t]*[^\s#][^\r\n]*$/gmu,
   },
   { id: "SECRET_PRIVATE_KEY", pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gu },
   { id: "SECRET_BEARER", pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/giu },

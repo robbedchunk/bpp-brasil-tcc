@@ -8,6 +8,7 @@ import {
   canonicalJson,
   CodexStrategyGenerator,
   resolveExplorerApiKey,
+  resolveExplorerBaseUrl,
 } from "../../src/explorer/codex-provider.js";
 
 const roots: string[] = [];
@@ -76,6 +77,17 @@ describe("Codex SDK strategy provider", () => {
       .toBeUndefined();
   });
 
+  it("prefers the dedicated base URL and treats blank values as unset", () => {
+    expect(resolveExplorerBaseUrl({
+      CODEX_BASE_URL: " http://127.0.0.1:8080/v1 ",
+      OPENAI_BASE_URL: "https://fallback.example/v1",
+    })).toBe("http://127.0.0.1:8080/v1");
+    expect(resolveExplorerBaseUrl({ OPENAI_BASE_URL: "http://localhost:8080/v1" }))
+      .toBe("http://localhost:8080/v1");
+    expect(resolveExplorerBaseUrl({ CODEX_BASE_URL: "  ", OPENAI_BASE_URL: "  " }))
+      .toBeUndefined();
+  });
+
   it("uses the exact permission profile, strict root schema, and disposable homes", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-test-"));
     roots.push(workspacePath);
@@ -123,6 +135,7 @@ describe("Codex SDK strategy provider", () => {
       usage: { inputTokens: 321, outputTokens: 42 },
     });
     expect(captured.options).not.toHaveProperty("codexPathOverride");
+    expect(captured.options).not.toHaveProperty("baseUrl");
     expect(captured.options).toMatchObject({
       apiKey: "test-key",
       env: {
@@ -179,6 +192,104 @@ describe("Codex SDK strategy provider", () => {
     expect(captured.turn?.outputSchema.properties.strategy).toBeTruthy();
     await expect(access(captured.options!.env.HOME)).rejects.toThrow();
     await expect(access(captured.options!.env.CODEX_HOME)).rejects.toThrow();
+  });
+
+  it.each([
+    {
+      label: "dedicated loopback override",
+      env: {
+        CODEX_API_KEY: "test-key",
+        CODEX_BASE_URL: "http://127.0.0.1:8080/v1",
+        OPENAI_BASE_URL: "https://fallback.example/v1",
+      },
+      expectedBaseUrl: "http://127.0.0.1:8080/v1",
+      expectedDomains: ["shop.test", "api.openai.com", "127.0.0.1"],
+    },
+    {
+      label: "shared localhost fallback",
+      env: {
+        CODEX_API_KEY: "test-key",
+        OPENAI_BASE_URL: "http://localhost:8080/v1",
+      },
+      expectedBaseUrl: "http://localhost:8080/v1",
+      expectedDomains: ["shop.test", "api.openai.com", "localhost"],
+    },
+    {
+      label: "official endpoint",
+      env: {
+        CODEX_API_KEY: "test-key",
+        CODEX_BASE_URL: "https://api.openai.com/v1",
+      },
+      expectedBaseUrl: "https://api.openai.com/v1",
+      expectedDomains: ["shop.test", "api.openai.com"],
+    },
+  ])("passes the $label base URL and only its non-default host to the sandbox", async ({
+    env,
+    expectedBaseUrl,
+    expectedDomains,
+  }) => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-endpoint-test-"));
+    roots.push(workspacePath);
+    let captured: Record<string, any> | undefined;
+    const provider = new CodexStrategyGenerator({
+      env,
+      codexFactory: (options) => {
+        captured = options as Record<string, any>;
+        return {
+          startThread: () => ({
+            runStreamed: async () => {
+              await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
+              return streamed(JSON.stringify({ strategy }), usage(3, 2));
+            },
+          }),
+        };
+      },
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({ status: "candidate" });
+
+    expect(captured).toMatchObject({ baseUrl: expectedBaseUrl });
+    expect(Object.keys(captured!.config.permissions.explorer.network.domains))
+      .toEqual(expectedDomains.map((domain) => JSON.stringify(domain)));
+  });
+
+  it.each([
+    [
+      "embedded credentials",
+      ["https://user", "secret@gateway.example/v1"].join(":"),
+      /embedded credentials/iu,
+    ],
+    ["a fragment", "https://gateway.example/v1#private", /fragment/iu],
+  ])("rejects an explorer base URL containing %s before starting Codex", async (
+    _label,
+    baseUrl,
+    expectedError,
+  ) => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-invalid-endpoint-"));
+    roots.push(workspacePath);
+    let factoryCalled = false;
+    const provider = new CodexStrategyGenerator({
+      env: { CODEX_API_KEY: "test-key", CODEX_BASE_URL: baseUrl },
+      codexFactory: () => {
+        factoryCalled = true;
+        throw new Error("Codex factory must not run for an unsafe endpoint");
+      },
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).rejects.toThrow(expectedError);
+    expect(factoryCalled).toBe(false);
   });
 
   it("removes disposable homes and returns auditable usage for invalid paid output", async () => {

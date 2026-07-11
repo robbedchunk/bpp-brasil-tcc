@@ -22,6 +22,32 @@ Copy `.env.example` to `.env` only on the production host. Keep credential value
 out of shell history and Git. The deterministic pipeline works without model
 credentials; classification/exploration remain pending.
 
+`OPENAI_BASE_URL` may point at any OpenAI-compatible gateway and is used by
+classification plus exploration when `CODEX_BASE_URL` is blank; a nonempty
+`CODEX_BASE_URL` overrides it only for exploration. The API key is whatever
+credential that gateway issues. Configure only models the gateway serves:
+classification already uses `OPENAI_CLASSIFICATION_MODEL`, and exploration
+uses `OPENAI_EXPLORER_MODEL`. Leaving both base URLs blank keeps the default
+`api.openai.com` endpoint.
+
+Once the configured gateway is running, an operator can load the private
+`.env`, explicitly opt in to one explorer generation that exercises streaming
+and tool calls, run exactly one classification Responses attempt, and then
+re-evaluate acceptance:
+
+```bash
+set -a
+. ./.env
+set +a
+LIVE_OPENAI=1 npm run test:live -- tests/explorer/codex-live.test.ts
+LIVE_OPENAI=1 npm run test:live -- tests/classify/openai-live.test.ts
+npm run acceptance -- --json
+```
+
+Do not export `LIVE_OPENAI` persistently. Without its per-command value of `1`,
+the live tests remain skipped even when private credentials are configured;
+the classification smoke also sets its provider retry limit to one.
+
 ## Scheduled services
 
 `ops/install-systemd.sh` accepts only a completely clean committed worktree,

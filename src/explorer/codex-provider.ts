@@ -26,6 +26,7 @@ const MAX_ARTIFACT_BYTES = 1_000_000;
 const MAX_WORKSPACE_BYTES = 8_000_000;
 const MAX_WORKSPACE_ENTRIES = 128;
 const MAX_WORKSPACE_DEPTH = 8;
+const SANDBOX_DOMAIN_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
 interface CodexThreadLike {
   runStreamed(
@@ -82,6 +83,12 @@ export function resolveExplorerApiKey(
   return optional(env.CODEX_API_KEY) ?? optional(env.OPENAI_API_KEY);
 }
 
+export function resolveExplorerBaseUrl(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return optional(env.CODEX_BASE_URL) ?? optional(env.OPENAI_BASE_URL);
+}
+
 export function explorerModelFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -94,19 +101,54 @@ function configMapKey(value: string): string {
   return JSON.stringify(value);
 }
 
-function safeDomains(domains: readonly string[]): string[] {
+function endpointHostname(baseUrl: string | undefined): string | undefined {
+  if (baseUrl === undefined) return undefined;
+  let endpoint: URL;
+  try {
+    endpoint = new URL(baseUrl);
+  } catch {
+    throw new Error("Explorer base URL must be a valid HTTP(S) URL");
+  }
+  if (
+    (endpoint.protocol !== "http:" && endpoint.protocol !== "https:")
+    || endpoint.hostname.length === 0
+  ) {
+    throw new Error("Explorer base URL must be a valid HTTP(S) URL");
+  }
+  if (endpoint.username.length > 0 || endpoint.password.length > 0) {
+    throw new Error("Explorer base URL must not contain embedded credentials");
+  }
+  if (endpoint.hash.length > 0) {
+    throw new Error("Explorer base URL must not contain a fragment");
+  }
+  return endpoint.hostname.toLowerCase();
+}
+
+function safeDomains(domains: readonly string[], baseUrl: string | undefined): string[] {
   const normalized = domains.map((domain) => domain.trim().toLowerCase());
   for (const domain of normalized) {
-    if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(domain)) {
+    if (!SANDBOX_DOMAIN_PATTERN.test(domain)) {
       throw new Error(`Invalid retailer domain: ${domain}`);
     }
   }
-  return [...new Set([...normalized, "api.openai.com"])];
+  const gatewayHostname = endpointHostname(baseUrl);
+  if (gatewayHostname !== undefined && !SANDBOX_DOMAIN_PATTERN.test(gatewayHostname)) {
+    throw new Error(`Invalid explorer endpoint hostname: ${gatewayHostname}`);
+  }
+  const allowed = [
+    ...normalized,
+    "api.openai.com",
+    ...(gatewayHostname === undefined || gatewayHostname === "api.openai.com"
+      ? []
+      : [gatewayHostname]),
+  ];
+  return [...new Set(allowed)];
 }
 
 function codexConfig(
   workspacePath: string,
   domains: readonly string[],
+  baseUrl: string | undefined,
 ): NonNullable<CodexOptions["config"]> {
   const quotedWorkspace = configMapKey(workspacePath);
   const filesystem: Record<string, string | number> = {
@@ -121,7 +163,7 @@ function codexConfig(
     [configMapKey(`${workspacePath}/**/*credential*`)]: "deny",
   };
   const domainPermissions = Object.fromEntries(
-    safeDomains(domains).map((domain) => [configMapKey(domain), "allow"]),
+    safeDomains(domains, baseUrl).map((domain) => [configMapKey(domain), "allow"]),
   );
   return {
     default_permissions: "explorer",
@@ -281,6 +323,7 @@ async function readRegularArtifact(path: string): Promise<string> {
 
 export class CodexStrategyGenerator implements StrategyGenerator {
   readonly #apiKey: string | undefined;
+  readonly #baseUrl: string | undefined;
   readonly #model: string;
   readonly #timeoutMs: number;
   readonly #temporaryRoot: string;
@@ -292,6 +335,7 @@ export class CodexStrategyGenerator implements StrategyGenerator {
   constructor(options: CodexStrategyGeneratorOptions = {}) {
     const env = options.env ?? process.env;
     this.#apiKey = optional(options.apiKey) ?? resolveExplorerApiKey(env);
+    this.#baseUrl = resolveExplorerBaseUrl(env);
     this.#model = optional(options.model) ?? explorerModelFromEnv(env);
     this.#timeoutMs = options.timeoutMs ?? 120_000;
     this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
@@ -337,8 +381,9 @@ export class CodexStrategyGenerator implements StrategyGenerator {
         timer = setTimeout(() => controller.abort(), this.#timeoutMs);
         const codex = this.#factory({
           apiKey,
+          ...(this.#baseUrl === undefined ? {} : { baseUrl: this.#baseUrl }),
           env: runtimeEnv,
-          config: codexConfig(workspacePath, request.allowedDomains),
+          config: codexConfig(workspacePath, request.allowedDomains, this.#baseUrl),
         });
         const thread = codex.startThread({
           model: this.#model,

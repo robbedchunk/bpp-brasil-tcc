@@ -550,7 +550,9 @@ export async function runAlertDrill(options: AlertDrillOptions): Promise<PublicD
       DATABASE_PATH: isolatedDatabasePath,
       NTFY_TOPIC: "",
       OPENAI_API_KEY: "",
+      OPENAI_BASE_URL: "",
       CODEX_API_KEY: "",
+      CODEX_BASE_URL: "",
       LIVE_OPENAI: "0",
     };
     const cliOptions = { cwd: stagingRoot, env: isolatedEnvironment };

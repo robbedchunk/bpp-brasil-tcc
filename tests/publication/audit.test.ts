@@ -200,7 +200,10 @@ describe("publication audit", () => {
   it("allows blank example credentials and rejects configured tracked credentials", async () => {
     const root = await temporaryRoot();
     await initializeRepository(root);
-    await writeFile(join(root, ".env.example"), "OPENAI_API_KEY=\nCODEX_API_KEY=\nNTFY_TOPIC=\n");
+    await writeFile(
+      join(root, ".env.example"),
+      "OPENAI_API_KEY=\nOPENAI_BASE_URL=\nCODEX_API_KEY=\nCODEX_BASE_URL=\nNTFY_TOPIC=\n",
+    );
     git(root, "add", ".env.example");
     git(root, "commit", "-qm", "add safe example");
     const safe = await auditPublication(options(root));
@@ -210,6 +213,12 @@ describe("publication audit", () => {
     const unsafe = await auditPublication(options(root));
     expect(unsafe.trackedSecrets).toEqual(expect.arrayContaining([
       expect.objectContaining({ ruleId: "SECRET_OPENAI_KEY", location: ".env.example:1" }),
+    ]));
+
+    await writeFile(join(root, ".env.example"), "OPENAI_BASE_URL=https://gateway.example/v1\n");
+    const configuredEndpoint = await auditPublication(options(root));
+    expect(configuredEndpoint.trackedSecrets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "SECRET_CONFIGURED_ENV", location: ".env.example:1" }),
     ]));
   });
 

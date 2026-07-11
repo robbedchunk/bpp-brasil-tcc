@@ -36,13 +36,21 @@ const sha256 = (value: string): string => createHash("sha256").update(value).dig
 
 async function testAlertRunner(root: string): Promise<{
   runner: AlertDrillTestRunner;
-  commands: Array<{ command: string; args: readonly string[] }>;
+  commands: Array<{
+    command: string;
+    args: readonly string[];
+    env: NodeJS.ProcessEnv;
+  }>;
 }> {
   const releasePath = join(root, "fixture-release");
   const cliPath = join(releasePath, "dist", "cli.js");
   await mkdir(join(releasePath, "dist"), { recursive: true });
   await writeFile(cliPath, "fixture frozen cli\n");
-  const commands: Array<{ command: string; args: readonly string[] }> = [];
+  const commands: Array<{
+    command: string;
+    args: readonly string[];
+    env: NodeJS.ProcessEnv;
+  }> = [];
   const invocationId = "b".repeat(32);
   return {
     commands,
@@ -58,7 +66,7 @@ async function testAlertRunner(root: string): Promise<{
         nodePath: process.execPath,
       }),
       run: async (command, args, options) => {
-        commands.push({ command, args: [...args] });
+        commands.push({ command, args: [...args], env: { ...options.env } });
         if (command === "systemd-run") {
           return { exitCode: 137, stdout: "", stderr: "unit failed by signal\n" };
         }
@@ -180,6 +188,17 @@ describe("safe acceptance drills", () => {
     ]);
     expect(commands.some(({ args }) => args.includes("heartbeat") && args.includes("check")))
       .toBe(true);
+    const isolatedCommands = commands.filter(({ command }) => command === process.execPath);
+    expect(isolatedCommands).toHaveLength(2);
+    for (const { env } of isolatedCommands) {
+      expect(env).toMatchObject({
+        OPENAI_API_KEY: "",
+        OPENAI_BASE_URL: "",
+        CODEX_API_KEY: "",
+        CODEX_BASE_URL: "",
+        LIVE_OPENAI: "0",
+      });
+    }
     expect(Object.keys(receipt).sort()).toEqual([
       "drill", "evaluatedCommit", "facts", "implementationSha256",
       "observedAt", "reasonCodes", "schemaVersion", "status",
