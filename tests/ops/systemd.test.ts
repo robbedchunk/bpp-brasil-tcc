@@ -140,6 +140,40 @@ describe("production schedules", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("preserves the original schedule activation while refreshing installed-unit hashes", async () => {
+    const home = await temporaryDirectory("precos-systemd-refresh-");
+    const destination = join(home, "units");
+    const receiptPath = join(home, "operations", "systemd-install.json");
+    const bin = join(home, "bin");
+    await mkdir(bin, { recursive: true });
+    for (const name of ["npm", "systemctl"]) {
+      const path = join(bin, name);
+      await writeFile(path, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    }
+    const env = {
+      ...process.env,
+      HOME: home,
+      PATH: `${bin}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+      SYSTEMD_UNIT_DIR: destination,
+      SYSTEMD_INSTALL_RECEIPT: receiptPath,
+    };
+
+    const first = await run("bash", ["ops/install-systemd.sh"], env);
+    expect(first).toMatchObject({ exitCode: 0, stderr: "" });
+    const initial = JSON.parse(await readFile(receiptPath, "utf8")) as {
+      installedAt: string;
+      unitSetSha256: string;
+    };
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    const second = await run("bash", ["ops/install-systemd.sh"], env);
+    expect(second).toMatchObject({ exitCode: 0, stderr: "" });
+    const refreshed = JSON.parse(await readFile(receiptPath, "utf8")) as typeof initial;
+
+    expect(refreshed.installedAt).toBe(initial.installedAt);
+    expect(refreshed.unitSetSha256).toBe(initial.unitSetSha256);
+    expect((await stat(receiptPath)).mode & 0o777).toBe(0o600);
+  });
+
   it("quotes paths containing systemd syntax characters", async () => {
     const directory = await temporaryDirectory("precos-systemd-special-");
     const copiedRoot = join(directory, 'project % $ "quoted" \\ path');

@@ -119,11 +119,11 @@ systemctl --user enable --now \
   precos-heartbeat.timer \
   precos-backup.timer
 
-INSTALL_RECEIPT="$PROJECT_ROOT/var/operations/systemd-install.json"
+INSTALL_RECEIPT="${SYSTEMD_INSTALL_RECEIPT:-$PROJECT_ROOT/var/operations/systemd-install.json}"
 install -d -m 0700 "$(dirname "$INSTALL_RECEIPT")"
 "$NODE_PATH" --input-type=module - "$UNIT_DESTINATION" "$INSTALL_RECEIPT" <<'NODE'
 import { createHash } from "node:crypto";
-import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const [unitDirectory, destination] = process.argv.slice(2);
@@ -136,9 +136,23 @@ const names = [
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const units = names.map((name) => ({ name, sha256: sha256(readFileSync(join(unitDirectory, name))) }));
 const unitSetSha256 = sha256(units.map((unit) => `${unit.name}\0${unit.sha256}\n`).join(""));
+const now = new Date();
+let installedAt = now.toISOString();
+if (existsSync(destination)) {
+  try {
+    const previous = JSON.parse(readFileSync(destination, "utf8"));
+    const previousTime = Date.parse(previous.installedAt);
+    if (previous.schemaVersion === 1 && Number.isFinite(previousTime)
+      && previousTime <= now.getTime()) {
+      installedAt = previous.installedAt;
+    }
+  } catch {
+    // A malformed private receipt is replaced; it never authorizes preservation.
+  }
+}
 const receipt = {
   schemaVersion: 1,
-  installedAt: new Date().toISOString(),
+  installedAt,
   unitSetSha256,
   units,
 };
