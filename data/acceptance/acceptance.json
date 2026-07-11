@@ -1,0 +1,539 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-11T07:38:42.523Z",
+  "timezone": "America/Sao_Paulo",
+  "evaluatedCommit": "fbcf656497c61c6d6cef3b703c08f7912ac0167e",
+  "databaseSha256": "16ccc4e6e31029089aa4e8280ed226a280c4862e5b2c7330001ad95dfb151a8e",
+  "overallStatus": "pending",
+  "milestones": {
+    "M0": {
+      "status": "pass",
+      "criteria": [
+        {
+          "id": "m0-foundation-reproducibility",
+          "status": "pass",
+          "summary": "Clean-clone receipt, declared runtime, migrations, and read-only database checks pass",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "receipt-m0-fresh-clone"
+          ]
+        }
+      ]
+    },
+    "M1": {
+      "status": "pass",
+      "criteria": [
+        {
+          "id": "m1-offline-determinism",
+          "status": "pass",
+          "summary": "Offline normalization, extraction, discovery, and retailer safety suites pass",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "command-m1-offline",
+            "file-m1-fixture-inventory"
+          ]
+        }
+      ]
+    },
+    "M2": {
+      "status": "pending",
+      "criteria": [
+        {
+          "id": "m2-two-consecutive-days",
+          "status": "pending",
+          "summary": "Two consecutive qualifying collection days have not yet matured",
+          "reasonCodes": [
+            "TIME_WINDOW_NOT_ELAPSED"
+          ],
+          "evidenceIds": [
+            "db-m2-heartbeat-linked-collection-runs"
+          ]
+        }
+      ]
+    },
+    "M3": {
+      "status": "pending",
+      "criteria": [
+        {
+          "id": "m3-live-panel",
+          "status": "pass",
+          "summary": "The live panel has current substantive scheduled collection evidence",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "db-m3-live-panel"
+          ]
+        },
+        {
+          "id": "m3-classification-coverage",
+          "status": "pending",
+          "summary": "High-confidence classification coverage remains credential-gated",
+          "reasonCodes": [
+            "CREDENTIAL_NOT_CONFIGURED"
+          ],
+          "evidenceIds": [
+            "db-m3-latest-classification-coverage"
+          ]
+        },
+        {
+          "id": "m3-classification-human-review",
+          "status": "pending",
+          "summary": "The classification precision check awaits an explicit human review",
+          "reasonCodes": [
+            "AUTHORITY_APPROVAL_REQUIRED"
+          ],
+          "evidenceIds": [
+            "file-m3-classification-human-review"
+          ]
+        },
+        {
+          "id": "m3-active-strategy-validation-receipts",
+          "status": "pass",
+          "summary": "Every active strategy has a published, identity-bound 30-sample validation receipt",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "file-m3-active-strategy-validation-receipts"
+          ]
+        },
+        {
+          "id": "m3-post-daily-automation",
+          "status": "pass",
+          "summary": "Post-collection classification automation is installed and current",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "service-m3-classification-automation"
+          ]
+        }
+      ]
+    },
+    "M4": {
+      "status": "pending",
+      "criteria": [
+        {
+          "id": "m4-live-agent-strategies",
+          "status": "pending",
+          "summary": "Live strategy generation remains externally gated; acceptance made no provider call",
+          "reasonCodes": [
+            "CREDENTIAL_NOT_CONFIGURED"
+          ],
+          "evidenceIds": [
+            "db-m4-agent-activated-strategies"
+          ]
+        }
+      ]
+    },
+    "M5": {
+      "status": "pass",
+      "criteria": [
+        {
+          "id": "m5-automatic-healing",
+          "status": "pass",
+          "summary": "Isolated sabotage, drift/blocking, recovery, and timer suites pass",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "command-m5-healing",
+            "file-m5-review-findings"
+          ]
+        }
+      ]
+    },
+    "M6": {
+      "status": "pending",
+      "criteria": [
+        {
+          "id": "m6-index-analysis",
+          "status": "pending",
+          "summary": "Reproducible artifacts are valid but the experimental daily relative series has not started",
+          "reasonCodes": [
+            "TIME_WINDOW_NOT_ELAPSED"
+          ],
+          "evidenceIds": [
+            "command-m6-index-analysis",
+            "file-m6-current-binding",
+            "file-m6-review-findings",
+            "receipt-m6-analysis-regenerate"
+          ]
+        }
+      ]
+    },
+    "M7": {
+      "status": "pass",
+      "criteria": [
+        {
+          "id": "m7-publication-operations",
+          "status": "pass",
+          "summary": "Publication, six timers, safe drills, backup, and heartbeat evidence are current",
+          "reasonCodes": [],
+          "evidenceIds": [
+            "file-m7-review-findings",
+            "service-m7-publication-operations"
+          ]
+        }
+      ]
+    }
+  },
+  "publication": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-07-11T07:39:02.159Z",
+    "commit": "fbcf656497c61c6d6cef3b703c08f7912ac0167e",
+    "status": "pass",
+    "trackedSecrets": [],
+    "historicalSecrets": [],
+    "trackedPrivateArtifacts": [],
+    "trackedRawHtml": [],
+    "unsafeLinksOrSubmodules": [],
+    "publicDataFindings": [],
+    "requiredDocsMissing": [],
+    "readmeClaims": {
+      "researchPilot": true,
+      "activeDevelopment": true,
+      "defendedMethodClaim": true,
+      "noStatisticalValidationClaim": true,
+      "rawHtmlExcluded": true,
+      "outOfScopeExplicit": true,
+      "acceptanceCommandDocumented": true,
+      "acceptanceReportLinked": true
+    },
+    "workingTreeClean": true,
+    "findings": []
+  },
+  "pendingGates": [
+    {
+      "criterionId": "m2-two-consecutive-days",
+      "kind": "time",
+      "reasonCode": "TIME_WINDOW_NOT_ELAPSED",
+      "since": "2026-07-11T06:07:09.077Z",
+      "nextAction": "Let the installed daily schedule collect the next real São Paulo calendar day",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "db-m2-heartbeat-linked-collection-runs"
+      ]
+    },
+    {
+      "criterionId": "m3-classification-coverage",
+      "kind": "credential",
+      "reasonCode": "CREDENTIAL_NOT_CONFIGURED",
+      "since": null,
+      "nextAction": "Configure the classification credential privately, then run the normal reviewed classification workflow",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "db-m3-latest-classification-coverage"
+      ]
+    },
+    {
+      "criterionId": "m3-classification-human-review",
+      "kind": "authority",
+      "reasonCode": "AUTHORITY_APPROVAL_REQUIRED",
+      "since": null,
+      "nextAction": "Run scripts/classification-review.ts export, have the author label every row, then run its evaluate command",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "file-m3-classification-human-review"
+      ]
+    },
+    {
+      "criterionId": "m4-live-agent-strategies",
+      "kind": "credential",
+      "reasonCode": "CREDENTIAL_NOT_CONFIGURED",
+      "since": null,
+      "nextAction": "Configure the model credential privately; acceptance will not invoke the provider",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "db-m4-agent-activated-strategies"
+      ]
+    },
+    {
+      "criterionId": "m6-index-analysis",
+      "kind": "time",
+      "reasonCode": "TIME_WINDOW_NOT_ELAPSED",
+      "since": "2026-07-11T07:38:30.190Z",
+      "nextAction": "Collect and classify enough consecutive observations to produce product relatives and at least one aggregate daily relative",
+      "recheckCommand": "npm run research:snapshot && npm run acceptance -- --json",
+      "evidenceIds": [
+        "command-m6-index-analysis",
+        "file-m6-current-binding",
+        "file-m6-review-findings",
+        "receipt-m6-analysis-regenerate"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "command-m1-offline",
+      "kind": "command",
+      "source": "m1-offline",
+      "observedAt": "2026-07-11T07:38:45.722Z",
+      "sha256": "ffd57bb733f503457701a052371af6784db9ff30b4213df100abd4190ab296ae",
+      "facts": {
+        "exitCode": 0,
+        "startedAt": "2026-07-11T07:38:42.525Z",
+        "finishedAt": "2026-07-11T07:38:45.722Z",
+        "completed": true
+      }
+    },
+    {
+      "id": "command-m5-healing",
+      "kind": "command",
+      "source": "m5-healing",
+      "observedAt": "2026-07-11T07:38:48.347Z",
+      "sha256": "57362d7c39309747462cf87d22aa09cf2ebce317f5f4fc87f96845dd909e17f6",
+      "facts": {
+        "exitCode": 0,
+        "startedAt": "2026-07-11T07:38:45.722Z",
+        "finishedAt": "2026-07-11T07:38:48.347Z",
+        "completed": true
+      }
+    },
+    {
+      "id": "command-m6-index-analysis",
+      "kind": "command",
+      "source": "m6-index-analysis",
+      "observedAt": "2026-07-11T07:38:58.599Z",
+      "sha256": "0de9cbc3b6540ecdb8c18edca522ccd4836d286370c15ab81873bdab3192f5b6",
+      "facts": {
+        "exitCode": 0,
+        "startedAt": "2026-07-11T07:38:48.347Z",
+        "finishedAt": "2026-07-11T07:38:58.599Z",
+        "completed": true
+      }
+    },
+    {
+      "id": "db-m2-heartbeat-linked-collection-runs",
+      "kind": "database-query",
+      "source": "m2-heartbeat-linked-collection-runs",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "linkedRuns": 4,
+        "ignoredManualLinkedRuns": 2,
+        "qualifyingRuns": 4,
+        "qualifyingRetailers": 4,
+        "qualifyingConsecutiveRetailers": 0,
+        "qualifyingDayPair": null,
+        "contradictoryHeartbeats": 0,
+        "scheduleActivatedAt": "2026-07-11T04:33:13.125Z"
+      }
+    },
+    {
+      "id": "db-m3-latest-classification-coverage",
+      "kind": "database-query",
+      "source": "m3-latest-classification-coverage",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "activeRetailers": 4,
+        "activeProducts": 785,
+        "highConfidenceProducts": 0,
+        "classificationCoverage": 0
+      }
+    },
+    {
+      "id": "db-m3-live-panel",
+      "kind": "database-query",
+      "source": "m3-live-panel",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "activeRetailers": 4,
+        "degradedRetailers": 0,
+        "panelExceptionApproved": false,
+        "recentScheduledSubstantiveRetailers": 4,
+        "latestScheduledCollectionCompletedAt": "2026-07-11T06:07:09.077Z",
+        "contradictoryHeartbeats": 0
+      }
+    },
+    {
+      "id": "db-m4-agent-activated-strategies",
+      "kind": "database-query",
+      "source": "m4-agent-activated-strategies",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "activeRetailers": 4,
+        "requiredPurposePairs": 8,
+        "qualifyingPurposePairs": 0,
+        "malformedActivatedRows": 0,
+        "duplicateActivatedPairs": 0,
+        "credentialGateConfigured": false,
+        "liveSpendAuthorized": false
+      }
+    },
+    {
+      "id": "file-m1-fixture-inventory",
+      "kind": "file",
+      "source": "tests/fixtures",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "requiredOfflineTestFiles": 11,
+        "requiredOfflineTestFilesPresent": 11,
+        "mutatedRetailerFixtures": 5,
+        "inventoryComplete": true
+      }
+    },
+    {
+      "id": "file-m3-active-strategy-validation-receipts",
+      "kind": "file",
+      "source": "data/validation",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "sha256": "c650d2bc1a852ada3421f133d470a4a7121c577b9a1f1451b1549dab4fa90a10",
+      "facts": {
+        "activeStrategies": 8,
+        "receiptFiles": 8,
+        "validReceipts": 8,
+        "missingActiveReceipts": 0,
+        "malformedReceipts": 0,
+        "untrackedReceipts": 0,
+        "configRegistryValid": true
+      }
+    },
+    {
+      "id": "file-m3-classification-human-review",
+      "kind": "file",
+      "source": "data/acceptance/evidence/classification-review-vN.json",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "latestClassificationVersion": null,
+        "activeClassificationRows": 0,
+        "artifactPresent": false,
+        "artifactValid": false,
+        "requiredSampleSize": 200,
+        "sampleSize": 0,
+        "populationSize": 0,
+        "precision": null,
+        "agreementRate": null
+      }
+    },
+    {
+      "id": "file-m5-review-findings",
+      "kind": "file",
+      "source": "ops/review-findings.json",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "sha256": "32b5b03f2510c64c7112ae2efc5a119bf965ef9a160d6bd9f3553bd3dcf40e1d",
+      "facts": {
+        "registryValid": true,
+        "scopedFindings": 2,
+        "openCriticalOrImportant": 0
+      }
+    },
+    {
+      "id": "file-m6-current-binding",
+      "kind": "file",
+      "source": "data/exports/latest.json+analysis/output/latest.json",
+      "observedAt": "2026-07-11T07:38:30.190Z",
+      "sha256": "90f40fe3e0cc62e52be8ed1a44336c95988e3d80e0fc28251d4e41cfe7367772",
+      "facts": {
+        "databaseCountsMatch": true,
+        "databaseMaximaMatch": true,
+        "analysisInputManifestMatches": true,
+        "artifactHashesValid": true,
+        "statusAndOverlapConsistent": true,
+        "experimentalSeriesMetadataValid": true,
+        "experimentalSeriesNonempty": false,
+        "productRelativeRows": 0,
+        "retailerSubitemRows": 0,
+        "subitemRows": 0,
+        "aggregateDailyRows": 0,
+        "analysisAggregateDailyRows": 0,
+        "experimentalCsvRowsMatch": true,
+        "exportStatus": "no_index_data",
+        "sidraStatus": "no_overlap"
+      }
+    },
+    {
+      "id": "file-m6-review-findings",
+      "kind": "file",
+      "source": "ops/review-findings.json",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "sha256": "32b5b03f2510c64c7112ae2efc5a119bf965ef9a160d6bd9f3553bd3dcf40e1d",
+      "facts": {
+        "registryValid": true,
+        "scopedFindings": 4,
+        "openCriticalOrImportant": 0
+      }
+    },
+    {
+      "id": "file-m7-review-findings",
+      "kind": "file",
+      "source": "ops/review-findings.json",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "sha256": "32b5b03f2510c64c7112ae2efc5a119bf965ef9a160d6bd9f3553bd3dcf40e1d",
+      "facts": {
+        "registryValid": true,
+        "scopedFindings": 31,
+        "openCriticalOrImportant": 0
+      }
+    },
+    {
+      "id": "receipt-m0-fresh-clone",
+      "kind": "receipt",
+      "source": "data/acceptance/evidence/fresh-clone.json",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "sha256": "8119142a1275471ab7f0580852427febd804ddc24ad4d06dd7868aeb6681bfc8",
+      "facts": {
+        "receiptPresent": true,
+        "receiptMatchesEvaluatedCommit": true,
+        "declaredRuntimesAndChecksValid": true,
+        "generatedManifestArtifactsValid": true,
+        "nodeMajor24": true,
+        "databaseQuickCheck": "ok",
+        "foreignKeyViolations": 0,
+        "migrationCount": 13,
+        "sourceWorktreeClean": true
+      }
+    },
+    {
+      "id": "receipt-m6-analysis-regenerate",
+      "kind": "receipt",
+      "source": "data/acceptance/evidence/fresh-clone.json",
+      "observedAt": "2026-07-11T07:38:30.190Z",
+      "sha256": "8119142a1275471ab7f0580852427febd804ddc24ad4d06dd7868aeb6681bfc8",
+      "facts": {
+        "freshCloneMatchesEvaluatedCommit": true,
+        "analysisCommandSucceeded": true
+      }
+    },
+    {
+      "id": "service-m3-classification-automation",
+      "kind": "service",
+      "source": "precos-classification.service",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "dailyRunObserved": true,
+        "classificationUnitInstalled": true,
+        "classificationActive": false,
+        "classificationResult": "success",
+        "classificationAutomationCurrent": true
+      }
+    },
+    {
+      "id": "service-m7-publication-operations",
+      "kind": "service",
+      "source": "m7-publication-and-six-timers",
+      "observedAt": "2026-07-11T07:38:42.523Z",
+      "facts": {
+        "publicationStatus": "pass",
+        "publicationFindings": 0,
+        "freshCloneMatches": true,
+        "sixTimersEnabledAndActive": true,
+        "timerDefinitionsValid": true,
+        "systemdInstallReceiptValid": true,
+        "systemdInstalledAt": "2026-07-11T04:33:13.125Z",
+        "systemdUnitSetSha256": "1311fbde4fad3eeefaea4aeff2ff152879e2eaf45606f537baddff9dd5f1ecab",
+        "renderedUnitFiles": 13,
+        "failedServiceUnits": 0,
+        "alertDrillMatches": true,
+        "backupDrillMatches": true,
+        "backupIntegrityAndAgeValid": true,
+        "backupAgeHours": 0.021011681111653645,
+        "latestCollectionHeartbeatFresh": true,
+        "latestCollectionHeartbeatAgeHours": 1.5259572222222222,
+        "firstDailyWindowElapsed": true,
+        "firstBackupWindowElapsed": false,
+        "currentDailyWindowElapsed": true,
+        "currentBackupWindowElapsed": false,
+        "newestRealBackupAgeHours": 0.3181066943359375,
+        "newestScheduledBackupIntegrityValid": true,
+        "dailyScheduledServiceSucceeded": true,
+        "backupScheduledServiceSucceeded": true,
+        "scheduledBackupBoundToService": true,
+        "dailyWindowSatisfied": true,
+        "backupWindowSatisfied": true
+      }
+    }
+  ]
+}
