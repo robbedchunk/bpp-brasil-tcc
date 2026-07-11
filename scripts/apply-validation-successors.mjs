@@ -148,7 +148,16 @@ export async function applyValidationSuccessors(options) {
     ...configs.map(({ path }) => path),
   ]);
   verifyOverlay(root, configs, resolve(root, OVERLAY_PATH));
-  const sourceCommit = verifyCommittedPlan(root, plans, configs);
+  const declaredBuild = readJsonFile(
+    resolve(root, "dist/build-manifest.json"),
+    "dist build manifest",
+  );
+  const sourceCommit = verifyCommittedPlan(
+    root,
+    plans,
+    configs,
+    declaredBuild.sourceCommit,
+  );
   const build = verifyCleanBuild(root, sourceCommit);
   const publicKeyPath = resolve(root, PUBLIC_KEY_PATH);
   assertRegularFile(publicKeyPath, "tracked validation public key");

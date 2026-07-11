@@ -355,9 +355,21 @@ export function verifyOverlay(root, configs, overlay = resolve(root, OVERLAY_PAT
   return files;
 }
 
-export function verifyCommittedPlan(root, plans, configEntries) {
-  const commit = git(root, ["rev-parse", "--verify", "HEAD"]);
+export function verifyCommittedPlan(root, plans, configEntries, sourceCommit) {
+  const head = git(root, ["rev-parse", "--verify", "HEAD"]);
+  const commit = sourceCommit ?? head;
   if (!/^[a-f0-9]{40}$/u.test(commit)) throw new Error("HEAD is not a full Git commit");
+  if (!/^[a-f0-9]{40}$/u.test(head)
+    || (() => {
+      try {
+        git(root, ["merge-base", "--is-ancestor", commit, head]);
+        return false;
+      } catch {
+        return true;
+      }
+    })()) {
+    throw new Error("Validation source commit must be an ancestor of current HEAD");
+  }
   const committedPlan = parseSuccessorPlan(JSON.parse(git(root, ["show", `${commit}:${PLAN_PATH}`])));
   if (canonicalJson(committedPlan) !== canonicalJson(plans)) {
     throw new Error("Working successor plan does not exactly match its source commit");
@@ -379,8 +391,10 @@ function walkRegularFiles(root) {
       const path = relative(root, absolute).split(sep).join("/");
       const status = lstatSync(absolute);
       if (status.isDirectory() && !status.isSymbolicLink()) visit(absolute);
-      else if (status.isFile() && !status.isSymbolicLink() && path !== "build-manifest.json") {
-        files.push({ path, sha256: sha256(readFileSync(absolute)), bytes: status.size });
+      else if (status.isFile() && !status.isSymbolicLink()) {
+        if (path !== "build-manifest.json") {
+          files.push({ path, sha256: sha256(readFileSync(absolute)), bytes: status.size });
+        }
       } else if (status.isSymbolicLink()) {
         throw new Error(`dist contains forbidden symbolic link ${path}`);
       } else throw new Error(`dist contains unsupported filesystem entry ${path}`);

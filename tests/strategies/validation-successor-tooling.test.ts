@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -13,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+
+import { verifyCleanBuild } from "../../scripts/successor-tooling.mjs";
 
 const roots: string[] = [];
 const projectRoot = resolve(".");
@@ -72,6 +75,35 @@ function fixture(): string {
 }
 
 describe("validation successor preparation", () => {
+  it("verifies a clean dist while excluding its build manifest from the artifact walk", () => {
+    const root = mkdtempSync(join(tmpdir(), "validation-successor-build-"));
+    roots.push(root);
+    const validator = Buffer.from("trusted validator fixture\n");
+    const validatorSha256 = createHash("sha256").update(validator).digest("hex");
+    const files = [{
+      path: "scripts/validate-strategies.js",
+      sha256: validatorSha256,
+      bytes: validator.length,
+    }];
+    const artifactSetSha256 = createHash("sha256")
+      .update(JSON.stringify(files)).digest("hex");
+    mkdirSync(join(root, "dist/scripts"), { recursive: true });
+    mkdirSync(join(root, "ops"), { recursive: true });
+    writeFileSync(join(root, "dist/scripts/validate-strategies.js"), validator);
+    writeFileSync(join(root, "ops/validator-bundle.sha256"), `${validatorSha256}\n`);
+    writeFileSync(join(root, "dist/build-manifest.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      sourceCommit: "a".repeat(40),
+      sourceClean: true,
+      artifactSetSha256,
+      files,
+    })}\n`);
+
+    expect(verifyCleanBuild(root, "a".repeat(40))).toMatchObject({
+      expectedValidator: validatorSha256,
+    });
+  });
+
   it("creates an exact private +1 overlay and preserves all unrelated metadata", () => {
     const root = fixture();
     const prepareScript = join(root, "scripts/prepare-validation-successors.mjs");
