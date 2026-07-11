@@ -1,0 +1,5 @@
+retailer_id,retailer_name,total_in_scope_products,classified_products,unclassified_products,classification_rate,latest_version
+carrefour,Carrefour Mercado,148,0,148,0,
+extra-mercado,Extra Mercado,150,0,150,0,
+pao-de-acucar,Pão de Açúcar,337,0,337,0,
+st-marche,St Marché,150,0,150,0,
