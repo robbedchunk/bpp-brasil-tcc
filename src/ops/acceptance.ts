@@ -466,9 +466,15 @@ export function evaluateM3(
   };
 }
 
-function evaluateM4(
+export interface M4GateOptions {
+  credentialConfigured: boolean;
+  spendAuthorized: boolean;
+  siteValidated: boolean;
+}
+
+export function evaluateM4(
   database: Database.Database,
-  options: { credentialConfigured: boolean; spendAuthorized: boolean; siteValidated: boolean },
+  options: M4GateOptions,
   now: Date,
 ): CriterionEvaluation {
   const id = "m4-live-agent-strategies";
@@ -502,6 +508,8 @@ function evaluateM4(
     typeof row.strategy_id === "string"
     && typeof row.model === "string"
     && typeof row.prompt_version === "string"
+    && Number(row.validation_sample_size) === 30
+    && Number(row.validation_rate) >= 0.9
     && row.exploration_outcome === "activated"
     && typeof row.prompt_hash === "string"
     && Number(row.external_sample_size) === 30

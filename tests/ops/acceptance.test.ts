@@ -7,6 +7,7 @@ import {
   aggregateAcceptanceStatus,
   evaluateM2,
   evaluateM3,
+  evaluateM4,
   renderAcceptanceMarkdown,
   type AcceptanceReport,
 } from "../../src/ops/acceptance.js";
@@ -162,6 +163,39 @@ describe("acceptance status and evidence", () => {
     expect(result.criterion.status).toBe("pass");
     expect(result.evidence[0]?.facts.activeProducts).toBe(20);
     expect(result.evidence[0]?.facts.highConfidenceProducts).toBe(16);
+  });
+
+  it("keeps M4 credential and spend gates pending without invoking a provider", () => {
+    const database = fixture();
+    seedRetailer(database, "alpha");
+    const withoutCredential = evaluateM4(database, {
+      credentialConfigured: false,
+      spendAuthorized: false,
+      siteValidated: false,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(withoutCredential.criterion.status).toBe("pending");
+    expect(withoutCredential.criterion.reasonCodes).toEqual(["CREDENTIAL_NOT_CONFIGURED"]);
+
+    const withoutSpend = evaluateM4(database, {
+      credentialConfigured: true,
+      spendAuthorized: false,
+      siteValidated: false,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(withoutSpend.criterion.status).toBe("pending");
+    expect(withoutSpend.criterion.reasonCodes).toEqual(["LIVE_SPEND_NOT_AUTHORIZED"]);
+  });
+
+  it("fails contradictory heartbeat JSON before executing json_each", () => {
+    const database = fixture();
+    database.pragma("ignore_check_constraints = ON");
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('broken', 'collect', '2026-07-10T06:00:00.000Z',
+        '2026-07-10T06:10:00.000Z', 'completed', 'not-json')
+    `).run();
+    const result = evaluateM2(database, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toEqual(["EVIDENCE_CONTRADICTION"]);
   });
 
   it("renders Markdown from the same report without leaking command output", () => {
