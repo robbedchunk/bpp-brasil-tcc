@@ -33,6 +33,8 @@ import * as evidenceTools from "../../src/strategies/validation-evidence.js";
 
 const roots: string[] = [];
 const projectRoot = resolve(".");
+const successorSourceCommit = "00278a685724a7452837204bee321705c2bad506";
+const recoverySourceCommit = "0b7fdb77d6f593e27a66b8aec42d55d849f2e226";
 const plan = JSON.parse(readFileSync("data/validation/successor-plans.json", "utf8")) as {
   plans: Array<{
     retailerId: string;
@@ -52,9 +54,10 @@ function recoveryFixture(): { root: string; recovery: ReturnType<typeof parseRec
     { retailerId: "extra-mercado", purpose: "discovery", activeVersion: 3, failedVersion: 4, toVersion: 5 },
   ] as const;
   const entries = definitions.map((definition) => {
-    const config = JSON.parse(readFileSync(
-      join(projectRoot, `retailers/${definition.retailerId}.json`),
-      "utf8",
+    const config = JSON.parse(execFileSync(
+      "git",
+      ["show", `${recoverySourceCommit}:retailers/${definition.retailerId}.json`],
+      { cwd: projectRoot, encoding: "utf8" },
     ));
     writeFileSync(
       join(root, `retailers/${definition.retailerId}.json`),
@@ -104,7 +107,7 @@ function recoveryFixture(): { root: string; recovery: ReturnType<typeof parseRec
   const recovery = parseRecoveryPlan({
     schemaVersion: 1,
     parent: {
-      sourceCommit: "00278a685724a7452837204bee321705c2bad506",
+      sourceCommit: successorSourceCommit,
       planPath: "data/validation/successor-plans.json",
       planFileSha256: sha256(readFileSync(join(projectRoot, "data/validation/successor-plans.json"))),
       validatorArtifactSha256: "946e7fea7c29e788c0616bc62164e60b61d02f40c543acd872b1f430d5d710d3",
@@ -134,9 +137,10 @@ function fixture(): string {
     join(root, "data/validation/successor-plans.json"),
   );
   for (const retailerId of new Set(plan.plans.map((entry) => entry.retailerId))) {
-    const config = JSON.parse(readFileSync(
-      join(projectRoot, `retailers/${retailerId}.json`),
-      "utf8",
+    const config = JSON.parse(execFileSync(
+      "git",
+      ["show", `${successorSourceCommit}:retailers/${retailerId}.json`],
+      { cwd: projectRoot, encoding: "utf8" },
     ));
     for (const entry of plan.plans.filter((candidate) => candidate.retailerId === retailerId)) {
       config.strategyVersions[entry.purpose] = entry.fromVersion;
@@ -351,9 +355,10 @@ describe("validation successor preparation", () => {
       schemaVersion: 1,
       attempts: [manifestEntry],
     }, null, 2)}\n`);
-    const strategy = JSON.parse(readFileSync(
-      join(projectRoot, "retailers/carrefour.json"),
-      "utf8",
+    const strategy = JSON.parse(execFileSync(
+      "git",
+      ["show", `${successorSourceCommit}:retailers/carrefour.json`],
+      { cwd: projectRoot, encoding: "utf8" },
     )).extraction;
     const trackedPublicKey = createPublicKey(readFileSync(
       join(projectRoot, "ops/validation-attestation-public.pem"),

@@ -1489,7 +1489,7 @@ describe("acceptance status and evidence", () => {
       execFileSync("git", ["add", "retailers", "data"], { cwd: root });
       execFileSync("git", ["commit", "-qm", "valid receipt registry"], { cwd: root });
 
-      const now = new Date("2026-07-11T15:00:00.000Z");
+      const now = new Date("2026-07-11T16:00:00.000Z");
       const passed = evaluateActiveStrategyValidationReceipts(root, database, now);
       expect(passed.criterion.status).toBe("pass");
       expect(passed.evidence[0]?.facts).toMatchObject({
@@ -1577,8 +1577,8 @@ describe("acceptance status and evidence", () => {
       database.prepare(`
         UPDATE strategies
         SET active = 0,
-          activated_at = '2026-07-11T09:00:00.000Z',
-          retired_at = '2026-07-11T10:30:00.000Z'
+          activated_at = '2026-07-11T15:10:00.000Z',
+          retired_at = '2026-07-11T15:30:00.000Z'
         WHERE retailer_id = 'carrefour' AND purpose = 'extraction'
       `).run();
       expect(evaluateActiveStrategyValidationReceipts(root, database, now).criterion.status)
