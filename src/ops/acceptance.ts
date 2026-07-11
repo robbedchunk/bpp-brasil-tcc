@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -1221,6 +1221,206 @@ interface StrategyReceiptRow {
   provenance: string;
 }
 
+const SUCCESSOR_PLAN_PATH = "data/validation/successor-plans.json";
+const SUCCESSOR_RECOVERY_PLAN_PATH = "data/validation/successor-recovery-plan.json";
+
+function committedBlob(root: string, sourceCommit: string, path: string): Buffer {
+  return execFileSync(
+    "git",
+    ["show", `${sourceCommit}:${path}`],
+    { cwd: root, encoding: null, stdio: ["ignore", "pipe", "ignore"] },
+  );
+}
+
+function committedJson(root: string, sourceCommit: string, path: string): unknown {
+  return JSON.parse(committedBlob(root, sourceCommit, path).toString("utf8"));
+}
+
+function committedRegularFile(root: string, sourceCommit: string, path: string): boolean {
+  return git(root, ["ls-tree", sourceCommit, "--", path]).startsWith("100644 blob ");
+}
+
+function recoveryPlanDeclaresStrategyVersion(
+  root: string,
+  sourceCommit: string,
+  historicalConfig: RetailerConfig,
+  input: {
+    retailerId: string;
+    purpose: "discovery" | "extraction";
+    version: number;
+    strategy: ReturnType<typeof parseStrategy>;
+  },
+): boolean {
+  if (!committedRegularFile(root, sourceCommit, SUCCESSOR_RECOVERY_PLAN_PATH)) return false;
+  const rawPlan = committedJson(root, sourceCommit, SUCCESSOR_RECOVERY_PLAN_PATH);
+  if (typeof rawPlan !== "object" || rawPlan === null || Array.isArray(rawPlan)) return false;
+  const recovery = rawPlan as Record<string, unknown>;
+  if (!exactObjectKeys(recovery, ["schemaVersion", "parent", "plans"])
+    || recovery.schemaVersion !== 1
+    || typeof recovery.parent !== "object" || recovery.parent === null
+    || Array.isArray(recovery.parent)
+    || !Array.isArray(recovery.plans)
+    || recovery.plans.length !== 2) return false;
+  const parent = recovery.parent as Record<string, unknown>;
+  if (!exactObjectKeys(parent, [
+    "sourceCommit", "planPath", "planFileSha256", "validatorArtifactSha256",
+    "attestationKeyId",
+  ])
+    || typeof parent.sourceCommit !== "string" || !COMMIT.test(parent.sourceCommit)
+    || parent.sourceCommit === sourceCommit
+    || parent.planPath !== SUCCESSOR_PLAN_PATH
+    || typeof parent.planFileSha256 !== "string" || !SHA256.test(parent.planFileSha256)
+    || typeof parent.validatorArtifactSha256 !== "string"
+      || !SHA256.test(parent.validatorArtifactSha256)
+    || typeof parent.attestationKeyId !== "string" || !SHA256.test(parent.attestationKeyId)
+    || !gitSucceeds(root, ["merge-base", "--is-ancestor", parent.sourceCommit, sourceCommit])
+    || !committedRegularFile(root, parent.sourceCommit, SUCCESSOR_PLAN_PATH)
+    || hash(committedBlob(root, parent.sourceCommit, SUCCESSOR_PLAN_PATH))
+      !== parent.planFileSha256
+    || committedBlob(root, sourceCommit, "ops/validator-bundle.sha256")
+      .toString("utf8").trim() !== parent.validatorArtifactSha256) return false;
+  const publicKey = createPublicKey(committedBlob(
+    root,
+    sourceCommit,
+    "ops/validation-attestation-public.pem",
+  ));
+  const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
+  if (hash(publicKeyDer) !== parent.attestationKeyId) return false;
+
+  const planKeys = [
+    "retailerId", "purpose", "activeVersion", "failedVersion", "toVersion",
+    "activeStrategySha256", "failedStrategySha256", "candidatePath",
+    "candidateFileSha256", "strategySha256", "failedAttemptPath",
+    "failedAttemptFileSha256", "failedAttemptReceiptSha256",
+    "failedAttemptSampleSetSha256", "configPatch", "reason",
+  ];
+  const identities = new Set<string>();
+  const parsedPlans = recovery.plans.map((candidate) => {
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+      throw new TypeError("Recovery plan entry must be an object");
+    }
+    const value = candidate as Record<string, unknown>;
+    if (!exactObjectKeys(value, planKeys)
+      || typeof value.retailerId !== "string"
+      || (value.purpose !== "discovery" && value.purpose !== "extraction")
+      || !Number.isSafeInteger(value.activeVersion) || (value.activeVersion as number) <= 0
+      || value.failedVersion !== (value.activeVersion as number) + 1
+      || value.toVersion !== (value.failedVersion as number) + 1
+      || typeof value.activeStrategySha256 !== "string"
+        || !SHA256.test(value.activeStrategySha256)
+      || typeof value.failedStrategySha256 !== "string"
+        || !SHA256.test(value.failedStrategySha256)
+      || typeof value.candidatePath !== "string"
+      || typeof value.candidateFileSha256 !== "string"
+        || !SHA256.test(value.candidateFileSha256)
+      || typeof value.strategySha256 !== "string" || !SHA256.test(value.strategySha256)
+      || value.strategySha256 === value.activeStrategySha256
+      || value.strategySha256 === value.failedStrategySha256
+      || typeof value.failedAttemptPath !== "string"
+      || typeof value.failedAttemptFileSha256 !== "string"
+        || !SHA256.test(value.failedAttemptFileSha256)
+      || typeof value.failedAttemptReceiptSha256 !== "string"
+        || !SHA256.test(value.failedAttemptReceiptSha256)
+      || typeof value.failedAttemptSampleSetSha256 !== "string"
+        || !SHA256.test(value.failedAttemptSampleSetSha256)
+      || typeof value.configPatch !== "object" || value.configPatch === null
+      || Array.isArray(value.configPatch)
+      || typeof value.reason !== "string" || value.reason.trim() !== value.reason
+      || value.reason.length === 0) throw new TypeError("Recovery plan entry is malformed");
+    const identity = value.retailerId + "/" + value.purpose;
+    const patch = value.configPatch as Record<string, unknown>;
+    const expectedPatchKeys = identity === "carrefour/extraction"
+      ? ["cep", "platformEvidence", "storeMapping"]
+      : [];
+    if (!exactObjectKeys(patch, expectedPatchKeys)) {
+      throw new TypeError("Recovery config patch has unauthorized fields");
+    }
+    if (identities.has(identity)) throw new TypeError("Recovery plan identity is duplicated");
+    identities.add(identity);
+    return value;
+  });
+  if ([...identities].sort().join("\0")
+    !== ["carrefour/extraction", "extra-mercado/discovery"].sort().join("\0")) return false;
+  const matches = parsedPlans.filter((plan) => plan.retailerId === input.retailerId
+    && plan.purpose === input.purpose
+    && plan.toVersion === input.version
+    && plan.strategySha256 === strategyEvidenceSha256(input.strategy));
+  if (matches.length !== 1) return false;
+  const plan = matches[0]!;
+  const purpose = input.purpose;
+  if (historicalConfig.strategyVersions[purpose] !== plan.activeVersion
+    || strategyEvidenceSha256(historicalConfig[purpose]) !== plan.activeStrategySha256) return false;
+  const expectedCandidatePath = `data/validation/candidates/${input.retailerId}-${purpose}-v${input.version}.json`;
+  const expectedAttemptPath = `data/validation/attempts/${input.retailerId}-${purpose}-v${plan.failedVersion}.json`;
+  if (plan.candidatePath !== expectedCandidatePath
+    || plan.failedAttemptPath !== expectedAttemptPath
+    || !committedRegularFile(root, sourceCommit, expectedCandidatePath)
+    || !committedRegularFile(root, sourceCommit, expectedAttemptPath)) return false;
+  const candidateRaw = committedBlob(root, sourceCommit, expectedCandidatePath);
+  const candidate = parseStrategy(JSON.parse(candidateRaw.toString("utf8")));
+  if (hash(candidateRaw) !== plan.candidateFileSha256
+    || strategyEvidenceSha256(candidate) !== plan.strategySha256
+    || strategyEvidenceSha256(candidate) !== strategyEvidenceSha256(input.strategy)
+    || candidate.purpose !== purpose) return false;
+  const projectedConfig = structuredClone(historicalConfig) as RetailerConfig;
+  Object.assign(projectedConfig, plan.configPatch as Record<string, unknown>);
+  projectedConfig[purpose] = candidate as never;
+  projectedConfig.strategyVersions[purpose] = input.version;
+  projectedConfig.validation[purpose].receiptPath =
+    `data/validation/${input.retailerId}-${purpose}-v${input.version}.json`;
+  RetailerConfigSchema.parse(projectedConfig);
+
+  const parentConfig = RetailerConfigSchema.parse(committedJson(
+    root,
+    parent.sourceCommit as string,
+    `retailers/${input.retailerId}.json`,
+  ));
+  const failedStrategy = parentConfig[purpose];
+  if (parentConfig.strategyVersions[purpose] !== plan.activeVersion
+    || strategyEvidenceSha256(failedStrategy) !== plan.failedStrategySha256
+    || !sourceCommitDeclaresStrategyVersion(root, parent.sourceCommit as string, {
+      retailerId: input.retailerId,
+      purpose,
+      version: plan.failedVersion as number,
+      strategy: failedStrategy,
+    })) return false;
+  const failedRaw = committedBlob(root, sourceCommit, expectedAttemptPath);
+  const failed = StrategyValidationEvidenceSchema.parse(JSON.parse(failedRaw.toString("utf8")));
+  const validatedFailure = validateStrategyEvidence(failed, {
+    retailerId: input.retailerId,
+    purpose,
+    strategyVersion: plan.failedVersion as number,
+    strategy: failedStrategy,
+    verificationPublicKey: publicKey,
+  });
+  if (hash(failedRaw) !== plan.failedAttemptFileSha256
+    || validationReceiptSha256(validatedFailure) !== plan.failedAttemptReceiptSha256
+    || validatedFailure.sampleSetSha256 !== plan.failedAttemptSampleSetSha256
+    || validatedFailure.attempted !== 30 || validatedFailure.valid >= 27
+    || validatedFailure.activatable !== false
+    || validatedFailure.executor.sourceCommit !== parent.sourceCommit
+    || validatedFailure.executor.artifactSha256 !== parent.validatorArtifactSha256
+    || validatedFailure.attestation.keyId !== parent.attestationKeyId) return false;
+  const manifest = committedJson(
+    root,
+    sourceCommit,
+    "data/validation/attempts/manifest.json",
+  ) as { schemaVersion?: unknown; attempts?: unknown };
+  if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.attempts)) return false;
+  const manifestMatches = manifest.attempts.filter((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+    const value = entry as Record<string, unknown>;
+    return exactObjectKeys(value, [
+      "fileSha256", "path", "receiptSha256", "strategySourceCommit",
+    ])
+      && value.path === expectedAttemptPath
+      && value.fileSha256 === plan.failedAttemptFileSha256
+      && value.receiptSha256 === plan.failedAttemptReceiptSha256
+      && value.strategySourceCommit === parent.sourceCommit;
+  });
+  return manifestMatches.length === 1;
+}
+
 function sourceCommitDeclaresStrategyVersion(
   root: string,
   sourceCommit: string,
@@ -1242,29 +1442,30 @@ function sourceCommitDeclaresStrategyVersion(
       && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
       return true;
     }
-    if (historicalConfig.strategyVersions[input.purpose] !== input.version - 1
-      || strategyEvidenceSha256(historicalConfig[input.purpose]) !== strategySha256) {
-      return false;
+    if (historicalConfig.strategyVersions[input.purpose] === input.version - 1
+      && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
+      const plan = committedJson(root, sourceCommit, SUCCESSOR_PLAN_PATH) as {
+        schemaVersion?: unknown;
+        plans?: unknown;
+      };
+      if (plan.schemaVersion === 1 && Array.isArray(plan.plans)) {
+        const matches = plan.plans.filter((candidate) => {
+          if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
+          const value = candidate as Record<string, unknown>;
+          return exactObjectKeys(value, [
+            "fromVersion", "purpose", "reason", "retailerId", "strategySha256", "toVersion",
+          ])
+            && value.retailerId === input.retailerId
+            && value.purpose === input.purpose
+            && value.fromVersion === input.version - 1
+            && value.toVersion === input.version
+            && value.strategySha256 === strategySha256
+            && typeof value.reason === "string" && value.reason.length > 0;
+        });
+        if (matches.length === 1) return true;
+      }
     }
-    const plan = JSON.parse(execFileSync(
-      "git",
-      ["show", `${sourceCommit}:data/validation/successor-plans.json`],
-      { cwd: root, encoding: "utf8" },
-    )) as { schemaVersion?: unknown; plans?: unknown };
-    if (plan.schemaVersion !== 1 || !Array.isArray(plan.plans)) return false;
-    const matches = plan.plans.filter((candidate) => {
-      if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
-      const value = candidate as Record<string, unknown>;
-      return Object.keys(value).sort().join("\0")
-          === ["fromVersion", "purpose", "reason", "retailerId", "strategySha256", "toVersion"].sort().join("\0")
-        && value.retailerId === input.retailerId
-        && value.purpose === input.purpose
-        && value.fromVersion === input.version - 1
-        && value.toVersion === input.version
-        && value.strategySha256 === strategySha256
-        && typeof value.reason === "string" && value.reason.length > 0;
-    });
-    return matches.length === 1;
+    return recoveryPlanDeclaresStrategyVersion(root, sourceCommit, historicalConfig, input);
   } catch {
     return false;
   }

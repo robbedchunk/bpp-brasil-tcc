@@ -18,9 +18,11 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export const PLAN_PATH = "data/validation/successor-plans.json";
+export const RECOVERY_PLAN_PATH = "data/validation/successor-recovery-plan.json";
 export const PUBLIC_KEY_PATH = "ops/validation-attestation-public.pem";
 export const VALIDATOR_DIGEST_PATH = "ops/validator-bundle.sha256";
 export const OVERLAY_PATH = "var/validation-rollout-configs";
+export const RECOVERY_OVERLAY_PREFIX = "var/validation-recovery-";
 export const SUCCESSOR_TOOL_PATHS = [
   "scripts/apply-validation-successors.mjs",
   "scripts/prepare-validation-successors.mjs",
@@ -48,6 +50,62 @@ const PLAN_KEYS = [
   "strategySha256",
   "toVersion",
 ].sort();
+const RECOVERY_PARENT_KEYS = [
+  "attestationKeyId",
+  "planFileSha256",
+  "planPath",
+  "sourceCommit",
+  "validatorArtifactSha256",
+].sort();
+const RECOVERY_PLAN_KEYS = [
+  "activeStrategySha256",
+  "activeVersion",
+  "candidateFileSha256",
+  "candidatePath",
+  "failedAttemptFileSha256",
+  "failedAttemptPath",
+  "failedAttemptReceiptSha256",
+  "failedAttemptSampleSetSha256",
+  "failedStrategySha256",
+  "failedVersion",
+  "purpose",
+  "reason",
+  "retailerId",
+  "strategySha256",
+  "toVersion",
+].sort();
+
+function parseRecoveryConfigPatch(input, index) {
+  if (input === undefined) return undefined;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error(`Recovery plan entry ${index + 1} configPatch must be an object`);
+  }
+  const keys = Object.keys(input).sort();
+  if (keys.some((key) => !["cep", "platformEvidence", "storeMapping"].includes(key))) {
+    throw new Error(`Recovery plan entry ${index + 1} configPatch has forbidden fields`);
+  }
+  if (input.cep !== undefined && (typeof input.cep !== "string" || !/^\d{5}-\d{3}$/u.test(input.cep))) {
+    throw new Error(`Recovery plan entry ${index + 1} configPatch CEP is malformed`);
+  }
+  if (input.platformEvidence !== undefined && (
+    !exactKeys(input.platformEvidence, ["notes", "observedAt", "platform", "urls"])
+    || typeof input.platformEvidence.platform !== "string"
+    || typeof input.platformEvidence.observedAt !== "string"
+    || !Array.isArray(input.platformEvidence.urls)
+    || typeof input.platformEvidence.notes !== "string"
+  )) {
+    throw new Error(`Recovery plan entry ${index + 1} platformEvidence patch is malformed`);
+  }
+  if (input.storeMapping !== undefined && input.storeMapping !== null && (
+    !exactKeys(input.storeMapping, ["erpCode", "evidenceUrl", "storeId"])
+    || typeof input.storeMapping.storeId !== "string"
+    || !(input.storeMapping.erpCode === null || typeof input.storeMapping.erpCode === "string")
+    || typeof input.storeMapping.evidenceUrl !== "string"
+  )) {
+    throw new Error(`Recovery plan entry ${index + 1} storeMapping patch is malformed`);
+  }
+  return structuredClone(input);
+}
 
 export function canonicalValue(value) {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -141,6 +199,80 @@ export function parseSuccessorPlan(input) {
     const retailer = left.retailerId.localeCompare(right.retailerId, "en");
     return retailer === 0 ? left.purpose.localeCompare(right.purpose, "en") : retailer;
   });
+}
+
+export function parseRecoveryPlan(input) {
+  if (!exactKeys(input, ["parent", "plans", "schemaVersion"])
+    || input.schemaVersion !== 1
+    || !exactKeys(input.parent, RECOVERY_PARENT_KEYS)
+    || !Array.isArray(input.plans)
+    || input.plans.length !== 2) {
+    throw new Error("Recovery plan must be schema 1 with an exact parent and two entries");
+  }
+  const parent = input.parent;
+  if (typeof parent.sourceCommit !== "string" || !/^[a-f0-9]{40}$/u.test(parent.sourceCommit)
+    || parent.planPath !== PLAN_PATH
+    || typeof parent.planFileSha256 !== "string" || !SHA256.test(parent.planFileSha256)
+    || typeof parent.validatorArtifactSha256 !== "string" || !SHA256.test(parent.validatorArtifactSha256)
+    || typeof parent.attestationKeyId !== "string" || !SHA256.test(parent.attestationKeyId)) {
+    throw new Error("Recovery plan parent binding is malformed");
+  }
+  const plans = input.plans.map((candidate, index) => {
+    const expectedKeys = candidate?.configPatch === undefined
+      ? RECOVERY_PLAN_KEYS
+      : [...RECOVERY_PLAN_KEYS, "configPatch"].sort();
+    if (!exactKeys(candidate, expectedKeys)
+      || typeof candidate.retailerId !== "string" || !RETAILER_ID.test(candidate.retailerId)
+      || !PURPOSES.includes(candidate.purpose)
+      || !Number.isSafeInteger(candidate.activeVersion) || candidate.activeVersion <= 0
+      || candidate.failedVersion !== candidate.activeVersion + 1
+      || candidate.toVersion !== candidate.failedVersion + 1
+      || typeof candidate.activeStrategySha256 !== "string" || !SHA256.test(candidate.activeStrategySha256)
+      || typeof candidate.failedStrategySha256 !== "string" || !SHA256.test(candidate.failedStrategySha256)
+      || typeof candidate.strategySha256 !== "string" || !SHA256.test(candidate.strategySha256)
+      || candidate.strategySha256 === candidate.activeStrategySha256
+      || candidate.strategySha256 === candidate.failedStrategySha256
+      || typeof candidate.candidatePath !== "string"
+      || candidate.candidatePath !== `data/validation/candidates/${candidate.retailerId}-${candidate.purpose}-v${candidate.toVersion}.json`
+      || typeof candidate.candidateFileSha256 !== "string" || !SHA256.test(candidate.candidateFileSha256)
+      || candidate.failedAttemptPath !== `data/validation/attempts/${candidate.retailerId}-${candidate.purpose}-v${candidate.failedVersion}.json`
+      || typeof candidate.failedAttemptFileSha256 !== "string" || !SHA256.test(candidate.failedAttemptFileSha256)
+      || typeof candidate.failedAttemptReceiptSha256 !== "string" || !SHA256.test(candidate.failedAttemptReceiptSha256)
+      || typeof candidate.failedAttemptSampleSetSha256 !== "string" || !SHA256.test(candidate.failedAttemptSampleSetSha256)
+      || typeof candidate.reason !== "string" || candidate.reason.trim() !== candidate.reason
+      || candidate.reason.length === 0) {
+      throw new Error(`Recovery plan entry ${index + 1} is malformed`);
+    }
+    return {
+      ...candidate,
+      ...(candidate.configPatch === undefined
+        ? {}
+        : { configPatch: parseRecoveryConfigPatch(candidate.configPatch, index) }),
+    };
+  }).sort((left, right) => {
+    const retailer = left.retailerId.localeCompare(right.retailerId, "en");
+    return retailer === 0 ? left.purpose.localeCompare(right.purpose, "en") : retailer;
+  });
+  const identities = plans.map(({ retailerId, purpose }) => `${retailerId}/${purpose}`);
+  if (canonicalJson(identities) !== canonicalJson([
+    "carrefour/extraction",
+    "extra-mercado/discovery",
+  ])) {
+    throw new Error("Recovery plan must cover exactly Carrefour extraction and Extra discovery");
+  }
+  return { schemaVersion: 1, parent: { ...parent }, plans };
+}
+
+export function recoveryOverlayPath(root, recovery) {
+  return resolve(root, `${RECOVERY_OVERLAY_PREFIX}${sha256(canonicalJson(recovery))}`);
+}
+
+export function applyRecoveryConfigPatch(config, plan) {
+  const desired = structuredClone(config);
+  for (const [key, value] of Object.entries(plan.configPatch ?? {})) {
+    desired[key] = structuredClone(value);
+  }
+  return desired;
 }
 
 export function git(root, arguments_) {
@@ -248,9 +380,104 @@ export function inspectPlannedConfigs(root, plans, options = {}) {
   return configs;
 }
 
+export function inspectRecoveryConfigs(root, recovery, options = {}) {
+  const paths = [
+    RECOVERY_PLAN_PATH,
+    ...recovery.plans.map(({ candidatePath }) => candidatePath),
+    ...recovery.plans.map(({ retailerId }) => `retailers/${retailerId}.json`),
+  ];
+  if (options.requireTracked !== false) assertTrackedUnmodified(root, paths);
+  return recovery.plans.map((plan) => {
+    const path = `retailers/${plan.retailerId}.json`;
+    const config = assertObject(readJsonFile(resolve(root, path), path), path);
+    const candidatePath = resolve(root, plan.candidatePath);
+    const candidateRaw = readFileSync(candidatePath);
+    const candidateStrategy = assertObject(
+      readJsonFile(candidatePath, plan.candidatePath),
+      plan.candidatePath,
+    );
+    if (config.schemaVersion !== 1 || config.id !== plan.retailerId || config.active !== true
+      || candidateStrategy.purpose !== plan.purpose
+      || sha256(candidateRaw) !== plan.candidateFileSha256
+      || valueSha256(candidateStrategy) !== plan.strategySha256) {
+      throw new Error(`${plan.retailerId}/${plan.purpose} recovery candidate is misbound`);
+    }
+    const version = config.strategyVersions?.[plan.purpose];
+    const state = version === plan.activeVersion ? "pending"
+      : options.allowApplied === true && version === plan.toVersion ? "applied"
+        : null;
+    if (state === null) {
+      throw new Error(
+        `${path} ${plan.purpose} must be active version ${plan.activeVersion}`
+        + (options.allowApplied === true ? ` or recovered version ${plan.toVersion}` : ""),
+      );
+    }
+    const expectedStrategy = state === "pending"
+      ? plan.activeStrategySha256
+      : plan.strategySha256;
+    const expectedReceipt = `data/validation/${plan.retailerId}-${plan.purpose}-v${version}.json`;
+    if (valueSha256(config[plan.purpose]) !== expectedStrategy
+      || config.validation?.[plan.purpose]?.receiptPath !== expectedReceipt) {
+      throw new Error(`${plan.retailerId}/${plan.purpose} config recovery state is not exact`);
+    }
+    return {
+      retailerId: plan.retailerId,
+      path,
+      config,
+      plans: [{ ...plan, candidateStrategy }],
+      state,
+    };
+  });
+}
+
+export function verifyRecoveryFailedAttemptFiles(root, recovery, options = {}) {
+  const manifestPath = "data/validation/attempts/manifest.json";
+  const tracked = [manifestPath, ...recovery.plans.map(({ failedAttemptPath }) => failedAttemptPath)];
+  if (options.requireTracked !== false) assertTrackedUnmodified(root, tracked);
+  const manifest = readJsonFile(resolve(root, manifestPath), "failed-attempt manifest");
+  if (!exactKeys(manifest, ["attempts", "schemaVersion"])
+    || manifest.schemaVersion !== 1 || !Array.isArray(manifest.attempts)) {
+    throw new Error("Failed-attempt manifest is malformed");
+  }
+  for (const plan of recovery.plans) {
+    const absoluteAttempt = resolve(root, plan.failedAttemptPath);
+    const receipt = readJsonFile(absoluteAttempt, plan.failedAttemptPath);
+    const raw = readFileSync(absoluteAttempt);
+    const entries = manifest.attempts.filter((entry) => entry?.path === plan.failedAttemptPath);
+    if (entries.length !== 1
+      || !exactKeys(entries[0], [
+        "fileSha256",
+        "path",
+        "receiptSha256",
+        "strategySourceCommit",
+      ])
+      || entries[0].fileSha256 !== plan.failedAttemptFileSha256
+      || entries[0].receiptSha256 !== plan.failedAttemptReceiptSha256
+      || entries[0].strategySourceCommit !== recovery.parent.sourceCommit
+      || sha256(raw) !== plan.failedAttemptFileSha256
+      || receipt.retailerId !== plan.retailerId
+      || receipt.purpose !== plan.purpose
+      || receipt.strategyVersion !== plan.failedVersion
+      || receipt.strategySha256 !== plan.failedStrategySha256
+      || receipt.sampleSetSha256 !== plan.failedAttemptSampleSetSha256
+      || receipt.executor?.sourceCommit !== recovery.parent.sourceCommit
+      || receipt.executor?.artifactSha256 !== recovery.parent.validatorArtifactSha256
+      || receipt.executor?.challengeAlgorithm
+        !== "active-in-scope-category-url-bucket-round-robin-v1"
+      || receipt.attempted !== 30 || receipt.valid >= 27 || receipt.activatable !== false) {
+      throw new Error(`${plan.retailerId}/${plan.purpose} burned attempt is misbound`);
+    }
+  }
+  return true;
+}
+
 export function preparedConfig(entry) {
-  const desired = structuredClone(entry.config);
+  let desired = structuredClone(entry.config);
   for (const plan of entry.plans) {
+    desired = applyRecoveryConfigPatch(desired, plan);
+    if (plan.candidateStrategy !== undefined) {
+      desired[plan.purpose] = structuredClone(plan.candidateStrategy);
+    }
     desired.strategyVersions[plan.purpose] = plan.toVersion;
     desired.validation[plan.purpose].receiptPath =
       `data/validation/${plan.retailerId}-${plan.purpose}-v${plan.toVersion}.json`;
@@ -385,6 +612,66 @@ export function verifyCommittedPlan(root, plans, configEntries, sourceCommit) {
     }
   }
   return commit;
+}
+
+export function verifyCommittedRecoveryPlan(root, recovery, configEntries, sourceCommit) {
+  const head = git(root, ["rev-parse", "--verify", "HEAD"]);
+  if (!/^[a-f0-9]{40}$/u.test(sourceCommit) || !/^[a-f0-9]{40}$/u.test(head)) {
+    throw new Error("Recovery source must be a full Git commit");
+  }
+  git(root, ["merge-base", "--is-ancestor", recovery.parent.sourceCommit, sourceCommit]);
+  git(root, ["merge-base", "--is-ancestor", sourceCommit, head]);
+  const committed = parseRecoveryPlan(JSON.parse(
+    git(root, ["show", `${sourceCommit}:${RECOVERY_PLAN_PATH}`]),
+  ));
+  if (canonicalJson(committed) !== canonicalJson(recovery)) {
+    throw new Error("Working recovery plan differs from its source commit");
+  }
+  const parentPlan = execFileSync(
+    "git",
+    ["show", `${recovery.parent.sourceCommit}:${recovery.parent.planPath}`],
+    { cwd: root },
+  );
+  if (sha256(parentPlan) !== recovery.parent.planFileSha256) {
+    throw new Error("Recovery parent plan digest is invalid");
+  }
+  const parentEntries = parseSuccessorPlan(JSON.parse(parentPlan.toString("utf8")));
+  const parentValidator = git(root, [
+    "show",
+    `${recovery.parent.sourceCommit}:${VALIDATOR_DIGEST_PATH}`,
+  ]).trim();
+  if (parentValidator !== recovery.parent.validatorArtifactSha256) {
+    throw new Error("Recovery parent validator digest is invalid");
+  }
+  for (const entry of configEntries) {
+    const historical = JSON.parse(git(root, ["show", `${sourceCommit}:${entry.path}`]));
+    if (canonicalJson(historical) !== canonicalJson(entry.config)) {
+      throw new Error(`${entry.path} differs from recovery source ${sourceCommit}`);
+    }
+    for (const plan of entry.plans) {
+      const parentEntry = parentEntries.find((candidate) =>
+        candidate.retailerId === plan.retailerId && candidate.purpose === plan.purpose);
+      if (entry.config.strategyVersions?.[plan.purpose] !== plan.activeVersion
+        || valueSha256(entry.config[plan.purpose]) !== plan.activeStrategySha256
+        || parentEntry === undefined
+        || parentEntry.fromVersion !== plan.activeVersion
+        || parentEntry.toVersion !== plan.failedVersion
+        || parentEntry.strategySha256 !== plan.failedStrategySha256) {
+        throw new Error(`${plan.retailerId}/${plan.purpose} recovery lineage is invalid`);
+      }
+      const candidate = execFileSync(
+        "git",
+        ["show", `${sourceCommit}:${plan.candidatePath}`],
+        { cwd: root },
+      );
+      if (sha256(candidate) !== plan.candidateFileSha256
+        || canonicalJson(JSON.parse(candidate.toString("utf8")))
+          !== canonicalJson(plan.candidateStrategy)) {
+        throw new Error(`${plan.candidatePath} differs from recovery source ${sourceCommit}`);
+      }
+    }
+  }
+  return sourceCommit;
 }
 
 function walkRegularFiles(root) {

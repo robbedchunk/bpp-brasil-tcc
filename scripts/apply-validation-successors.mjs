@@ -11,21 +11,28 @@ import {
   OVERLAY_PATH,
   PLAN_PATH,
   PUBLIC_KEY_PATH,
+  RECOVERY_PLAN_PATH,
   SUCCESSOR_TOOL_PATHS,
   VALIDATOR_DIGEST_PATH,
   assertProjectRoot,
   assertTrackedUnmodified,
   assertTrustedImplementationClean,
+  applyRecoveryConfigPatch,
   canonicalJson,
   formattedJson,
   git,
   inspectPlannedConfigs,
+  inspectRecoveryConfigs,
+  parseRecoveryPlan,
   parseSuccessorPlan,
   readJsonFile,
+  recoveryOverlayPath,
   sha256,
   verifyCleanBuild,
   verifyCommittedPlan,
+  verifyCommittedRecoveryPlan,
   verifyOverlay,
+  verifyRecoveryFailedAttemptFiles,
   writeConfigBatchAtomically,
 } from "./successor-tooling.mjs";
 
@@ -36,6 +43,7 @@ export function parseArguments(arguments_) {
     root: resolve(fileURLToPath(new URL("..", import.meta.url))),
     database: undefined,
     allowPartial: false,
+    recovery: false,
   };
   for (let index = 0; index < arguments_.length;) {
     const name = arguments_[index];
@@ -44,11 +52,16 @@ export function parseArguments(arguments_) {
       index += 1;
       continue;
     }
+    if (name === "--recovery") {
+      options.recovery = true;
+      index += 1;
+      continue;
+    }
     const value = arguments_[index + 1];
     if (value === undefined) {
       throw new Error(
         "Usage: node scripts/apply-validation-successors.mjs [--root <path>] "
-        + "[--database <path>] [--allow-partial]",
+        + "[--database <path>] [--allow-partial] [--recovery]",
       );
     }
     if (name === "--root") options.root = resolve(value);
@@ -289,7 +302,7 @@ export function validatePlannedReceipt(input) {
       strategyVersion: input.plan.toVersion,
       strategy: input.strategy,
       verificationPublicKey: input.trackedPublicKey,
-      authoritativeRefs: input.challenge,
+      authoritativeRefs: input.authoritativeRefs ?? input.challenge,
     },
   );
   comparePublicKeys(input.trackedPublicKey, evidence);
@@ -303,7 +316,8 @@ export function validatePlannedReceipt(input) {
     || evidence.executor.challengeAlgorithm !== CHALLENGE_ALGORITHM
     || evidence.attempted !== 30
     || !expectedOutcome
-    || canonicalJson(evidence.samples.map(({ ref }) => ref)) !== canonicalJson(input.challenge)
+    || (input.requireExactChallenge !== false
+      && canonicalJson(evidence.samples.map(({ ref }) => ref)) !== canonicalJson(input.challenge))
   ) {
     throw new Error(
       `${input.plan.retailerId}/${input.plan.purpose} ${input.outcome} receipt `
@@ -338,9 +352,323 @@ function appliedMetadata(plan, source, evidence, evidenceTools) {
   };
 }
 
+function validateBurnedRecoveryAttempts(
+  root,
+  recovery,
+  evidenceTools,
+  trackedPublicKey,
+) {
+  verifyRecoveryFailedAttemptFiles(root, recovery);
+  for (const plan of recovery.plans) {
+    const historical = JSON.parse(git(root, [
+      "show",
+      `${recovery.parent.sourceCommit}:retailers/${plan.retailerId}.json`,
+    ]));
+    const raw = JSON.parse(readFileSync(resolve(root, plan.failedAttemptPath), "utf8"));
+    const evidence = evidenceTools.validateStrategyEvidence(raw, {
+      retailerId: plan.retailerId,
+      purpose: plan.purpose,
+      strategyVersion: plan.failedVersion,
+      strategy: historical[plan.purpose],
+      verificationPublicKey: trackedPublicKey,
+    });
+    comparePublicKeys(trackedPublicKey, evidence);
+    if (evidenceTools.validationReceiptSha256(evidence) !== plan.failedAttemptReceiptSha256
+      || evidence.strategySha256 !== plan.failedStrategySha256
+      || evidence.sampleSetSha256 !== plan.failedAttemptSampleSetSha256
+      || evidence.executor.sourceCommit !== recovery.parent.sourceCommit
+      || evidence.executor.artifactSha256 !== recovery.parent.validatorArtifactSha256
+      || evidence.executor.challengeAlgorithm !== CHALLENGE_ALGORITHM
+      || evidence.attempted !== 30 || evidence.valid >= 27 || evidence.activatable !== false) {
+      throw new Error(`${plan.retailerId}/${plan.purpose} burned receipt signature is misbound`);
+    }
+  }
+}
+
+function recoveryDatabasePhase(database, plan, sourceStrategy, candidateStrategy) {
+  const active = database.prepare(`
+    SELECT strategy.id, strategy.strategy_json AS strategyJson
+    FROM strategies AS strategy
+    JOIN retailers AS retailer ON retailer.id = strategy.retailer_id
+    WHERE strategy.retailer_id = ? AND strategy.purpose = ?
+      AND strategy.active = 1 AND retailer.active = 1
+  `).all(plan.retailerId, plan.purpose);
+  if (active.length !== 1) {
+    throw new Error(`${plan.retailerId}/${plan.purpose} must have one active recovery strategy`);
+  }
+  const sourceId = `${plan.retailerId}-${plan.purpose}-v${plan.activeVersion}`;
+  const failedId = `${plan.retailerId}-${plan.purpose}-v${plan.failedVersion}`;
+  const targetId = `${plan.retailerId}-${plan.purpose}-v${plan.toVersion}`;
+  const failed = database.prepare(`
+    SELECT active FROM strategies WHERE id = ?
+  `).get(failedId);
+  const failedEvidence = database.prepare(
+    "SELECT 1 FROM strategy_validation_evidence WHERE strategy_id = ?",
+  ).get(failedId);
+  if (failed?.active === 1 || failedEvidence !== undefined) {
+    throw new Error(`${failedId} is a burned version and cannot carry activation evidence`);
+  }
+  if (active[0].id === sourceId && active[0].strategyJson === JSON.stringify(sourceStrategy)) {
+    const target = database.prepare(`
+      SELECT strategy_json AS strategyJson, active, validated_at AS validatedAt
+      FROM strategies WHERE id = ?
+    `).get(targetId);
+    const targetEvidence = database.prepare(
+      "SELECT 1 FROM strategy_validation_evidence WHERE strategy_id = ?",
+    ).get(targetId);
+    if (target !== undefined && (target.strategyJson !== JSON.stringify(candidateStrategy)
+      || target.active !== 0 || target.validatedAt !== null || targetEvidence !== undefined)) {
+      throw new Error(`${targetId} is not a pristine recovery target`);
+    }
+    return "pending";
+  }
+  if (active[0].id === targetId && active[0].strategyJson === JSON.stringify(candidateStrategy)) {
+    return "active";
+  }
+  throw new Error(`${plan.retailerId}/${plan.purpose} recovery DB lineage is invalid`);
+}
+
+function assertActiveRecoveryEvidence(database, plan, sourceStrategy, candidateStrategy, evidence, tools) {
+  const sourceId = `${plan.retailerId}-${plan.purpose}-v${plan.activeVersion}`;
+  const targetId = `${plan.retailerId}-${plan.purpose}-v${plan.toVersion}`;
+  const source = database.prepare(`
+    SELECT strategy_json AS strategyJson, active, retired_at AS retiredAt
+    FROM strategies WHERE id = ?
+  `).get(sourceId);
+  const target = database.prepare(`
+    SELECT strategy_json AS strategyJson, active, validation_sample_size AS attempted,
+           validation_successes AS valid, validation_rate AS score,
+           validated_at AS validatedAt, activated_at AS activatedAt, retired_at AS retiredAt
+    FROM strategies WHERE id = ?
+  `).get(targetId);
+  const immutable = database.prepare(`
+    SELECT receipt_path AS receiptPath, receipt_sha256 AS receiptSha256,
+           sample_set_sha256 AS sampleSetSha256, executor_json AS executorJson,
+           attestation_key_id AS keyId, attempted, valid, score,
+           validated_at AS validatedAt
+    FROM strategy_validation_evidence WHERE strategy_id = ?
+  `).get(targetId);
+  if (source === undefined || source.strategyJson !== JSON.stringify(sourceStrategy)
+    || source.active !== 0 || source.retiredAt === null
+    || target === undefined || target.strategyJson !== JSON.stringify(candidateStrategy)
+    || target.active !== 1 || target.attempted !== evidence.attempted
+    || target.valid !== evidence.valid || target.score !== evidence.score
+    || target.validatedAt !== evidence.validatedAt || target.activatedAt === null
+    || target.retiredAt !== null || immutable === undefined
+    || canonicalJson(immutable) !== canonicalJson({
+      receiptPath: `data/validation/${plan.retailerId}-${plan.purpose}-v${plan.toVersion}.json`,
+      receiptSha256: tools.validationReceiptSha256(evidence),
+      sampleSetSha256: evidence.sampleSetSha256,
+      executorJson: JSON.stringify(evidence.executor),
+      keyId: evidence.attestation.keyId,
+      attempted: evidence.attempted,
+      valid: evidence.valid,
+      score: evidence.score,
+      validatedAt: evidence.validatedAt,
+    })) {
+    throw new Error(`${targetId} lacks exact immutable recovery evidence`);
+  }
+}
+
+function historicalRefs(database, retailerId) {
+  return database.prepare(`
+    SELECT canonical_url AS canonicalUrl, retailer_product_id AS externalId,
+           source_category AS sourceCategory
+    FROM products WHERE retailer_id = ? ORDER BY canonical_url
+  `).all(retailerId);
+}
+
+async function applyValidationRecovery(options, root) {
+  if (options.allowPartial === true) {
+    throw new Error("Recovery mode is an atomic two-strategy operation; --allow-partial is forbidden");
+  }
+  const recovery = parseRecoveryPlan(
+    readJsonFile(resolve(root, RECOVERY_PLAN_PATH), "successor recovery plan"),
+  );
+  const configs = inspectRecoveryConfigs(root, recovery, { allowApplied: true });
+  assertTrackedUnmodified(root, [
+    RECOVERY_PLAN_PATH,
+    PUBLIC_KEY_PATH,
+    VALIDATOR_DIGEST_PATH,
+    ...SUCCESSOR_TOOL_PATHS,
+    ...configs.map(({ path }) => path),
+    ...recovery.plans.map(({ candidatePath, failedAttemptPath }) => [
+      candidatePath,
+      failedAttemptPath,
+    ]).flat(),
+    "data/validation/attempts/manifest.json",
+  ]);
+  const declaredBuild = readJsonFile(resolve(root, "dist/build-manifest.json"), "dist build manifest");
+  if (typeof declaredBuild.sourceCommit !== "string"
+    || !/^[a-f0-9]{40}$/u.test(declaredBuild.sourceCommit)) {
+    throw new Error("dist build manifest source commit is malformed");
+  }
+  const sourceConfigs = configs.map((entry) => ({
+    ...entry,
+    config: JSON.parse(git(root, ["show", `${declaredBuild.sourceCommit}:${entry.path}`])),
+    state: "pending",
+  }));
+  const sourceCommit = verifyCommittedRecoveryPlan(
+    root,
+    recovery,
+    sourceConfigs,
+    declaredBuild.sourceCommit,
+  );
+  verifyOverlay(root, sourceConfigs, recoveryOverlayPath(root, recovery));
+  const build = verifyCleanBuild(root, sourceCommit);
+  const publicKeyPath = resolve(root, PUBLIC_KEY_PATH);
+  assertRegularFile(publicKeyPath, "tracked validation public key");
+  if (realpathSync(publicKeyPath) !== publicKeyPath) {
+    throw new Error("Tracked validation public key path cannot traverse symbolic links");
+  }
+  const trackedPublicKey = createPublicKey(readFileSync(publicKeyPath));
+  if (trackedPublicKey.asymmetricKeyType !== "ed25519") {
+    throw new Error("Tracked validation public key must be Ed25519");
+  }
+  const moduleUrl = (path) => {
+    const url = pathToFileURL(resolve(build.dist, path));
+    url.searchParams.set("sha256", sha256(readFileSync(fileURLToPath(url))));
+    return url.href;
+  };
+  const [evidenceTools, challengeTools, configTools] = await Promise.all([
+    import(moduleUrl("strategies/validation-evidence.js")),
+    import(moduleUrl("strategies/validation-challenge.js")),
+    import(moduleUrl("retailers/config.js")),
+  ]);
+  const keyDer = trackedPublicKey.export({ type: "spki", format: "der" });
+  if (sha256(keyDer) !== recovery.parent.attestationKeyId) {
+    throw new Error("Recovery parent attestation key differs from the tracked key");
+  }
+  validateBurnedRecoveryAttempts(root, recovery, evidenceTools, trackedPublicKey);
+  const databasePath = resolve(options.database ?? resolve(root, "data/precos.sqlite"));
+  assertRegularFile(databasePath, "authoritative database");
+  if (realpathSync(databasePath) !== databasePath) {
+    throw new Error("Authoritative database path cannot traverse symbolic links");
+  }
+  const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+  const desiredByRetailer = new Map(sourceConfigs.map((entry) => [
+    entry.retailerId,
+    structuredClone(entry.config),
+  ]));
+  const currentExpectedByRetailer = new Map(sourceConfigs.map((entry) => [
+    entry.retailerId,
+    structuredClone(entry.config),
+  ]));
+  const applied = [];
+  try {
+    assertDatabaseHealthy(database);
+    for (const entry of configs) {
+      const plan = entry.plans[0];
+      const source = sourceConfigs.find(({ retailerId }) => retailerId === entry.retailerId)?.config;
+      if (plan === undefined || source === undefined) throw new Error("Recovery config lost its plan");
+      const candidate = plan.candidateStrategy;
+      const phase = recoveryDatabasePhase(
+        database,
+        plan,
+        source[plan.purpose],
+        candidate,
+      );
+      if (!existsSync(receiptPath(root, plan))) {
+        throw new Error(`${plan.retailerId}/${plan.purpose} recovery receipt is missing`);
+      }
+      const exactChallenge = phase === "pending"
+        ? challengeTools.selectStrategyValidationChallenge(database, plan.retailerId, 30)
+        : null;
+      const authoritativeRefs = phase === "active"
+        ? historicalRefs(database, plan.retailerId)
+        : exactChallenge;
+      if (authoritativeRefs.length < 30) {
+        throw new Error(`${plan.retailerId} lacks 30 authoritative recovery references`);
+      }
+      const { evidence } = validatePlannedReceipt({
+        root,
+        plan,
+        strategy: candidate,
+        challenge: exactChallenge ?? [],
+        authoritativeRefs,
+        requireExactChallenge: phase === "pending",
+        trackedPublicKey,
+        evidenceTools,
+        sourceCommit,
+        expectedValidator: build.expectedValidator,
+        outcome: "success",
+      });
+      if (phase === "active") {
+        assertActiveRecoveryEvidence(
+          database,
+          plan,
+          source[plan.purpose],
+          candidate,
+          evidence,
+          evidenceTools,
+        );
+      }
+      const desired = desiredByRetailer.get(entry.retailerId);
+      if (desired === undefined) throw new Error("Recovery desired config is missing");
+      const patchedDesired = applyRecoveryConfigPatch(desired, plan);
+      desiredByRetailer.set(entry.retailerId, patchedDesired);
+      patchedDesired[plan.purpose] = structuredClone(candidate);
+      patchedDesired.strategyVersions[plan.purpose] = plan.toVersion;
+      patchedDesired.validation[plan.purpose] = appliedMetadata(
+        plan,
+        source.validation[plan.purpose],
+        evidence,
+        evidenceTools,
+      );
+      if (entry.state === "applied") {
+        const expected = applyRecoveryConfigPatch(
+          currentExpectedByRetailer.get(entry.retailerId),
+          plan,
+        );
+        currentExpectedByRetailer.set(entry.retailerId, expected);
+        expected[plan.purpose] = structuredClone(candidate);
+        expected.strategyVersions[plan.purpose] = plan.toVersion;
+        expected.validation[plan.purpose] = patchedDesired.validation[plan.purpose];
+      }
+      applied.push({
+        retailerId: plan.retailerId,
+        purpose: plan.purpose,
+        activeVersion: plan.activeVersion,
+        failedVersion: plan.failedVersion,
+        toVersion: plan.toVersion,
+        state: entry.state === "applied" ? "already-applied" : "newly-applied",
+        receiptSha256: evidenceTools.validationReceiptSha256(evidence),
+      });
+    }
+  } finally {
+    database.close();
+  }
+  const updates = [];
+  for (const entry of configs) {
+    const expected = currentExpectedByRetailer.get(entry.retailerId);
+    const desired = desiredByRetailer.get(entry.retailerId);
+    configTools.RetailerConfigSchema.parse(desired);
+    if (canonicalJson(entry.config) !== canonicalJson(expected)) {
+      throw new Error(`${entry.retailerId} differs from exact recovery lifecycle state`);
+    }
+    const content = formattedJson(desired);
+    const current = readFileSync(resolve(root, entry.path));
+    if (sha256(current) !== sha256(content)) {
+      updates.push({ path: entry.path, originalSha256: sha256(current), content });
+    }
+  }
+  if (updates.length > 0) writeConfigBatchAtomically(root, updates);
+  return {
+    root,
+    sourceCommit,
+    receipts: applied,
+    applied,
+    skipped: [],
+    configs: updates.map(({ path }) => path),
+    allowPartial: false,
+    recovery: true,
+  };
+}
+
 export async function applyValidationSuccessors(options) {
   const root = assertProjectRoot(options.root);
   assertTrustedImplementationClean(root);
+  if (options.recovery === true) return applyValidationRecovery(options, root);
   const allowPartial = options.allowPartial === true;
   const databasePath = resolve(options.database ?? resolve(root, "data/precos.sqlite"));
   const plans = parseSuccessorPlan(readJsonFile(resolve(root, PLAN_PATH), "successor plan"));
@@ -549,6 +877,7 @@ export async function applyValidationSuccessors(options) {
     skipped,
     configs: updates.map(({ path }) => path),
     allowPartial,
+    recovery: false,
   };
 }
 
@@ -559,6 +888,7 @@ async function main() {
     sourceCommit: result.sourceCommit,
     strategies: result.receipts.length,
     partialMode: result.allowPartial,
+    recoveryMode: result.recovery,
     applied: result.applied,
     skipped: result.skipped,
     configs: result.configs,

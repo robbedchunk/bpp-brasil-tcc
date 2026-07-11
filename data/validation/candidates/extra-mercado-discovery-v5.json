@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "allowedDomains": [
+    "api.vendas.gpa.digital",
+    "www.extramercado.com.br"
+  ],
+  "purpose": "discovery",
+  "tier": "api",
+  "request": {
+    "method": "POST",
+    "url": "https://api.vendas.gpa.digital/ex/search/category-page",
+    "headers": {
+      "accept": "application/json"
+    },
+    "body": {
+      "partner": "linx",
+      "page": "{page}",
+      "sortBy": "ascPrice",
+      "resultsPerPage": 36,
+      "multiCategory": "{segment}",
+      "storeId": 923,
+      "department": "ecom",
+      "customerPlus": true,
+      "filters": []
+    }
+  },
+  "itemsPath": "$.products",
+  "refFields": {
+    "url": "$.urlDetails",
+    "externalId": "$.id"
+  },
+  "pagination": {
+    "kind": "page",
+    "start": 1,
+    "step": 1,
+    "pageSize": 36,
+    "maxPages": 70
+  },
+  "segments": [
+    {
+      "value": "alimentos",
+      "sourceCategory": "Alimentos",
+      "maxProducts": 2200
+    },
+    {
+      "value": "bebidas",
+      "sourceCategory": "Bebidas",
+      "maxProducts": 750
+    },
+    {
+      "value": "bebe-e-crianca|nutricao-infantil|cereais-infantil",
+      "sourceCategory": "Clube Extra",
+      "maxProducts": 50
+    }
+  ],
+  "maxProducts": 3000
+}

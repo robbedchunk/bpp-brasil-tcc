@@ -21,6 +21,12 @@ import {
 } from "../../scripts/apply-validation-successors.mjs";
 import {
   inspectPlannedConfigs,
+  inspectRecoveryConfigs,
+  parseRecoveryPlan,
+  preparedConfig,
+  recoveryOverlayPath,
+  sha256,
+  valueSha256,
   verifyCleanBuild,
 } from "../../scripts/successor-tooling.mjs";
 import * as evidenceTools from "../../src/strategies/validation-evidence.js";
@@ -35,6 +41,79 @@ const plan = JSON.parse(readFileSync("data/validation/successor-plans.json", "ut
     toVersion: number;
   }>;
 };
+
+function recoveryFixture(): { root: string; recovery: ReturnType<typeof parseRecoveryPlan> } {
+  const root = mkdtempSync(join(tmpdir(), "validation-recovery-"));
+  roots.push(root);
+  mkdirSync(join(root, "data/validation/candidates"), { recursive: true });
+  mkdirSync(join(root, "retailers"), { recursive: true });
+  const definitions = [
+    { retailerId: "carrefour", purpose: "extraction", activeVersion: 5, failedVersion: 6, toVersion: 7 },
+    { retailerId: "extra-mercado", purpose: "discovery", activeVersion: 3, failedVersion: 4, toVersion: 5 },
+  ] as const;
+  const entries = definitions.map((definition) => {
+    const config = JSON.parse(readFileSync(
+      join(projectRoot, `retailers/${definition.retailerId}.json`),
+      "utf8",
+    ));
+    writeFileSync(
+      join(root, `retailers/${definition.retailerId}.json`),
+      `${JSON.stringify(config, null, 2)}\n`,
+    );
+    const candidate = structuredClone(config[definition.purpose]);
+    candidate.allowedDomains = [...candidate.allowedDomains, `recovery-${definition.retailerId}.invalid`];
+    const candidatePath = `data/validation/candidates/${definition.retailerId}-${definition.purpose}-v${definition.toVersion}.json`;
+    const candidateRaw = `${JSON.stringify(candidate, null, 2)}\n`;
+    writeFileSync(join(root, candidatePath), candidateRaw);
+    const attemptPath = `data/validation/attempts/${definition.retailerId}-${definition.purpose}-v${definition.failedVersion}.json`;
+    const attempt = JSON.parse(readFileSync(join(projectRoot, attemptPath), "utf8"));
+    const manifest = JSON.parse(readFileSync(
+      join(projectRoot, "data/validation/attempts/manifest.json"),
+      "utf8",
+    ));
+    const manifestEntry = manifest.attempts.find((item: { path: string }) => item.path === attemptPath);
+    return {
+      ...definition,
+      activeStrategySha256: attempt.strategySha256,
+      failedStrategySha256: attempt.strategySha256,
+      candidatePath,
+      candidateFileSha256: sha256(candidateRaw),
+      strategySha256: valueSha256(candidate),
+      failedAttemptPath: attemptPath,
+      failedAttemptFileSha256: manifestEntry.fileSha256,
+      failedAttemptReceiptSha256: manifestEntry.receiptSha256,
+      failedAttemptSampleSetSha256: attempt.sampleSetSha256,
+      reason: "Burned predecessor recovery fixture.",
+      ...(definition.retailerId === "carrefour" ? {
+        configPatch: {
+          cep: "04601-000",
+          platformEvidence: {
+            ...config.platformEvidence,
+            observedAt: "2026-07-11T14:34:34.000Z",
+            notes: "Recovery coverage fixture.",
+          },
+          storeMapping: {
+            storeId: "carrefourbrfood442",
+            erpCode: null,
+            evidenceUrl: "https://mercado.carrefour.com.br/?postalCode=04601000",
+          },
+        },
+      } : {}),
+    };
+  });
+  const recovery = parseRecoveryPlan({
+    schemaVersion: 1,
+    parent: {
+      sourceCommit: "00278a685724a7452837204bee321705c2bad506",
+      planPath: "data/validation/successor-plans.json",
+      planFileSha256: sha256(readFileSync(join(projectRoot, "data/validation/successor-plans.json"))),
+      validatorArtifactSha256: "946e7fea7c29e788c0616bc62164e60b61d02f40c543acd872b1f430d5d710d3",
+      attestationKeyId: "b9583b0ea8efeb057d8fbbb01d7028063857dad6461354af7265e061faef022a",
+    },
+    plans: entries,
+  });
+  return { root, recovery };
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -96,6 +175,10 @@ describe("validation successor preparation", () => {
     expect(parseArguments(["--root", projectRoot])).toMatchObject({ allowPartial: false });
     expect(parseArguments(["--allow-partial", "--root", projectRoot])).toMatchObject({
       allowPartial: true,
+    });
+    expect(parseArguments(["--recovery", "--root", projectRoot])).toMatchObject({
+      recovery: true,
+      allowPartial: false,
     });
   });
 
@@ -307,5 +390,59 @@ describe("validation successor preparation", () => {
     copyFileSync(sourceReceipt, join(root, "data/validation", receiptName));
     expect(() => validatePlannedReceipt({ ...input, outcome: "success" }))
       .toThrow(/trusted rollout/iu);
+  });
+
+  it("parses only the exact two burned-version recovery lineages", () => {
+    const { recovery } = recoveryFixture();
+    expect(recovery.plans.map(({ retailerId, purpose, activeVersion, failedVersion, toVersion }) => ({
+      retailerId,
+      purpose,
+      activeVersion,
+      failedVersion,
+      toVersion,
+    }))).toEqual([
+      {
+        retailerId: "carrefour",
+        purpose: "extraction",
+        activeVersion: 5,
+        failedVersion: 6,
+        toVersion: 7,
+      },
+      {
+        retailerId: "extra-mercado",
+        purpose: "discovery",
+        activeVersion: 3,
+        failedVersion: 4,
+        toVersion: 5,
+      },
+    ]);
+    const unchanged = structuredClone(recovery);
+    unchanged.plans[0]!.strategySha256 = unchanged.plans[0]!.failedStrategySha256;
+    expect(() => parseRecoveryPlan(unchanged)).toThrow(/malformed/iu);
+    const badPatch = structuredClone(recovery);
+    (badPatch.plans[0]!.configPatch as Record<string, unknown>).forbidden = true;
+    expect(() => parseRecoveryPlan(badPatch)).toThrow(/forbidden fields/iu);
+  });
+
+  it("builds a fresh digest-namespaced recovery overlay without changing unrelated purposes", () => {
+    const { root, recovery } = recoveryFixture();
+    const configs = inspectRecoveryConfigs(root, recovery, { requireTracked: false });
+    expect(configs).toHaveLength(2);
+    const carrefour = configs.find(({ retailerId }) => retailerId === "carrefour")!;
+    const prepared = preparedConfig(carrefour);
+    expect(prepared.strategyVersions).toEqual({ discovery: 7, extraction: 7 });
+    expect(prepared.extraction).toEqual(carrefour.plans[0]!.candidateStrategy);
+    expect(prepared.discovery).toEqual(carrefour.config.discovery);
+    expect(prepared.validation.discovery).toEqual(carrefour.config.validation.discovery);
+    expect(prepared.cep).toBe("04601-000");
+    expect(prepared.storeMapping).toMatchObject({ storeId: "carrefourbrfood442" });
+    expect(recoveryOverlayPath(root, recovery)).toMatch(
+      /var\/validation-recovery-[a-f0-9]{64}$/u,
+    );
+
+    const tamperedPath = join(root, carrefour.plans[0]!.candidatePath);
+    writeFileSync(tamperedPath, `${readFileSync(tamperedPath, "utf8")}\n`);
+    expect(() => inspectRecoveryConfigs(root, recovery, { requireTracked: false }))
+      .toThrow(/misbound/iu);
   });
 });

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "parent": {
+    "sourceCommit": "00278a685724a7452837204bee321705c2bad506",
+    "planPath": "data/validation/successor-plans.json",
+    "planFileSha256": "fc7ddad8e10051af1e93c45c2e95eab6be3a367b33e18c154689584f99ed3d01",
+    "validatorArtifactSha256": "946e7fea7c29e788c0616bc62164e60b61d02f40c543acd872b1f430d5d710d3",
+    "attestationKeyId": "b9583b0ea8efeb057d8fbbb01d7028063857dad6461354af7265e061faef022a"
+  },
+  "plans": [
+    {
+      "retailerId": "carrefour",
+      "purpose": "extraction",
+      "activeVersion": 5,
+      "failedVersion": 6,
+      "toVersion": 7,
+      "activeStrategySha256": "ce0757d400c9f63704765d57d244a45eb3819d4589bf7ebed269249ea102999b",
+      "failedStrategySha256": "ce0757d400c9f63704765d57d244a45eb3819d4589bf7ebed269249ea102999b",
+      "candidatePath": "data/validation/candidates/carrefour-extraction-v7.json",
+      "candidateFileSha256": "6d7b1b59f2524f2651113a27b8bd73c19b003d211cc19d1f527406b4cf3b322c",
+      "strategySha256": "1b92a7385cfd65b32a5c745988bc3f5b793448f4fae9b0dd9429a02b56a4c8e1",
+      "failedAttemptPath": "data/validation/attempts/carrefour-extraction-v6.json",
+      "failedAttemptFileSha256": "242e544ebafcfd9470e8e03327f0d307563d1f55a89f45372aab1777b8649d40",
+      "failedAttemptReceiptSha256": "94262cb654a7ce42f0cb51759feace412a667e43c26bafc272e80493d2bb8040",
+      "failedAttemptSampleSetSha256": "a0e7c9e5196e174bb7ee2d6ea077900e287512eb96d4913335f34ffea9e2ceec",
+      "configPatch": {
+        "cep": "04601-000",
+        "platformEvidence": {
+          "platform": "VTEX public catalog plus checkout region",
+          "observedAt": "2026-07-11T14:34:34.000Z",
+          "urls": [
+            "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search/mercearia?_from=0&_to=49&sc=2",
+            "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/category/tree/3",
+            "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=04601000&sc=2"
+          ],
+          "notes": "The public category tree identifies seven food-at-home departments. The recorded São Paulo CEP 04601-000 maps to covered food store carrefourbrfood442 and the non-secret VTEX region used only by extraction."
+        },
+        "storeMapping": {
+          "storeId": "carrefourbrfood442",
+          "erpCode": null,
+          "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=04601000&sc=2"
+        }
+      },
+      "reason": "Carrefour extraction v6 preserved a below-gate 26/30 attempt for the Paulista CEP; v7 moves only the recorded São Paulo delivery context to covered CEP 04601-000 and its official VTEX region."
+    },
+    {
+      "retailerId": "extra-mercado",
+      "purpose": "discovery",
+      "activeVersion": 3,
+      "failedVersion": 4,
+      "toVersion": 5,
+      "activeStrategySha256": "8587a4d7fe76ed493dcda443532dabfbdd43fd9f2d2acfb044e6ea60086f4077",
+      "failedStrategySha256": "8587a4d7fe76ed493dcda443532dabfbdd43fd9f2d2acfb044e6ea60086f4077",
+      "candidatePath": "data/validation/candidates/extra-mercado-discovery-v5.json",
+      "candidateFileSha256": "af0661ff1498f9dc57a3c8de284ad5628aaa833b4b653326c566080e128e9884",
+      "strategySha256": "fa28ca0a7fcc1f4490fc9a4e73dcb47e26ca5d09419eaed360b70e8e81796bc0",
+      "failedAttemptPath": "data/validation/attempts/extra-mercado-discovery-v4.json",
+      "failedAttemptFileSha256": "063cb9849adfcdc222caa65105fd6c51669898c3aa7e5dc59dad6aebaa116fa7",
+      "failedAttemptReceiptSha256": "0d96e0f3cd9eb003bfef7fbf8985f586cad5ffeb00349d0d6dfe1e60167178c0",
+      "failedAttemptSampleSetSha256": "90a3ea4013002f0599c2eb09cb579ccda08c2cb1350888cea14e03789b1e72fd",
+      "configPatch": {},
+      "reason": "Extra discovery v4 preserved a below-gate 24/30 attempt; v5 uses deterministic ascending-price coverage and the official baby-cereal category while retaining the 3,000-product cap."
+    }
+  ]
+}

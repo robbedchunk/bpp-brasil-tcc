@@ -1489,7 +1489,7 @@ describe("acceptance status and evidence", () => {
       execFileSync("git", ["add", "retailers", "data"], { cwd: root });
       execFileSync("git", ["commit", "-qm", "valid receipt registry"], { cwd: root });
 
-      const now = new Date("2026-07-11T11:00:00.000Z");
+      const now = new Date("2026-07-11T15:00:00.000Z");
       const passed = evaluateActiveStrategyValidationReceipts(root, database, now);
       expect(passed.criterion.status).toBe("pass");
       expect(passed.evidence[0]?.facts).toMatchObject({
