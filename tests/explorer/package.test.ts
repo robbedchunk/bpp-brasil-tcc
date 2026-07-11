@@ -78,6 +78,7 @@ describe("disposable exploration package", () => {
     expect(joined).not.toContain("opaque-attribute-secret");
     expect(joined).toContain("[REDACTED]");
     expect(joined).toContain("currently ACTIVE strategy");
+    expect(joined).toContain("public runtime configuration, not credentials or secrets");
     expect(JSON.parse(await readFile(
       join(sandbox.workspacePath, "samples.json"),
       "utf8",
@@ -143,6 +144,8 @@ describe("disposable exploration package", () => {
     expect(extraction).toContain("{productUrl}, {externalId}, {sourceCategory}");
     expect(discovery).toContain("{page}, {pageSize}, {offset}, {from}, {to}, {cursor}, {segment}");
     expect(extraction).toContain("currently ACTIVE strategy");
+    expect(extraction).toContain("DEFAULT to reproducing it exactly");
+    expect(extraction).toContain("public runtime configuration, not credentials or secrets");
     expect(extraction).not.toMatch(/self[- ]?certif|activation score/iu);
     expect(extraction.length).toBeLessThan(1_500);
   });

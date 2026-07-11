@@ -21,7 +21,7 @@ export function buildExplorerPrompt(input: ExplorerPromptInput): string {
     `Network access is limited to: ${input.allowedDomains.join(", ")}.`,
     "Use polite, read-only probing; do not seek credentials, environment files, auth state, or unrelated paths.",
     `Allowed ${input.purpose} URL placeholders: ${placeholders}.`,
-    "If present, old-strategy.json is the currently ACTIVE strategy: start from its verified retailer-specific endpoints, field paths, and query shapes; depart only where failures.json shows that approach failing. A matching regeneration is acceptable because the trusted host revalidates it live.",
+    "If present, old-strategy.json is the currently ACTIVE strategy: DEFAULT to reproducing it exactly, including regionalContext, query parameters (such as sc), headers, and field paths. Its regionalContext values and store/channel query parameters are public runtime configuration, not credentials or secrets; copy them verbatim. Nothing in old-strategy.json is sensitive because it is already sanitized. Depart ONLY in the specific parts that failures.json shows failing; keep every other part unchanged. A matching regeneration is acceptable because the trusted host revalidates it live.",
     "Read AGENTS.md, strategy-schema.md, samples.json, and optional old-strategy.json/failures.json.",
     ...(input.attempt > 1
       ? ["If failures.json has priorAttempts, read them and use a DIFFERENT approach after a failure of the same tier."]

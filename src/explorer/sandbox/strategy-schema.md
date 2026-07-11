@@ -10,8 +10,11 @@ Extraction tier order:
    price, unit, and availability. A VTEX API may additionally declare
    `regionalContext: { "kind": "vtex-segment", "regionId": "v2.…", "salesChannel": "2", "catalogSellerId": "1" }`;
    the trusted host derives the public region selector at request time and, when
-   declared, selects the externally validated catalog seller by identity. Never
-   store Cookie, Authorization, Set-Cookie, or Proxy-Authorization headers.
+   declared, selects the externally validated catalog seller by identity.
+   When copied from `old-strategy.json`, preserve `regionalContext` verbatim:
+   its values and store/channel query parameters such as `sc` are public runtime
+   configuration, not credentials or secrets. Never store Cookie, Authorization,
+   Set-Cookie, or Proxy-Authorization headers.
 2. `embedded-json`: declarative HTML request, embedded source (`json-ld`, `next-data`, or selected script), and JSON paths.
 3. `dom`: URL template plus ordered selector lists for all six fields.
 4. `script`: only the closed, typed operation list documented by the host schema; never arbitrary JavaScript.

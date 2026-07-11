@@ -54,7 +54,7 @@ import { createTrustedCandidateValidator } from "./trusted-validator.js";
 
 const TRUSTED_SAMPLE_SIZE = 30;
 const TRUSTED_ACTIVATION_SCORE = 0.9;
-export const EXPLORER_PROMPT_VERSION = "strategy-explorer-v3";
+export const EXPLORER_PROMPT_VERSION = "strategy-explorer-v4";
 
 export interface ExplorerRate {
   inputUsdPerMillion: number;
