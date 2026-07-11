@@ -735,9 +735,9 @@ export function evaluateM3(
     && retailersWithCollectionEvidence === retailerFacts.activeRetailers) {
     return { criterion: criterion(id, "pass", "Panel size and latest-version high-confidence classification meet the charter", [], [evidenceId]), gates: [], evidence: [resultEvidence] };
   }
-  if (retailerFacts.degradedRetailers > 0 || retailerFacts.activeRetailers < 3) {
+  if (retailerFacts.degradedRetailers > 0) {
     return {
-      criterion: criterion(id, "fail", "The active panel is degraded or below the charter minimum", ["UNSAFE_CONFIGURATION"], [evidenceId]),
+      criterion: criterion(id, "fail", "An active retailer is degraded", ["UNSAFE_CONFIGURATION"], [evidenceId]),
       gates: [],
       evidence: [resultEvidence],
     };

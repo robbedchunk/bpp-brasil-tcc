@@ -436,6 +436,18 @@ describe("acceptance status and evidence", () => {
     expect(result.criterion.reasonCodes).toContain("UNSAFE_CONFIGURATION");
   });
 
+  it("keeps a never-yet-complete retailer panel externally site/credential gated", () => {
+    const database = fixture();
+    seedRetailer(database, "alpha", 1);
+    seedRetailer(database, "beta", 1);
+    const result = evaluateM3(database, {
+      credentialConfigured: false,
+      siteValidated: false,
+    });
+    expect(result.criterion.status).toBe("pending");
+    expect(result.criterion.reasonCodes).toContain("CREDENTIAL_NOT_CONFIGURED");
+  });
+
   it("fails malformed activated M4 evidence even when the credential is absent", () => {
     const database = fixture();
     seedM4Evidence(database, "published rate card");
