@@ -238,6 +238,9 @@ export async function runBackupDrill(options: BackupDrillOptions): Promise<Publi
   const backupRoot = resolve(options.backupDirectory);
   if (!inside(root, backupRoot)) throw new Error("backup directory resolves outside the project root");
   mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+  if (!inside(root, realpathSync(backupRoot))) {
+    throw new Error("backup directory resolves outside the project root");
+  }
   const now = options.now();
   const drillId = (options.drillId ?? randomUUID)();
   const filename = `precos-drill-${now.toISOString().replaceAll(/[^0-9]/gu, "").slice(0, 14)}-${drillId}.sqlite`;

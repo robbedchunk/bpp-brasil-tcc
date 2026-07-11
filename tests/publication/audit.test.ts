@@ -155,10 +155,10 @@ describe("publication audit", () => {
     await mkdir(join(root, "data"), { recursive: true });
     const databasePath = join(root, "data", "precos.sqlite");
     const database = new Database(databasePath);
+    database.pragma("journal_mode = WAL");
     database.exec("CREATE TABLE published(id TEXT PRIMARY KEY, response_body TEXT, response_path TEXT);");
     database.prepare("INSERT INTO published VALUES (?, ?, ?)")
       .run("1", "<!doctype html><html>raw</html>", "/home/operator/private/page.html");
-    database.close();
     const before = await readFile(databasePath);
     git(root, "add", "-f", "data/precos.sqlite");
 
@@ -167,8 +167,10 @@ describe("publication audit", () => {
     expect(report.publicDataFindings).toEqual(expect.arrayContaining([
       expect.objectContaining({ ruleId: "PUBLIC_DATABASE_RAW_HTML" }),
       expect.objectContaining({ ruleId: "PUBLIC_DATABASE_PRIVATE_PATH" }),
+      expect.objectContaining({ ruleId: "PUBLIC_DATABASE_WAL_DEPENDENCY" }),
     ]));
     expect(await readFile(databasePath)).toEqual(before);
+    database.close();
   });
 
   it("rejects unsafe public CSV columns and manifest traversal", async () => {

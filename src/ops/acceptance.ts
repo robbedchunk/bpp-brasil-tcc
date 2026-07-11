@@ -139,6 +139,15 @@ function git(root: string, args: string[]): string {
   }
 }
 
+function gitSucceeds(root: string, args: string[]): boolean {
+  try {
+    execFileSync("git", args, { cwd: root, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function evidence(
   id: string,
   kind: AcceptanceEvidence["kind"],
@@ -287,6 +296,28 @@ function nextDay(day: string): string {
 export function evaluateM2(database: Database.Database, now: Date): CriterionEvaluation {
   const id = "m2-two-consecutive-days";
   const contradictions = validateHeartbeatLinks(database);
+  const evidenceId = "db-m2-heartbeat-linked-collection-runs";
+  if (contradictions.length > 0) {
+    const contradictoryEvidence = evidence(
+      evidenceId,
+      "database-query",
+      "m2-heartbeat-linked-collection-runs",
+      now.toISOString(),
+      {
+        linkedRuns: 0,
+        qualifyingRuns: 0,
+        qualifyingRetailers: 0,
+        qualifyingConsecutiveRetailers: 0,
+        qualifyingDayPair: null,
+        contradictoryHeartbeats: contradictions.length,
+      },
+    );
+    return {
+      criterion: criterion(id, "fail", "Completed collection heartbeat linkage is contradictory", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
+      gates: [],
+      evidence: [contradictoryEvidence],
+    };
+  }
   const rows = database.prepare(M2_QUERY).all() as M2Row[];
   const qualifying = rows.filter((row) =>
     row.attempted > 0
@@ -314,7 +345,6 @@ export function evaluateM2(database: Database.Database, now: Date): CriterionEva
     }
   }
   const passingPair = [...byPair].find(([, retailers]) => retailers.size >= 2);
-  const evidenceId = "db-m2-heartbeat-linked-collection-runs";
   const latestHeartbeat = database.prepare(`
     SELECT MAX(completed_at) AS completedAt
     FROM heartbeats WHERE pipeline = 'collect' AND status = 'completed'
@@ -333,13 +363,6 @@ export function evaluateM2(database: Database.Database, now: Date): CriterionEva
       contradictoryHeartbeats: contradictions.length,
     },
   );
-  if (contradictions.length > 0) {
-    return {
-      criterion: criterion(id, "fail", "Completed collection heartbeat linkage is contradictory", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
-      gates: [],
-      evidence: [resultEvidence],
-    };
-  }
   if (passingPair !== undefined) {
     return {
       criterion: criterion(id, "pass", "Two retailers have two consecutive qualifying scheduled collection days", [], [evidenceId]),
@@ -579,11 +602,16 @@ function m0Evaluation(
   const id = "m0-foundation-reproducibility";
   const receiptPath = join(root, "data/acceptance/evidence/fresh-clone.json");
   let receiptValid = false;
+  let receiptRuntimeValid = false;
   let receiptHash: string | undefined;
   if (existsSync(receiptPath)) {
     try {
       const receipt = validateFreshCloneReceipt(readJson(receiptPath));
       receiptValid = receipt.sourceCommit === evaluatedCommit;
+      receiptRuntimeValid = /^v24\./u.test(receipt.runtimes.node)
+        && /^11\./u.test(receipt.runtimes.npm)
+        && ["setup", "smoke", "publication", "analysis"].every((id) =>
+          receipt.checks.some((check) => check.id === id && check.exitCode === 0));
       receiptHash = hash(readFileSync(receiptPath));
     } catch {
       receiptValid = false;
@@ -598,12 +626,13 @@ function m0Evaluation(
   const item = evidence(evidenceId, "receipt", "data/acceptance/evidence/fresh-clone.json", now.toISOString(), {
     receiptPresent: existsSync(receiptPath),
     receiptMatchesEvaluatedCommit: receiptValid,
+    declaredRuntimesAndChecksValid: receiptRuntimeValid,
     nodeMajor24: runtimeOk,
     databaseQuickCheck: quickOk ? "ok" : "failed",
     foreignKeyViolations: foreignKeys,
     migrationCount: migrations,
   }, receiptHash);
-  const passed = receiptValid && runtimeOk && quickOk && foreignKeys === 0 && migrations >= 10;
+  const passed = receiptValid && receiptRuntimeValid && runtimeOk && quickOk && foreignKeys === 0 && migrations >= 10;
   return {
     criterion: criterion(id, passed ? "pass" : "fail", passed
       ? "Clean-clone receipt, declared runtime, migrations, and read-only database checks pass"
@@ -619,11 +648,36 @@ function m6Evaluation(root: string, command: CommandEvidence): CriterionEvaluati
   if (base.criterion.status === "fail") return base;
   const exportLatest = join(root, "data/exports/latest.json");
   const analysisLatest = join(root, "analysis/output/latest.json");
-  const pointersPresent = existsSync(exportLatest) && existsSync(analysisLatest);
-  if (!pointersPresent) {
-    base.criterion = criterion("m6-index-analysis", "fail", "Required immutable export or analysis pointer is missing", ["REQUIRED_ARTIFACT_MISSING"], base.criterion.evidenceIds);
+  let pointersValid = existsSync(exportLatest) && existsSync(analysisLatest);
+  for (const [latestPath, outputRoot] of [[exportLatest, join(root, "data/exports")], [analysisLatest, join(root, "analysis/output")]] as const) {
+    const pointer = readJson(latestPath) as Record<string, unknown> | null;
+    if (pointer === null || typeof pointer.snapshotDirectory !== "string" || typeof pointer.manifestSha256 !== "string") {
+      pointersValid = false;
+      continue;
+    }
+    const snapshot = resolve(outputRoot, pointer.snapshotDirectory);
+    const manifest = join(snapshot, "manifest.json");
+    if (!snapshot.startsWith(`${outputRoot}${sep}`) || !existsSync(manifest)
+      || !SHA256.test(pointer.manifestSha256) || hash(readFileSync(manifest)) !== pointer.manifestSha256) {
+      pointersValid = false;
+    }
+  }
+  if (!pointersValid) {
+    base.criterion = criterion("m6-index-analysis", "fail", "Required immutable export or analysis pointer/hash is missing or invalid", ["REQUIRED_ARTIFACT_MISSING"], base.criterion.evidenceIds);
   }
   return base;
+}
+
+function timerDefinitionsSafe(root: string): boolean {
+  return TIMER_UNITS.every((unit) => {
+    const path = join(root, "ops", unit);
+    if (!existsSync(path)) return false;
+    const text = readFileSync(path, "utf8");
+    return /OnCalendar=.*America\/Sao_Paulo/u.test(text)
+      && /Persistent=true/u.test(text)
+      && /RandomizedDelaySec=/u.test(text)
+      && !/(?:OPENAI_API_KEY|CODEX_API_KEY|NTFY_TOPIC)\s*=/u.test(text);
+  });
 }
 
 function m7Evaluation(
@@ -646,7 +700,7 @@ function m7Evaluation(
   } catch {
     freshMatches = false;
   }
-  const drillImplementationHash = hash(readFileSync(new URL("./acceptance-drills.ts", import.meta.url)));
+  const drillImplementationHash = hash(readFileSync(join(root, "src/ops/acceptance-drills.ts")));
   const alertMatches = alert?.status === "pass" && alert.evaluatedCommit === evaluatedCommit
     && alert.implementationSha256 === drillImplementationHash;
   const backupMatches = backup?.status === "pass" && backup.evaluatedCommit === evaluatedCommit
@@ -656,6 +710,7 @@ function m7Evaluation(
     const state = timerMap.get(unit);
     return state?.enabled === true && state.active === true;
   });
+  const timerDefinitionsValid = timerDefinitionsSafe(root);
   const latestHeartbeat = database.prepare(`
     SELECT completed_at FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
@@ -691,6 +746,7 @@ function m7Evaluation(
     publicationFindings: publication.findings.length,
     freshCloneMatches: freshMatches,
     sixTimersEnabledAndActive: timersHealthy,
+    timerDefinitionsValid,
     alertDrillMatches: alertMatches,
     backupDrillMatches: backupMatches,
     backupIntegrityAndAgeValid: backupFileHealthy,
@@ -701,7 +757,7 @@ function m7Evaluation(
   if (publication.status === "fail") {
     return { criterion: criterion(id, "fail", "Publication audit reports a public safety defect", ["SECRET_OR_PRIVATE_ARTIFACT"], [evidenceId]), gates: [], evidence: [item] };
   }
-  if (!timersHealthy || (alert !== null && !alertMatches) || (backup !== null && (!backupMatches || !backupFileHealthy)) || !freshMatches) {
+  if (!timersHealthy || !timerDefinitionsValid || (alert !== null && !alertMatches) || (backup !== null && (!backupMatches || !backupFileHealthy)) || !freshMatches) {
     return { criterion: criterion(id, "fail", "Required static operations, receipt integrity, or timer evidence is invalid", ["EVIDENCE_CONTRADICTION"], [evidenceId]), gates: [], evidence: [item] };
   }
   if (alert === null || backup === null) {
@@ -841,7 +897,7 @@ export async function verifyAcceptanceSnapshot(
   const headCommit = git(root, ["rev-parse", "HEAD"]);
   const evaluatedCommit = typeof report?.evaluatedCommit === "string" ? report.evaluatedCommit : "";
   const reasonCodes: string[] = [];
-  if (!COMMIT.test(evaluatedCommit) || git(root, ["merge-base", "--is-ancestor", evaluatedCommit, headCommit]) === "") {
+  if (!COMMIT.test(evaluatedCommit) || !gitSucceeds(root, ["merge-base", "--is-ancestor", evaluatedCommit, headCommit])) {
     reasonCodes.push("EVIDENCE_CONTRADICTION");
   }
   const changedPaths = COMMIT.test(evaluatedCommit)

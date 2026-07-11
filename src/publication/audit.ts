@@ -248,6 +248,10 @@ function auditDatabase(path: string, root: string): PublicationFinding[] {
   if (!existsSync(path)) return [];
   const results: PublicationFinding[] = [];
   const location = normalizePath(relative(root, path));
+  const walPath = `${path}-wal`;
+  if (existsSync(walPath) && lstatSync(walPath).size > 0) {
+    results.push(finding("PUBLIC_DATABASE_WAL_DEPENDENCY", "public-database", `${location}-wal`, "Public SQLite data must not require an uncheckpointed WAL"));
+  }
   const database = new Database(path, { readonly: true, fileMustExist: true });
   try {
     const quick = database.pragma("quick_check") as Array<Record<string, unknown>>;
