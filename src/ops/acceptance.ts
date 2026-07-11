@@ -1214,11 +1214,11 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
   const now = options.now();
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
-    const [m1Command, m5Command, m6Command, m6RegenerateCommand, services, publication] = await Promise.all([
-      options.runCommand("m1-offline", "npm", ["test", "--", "tests/normalize", "tests/strategies", "tests/collection", "tests/discovery", "tests/retailers", "tests/pipeline/collect.test.ts", "tests/pipeline/discover.test.ts"]),
-      options.runCommand("m5-healing", "npm", ["test", "--", "tests/healing", "tests/ops/systemd.test.ts"]),
-      options.runCommand("m6-index-analysis", "npm", ["test", "--", "tests/index", "tests/analysis"]),
-      options.runCommand("m6-analysis-regenerate", "npm", ["run", "analysis"]),
+    const m6RegenerateCommand = await options.runCommand("m6-analysis-regenerate", "npm", ["run", "analysis"]);
+    const m1Command = await options.runCommand("m1-offline", "npm", ["test", "--", "tests/normalize", "tests/strategies", "tests/collection", "tests/discovery", "tests/retailers", "tests/pipeline/collect.test.ts", "tests/pipeline/discover.test.ts"]);
+    const m5Command = await options.runCommand("m5-healing", "npm", ["test", "--", "tests/healing", "tests/ops/systemd.test.ts"]);
+    const m6Command = await options.runCommand("m6-index-analysis", "npm", ["test", "--", "tests/index", "tests/analysis"]);
+    const [services, publication] = await Promise.all([
       options.serviceReader.read([...TIMER_UNITS, ...SERVICE_UNITS]),
       auditPublication({ projectRoot: root, databasePath, now: options.now, requireClean: false }),
     ]);
