@@ -3,7 +3,9 @@
   "id": "st-marche",
   "name": "St Marché",
   "baseUrl": "https://marche.com.br",
-  "allowedDomains": ["marche.com.br"],
+  "allowedDomains": [
+    "marche.com.br"
+  ],
   "cep": "01310-100",
   "active": true,
   "backupRank": null,
@@ -38,13 +40,21 @@
     "https://marche.com.br/collections/pratos-prontos-1?store_id=66677604431&page=1",
     "https://marche.com.br/collections/sushi-e-sashimi?store_id=66677604431&page=1"
   ],
-  "politeDelayMs": { "min": 200, "max": 300 },
-  "strategyVersions": { "discovery": 4, "extraction": 3 },
+  "politeDelayMs": {
+    "min": 200,
+    "max": 300
+  },
+  "strategyVersions": {
+    "discovery": 4,
+    "extraction": 3
+  },
   "discovery": {
     "schemaVersion": 1,
+    "allowedDomains": [
+      "marche.com.br"
+    ],
     "purpose": "discovery",
     "tier": "dom-crawl",
-    "allowedDomains": ["marche.com.br"],
     "startUrls": [
       "https://marche.com.br/collections/acougue?store_id=66677604431&page=1",
       "https://marche.com.br/collections/adega?store_id=66677604431&page=1",
@@ -60,25 +70,41 @@
       "https://marche.com.br/collections/sushi-e-sashimi?store_id=66677604431&page=1"
     ],
     "linkSelectors": [
-      { "selector": "a[data-discover=\"true\"][href*=\"/products/\"]", "attribute": "href" },
-      { "selector": "a[href*=\"/collections/\"][href*=\"/products/\"]", "attribute": "href" }
+      {
+        "selector": "a[data-discover=\"true\"][href*=\"/products/\"]",
+        "attribute": "href"
+      },
+      {
+        "selector": "a[href*=\"/collections/\"][href*=\"/products/\"]",
+        "attribute": "href"
+      }
     ],
     "paginationSelectors": [
-      { "selector": "a[href*=\"page=\"]:has(svg):last-of-type", "attribute": "href" },
-      { "selector": "xpath=(//a[contains(@href,'page=')][.//*[local-name()='svg']])[last()]", "attribute": "href" }
+      {
+        "selector": "a[href*=\"page=\"]:has(svg):last-of-type",
+        "attribute": "href"
+      },
+      {
+        "selector": "xpath=(//a[contains(@href,'page=')][.//*[local-name()='svg']])[last()]",
+        "attribute": "href"
+      }
     ],
     "maxPages": 200,
     "maxProducts": 2500
   },
   "extraction": {
     "schemaVersion": 1,
+    "allowedDomains": [
+      "marche.com.br"
+    ],
     "purpose": "extraction",
     "tier": "api",
-    "allowedDomains": ["marche.com.br"],
     "request": {
       "method": "GET",
       "url": "{productUrl}",
-      "headers": { "accept": "application/json" },
+      "headers": {
+        "accept": "application/json"
+      },
       "query": {
         "store_id": "66677604431",
         "_data": "routes/collections.$collection.products.$handle"
@@ -89,9 +115,9 @@
       "brand": "$.product.vendor",
       "price": "$.product.selectedVariant.price.amount",
       "promoPrice": "$.product.selectedVariant.compareAtPrice.amount",
-      "priceOrder": "sale-list",
       "unit": "$.product.title",
-      "availability": "$.hasInventory"
+      "availability": "$.hasInventory",
+      "priceOrder": "sale-list"
     }
   },
   "fixtureRef": {
@@ -104,37 +130,44 @@
       "path": "tests/fixtures/st-marche/store-product.json",
       "sourceUrl": "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg?store_id=66677604431&_data=routes%2Fcollections.%24collection.products.%24handle",
       "capturedAt": "2026-07-11T04:24:56.820Z",
-      "redactions": ["unrelated variants and SEO removed", "response headers omitted", "no cookies retained"],
+      "redactions": [
+        "unrelated variants and SEO removed",
+        "response headers omitted",
+        "no cookies retained"
+      ],
       "synthetic": false
     },
     {
       "path": "tests/fixtures/st-marche/mutated-product.json",
       "sourceUrl": "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg?store_id=66677604431&_data=routes%2Fcollections.%24collection.products.%24handle",
       "capturedAt": "2026-07-11T04:24:56.820Z",
-      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "redactions": [
+        "fully synthetic mutation",
+        "no request metadata retained"
+      ],
       "synthetic": true
     }
   ],
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T05:07:25.000Z",
+      "validatedAt": "2026-07-11T07:05:27.209Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "The trusted DOM-crawl selectors returned 30/30 canonical store-aware references across declared food collection pages; bounded next-page selectors extend the same validated mechanism without admitting household, beauty, or cleaning collections.",
       "receiptPath": "data/validation/st-marche-discovery-v4.json",
-      "receiptSha256": null
+      "receiptSha256": "7a6298caf77a061c81ae54284110199fe6f9122aa6ef88d5518da90ac72d293c"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T04:24:56.820Z",
+      "validatedAt": "2026-07-11T07:05:43.649Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Trusted sequential execution of the public Pavão store loader produced 30/30 complete offers; top-level hasInventory changed across official store IDs and is the regional availability field.",
       "receiptPath": "data/validation/st-marche-extraction-v3.json",
-      "receiptSha256": null
+      "receiptSha256": "45ba6180e7574247180dd3aef039669e6b6e6a700971cdcb23bff7fb7eca7171"
     }
   }
 }
