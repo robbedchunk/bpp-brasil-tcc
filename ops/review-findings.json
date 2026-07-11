@@ -84,6 +84,13 @@
       "severity": "important",
       "status": "resolved",
       "fixCommit": "752033406286f6aff4d04605842b794e4e2b7bd4"
+    },
+    {
+      "id": "m7-canonical-fresh-clone-timestamp",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "d9d500352870161364db8e749c3e27d2e012a115"
     }
   ]
 }
