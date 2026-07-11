@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "allowedDomains": [
+    "carrefourbrfood.vtexcommercestable.com.br",
+    "mercado.carrefour.com.br"
+  ],
+  "purpose": "extraction",
+  "tier": "api",
+  "request": {
+    "method": "GET",
+    "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
+    "headers": {
+      "accept": "application/json"
+    },
+    "query": {
+      "fq": "productId:{externalId}",
+      "sc": 2
+    }
+  },
+  "regionalContext": {
+    "kind": "vtex-segment",
+    "regionId": "v2.682B43B8BB2E50ABE226417A4A61990F",
+    "salesChannel": "2",
+    "catalogSellerId": "1"
+  },
+  "fields": {
+    "title": "$[0].productName",
+    "brand": "$[0].brand",
+    "price": "$[0].items[0].sellers[0].commertialOffer.Price",
+    "promoPrice": "$[0].items[0].sellers[0].commertialOffer.PromotionPrice",
+    "unit": "$[0].items[0].measurementUnit",
+    "availability": "$[0].items[0].sellers[0].commertialOffer.IsAvailable"
+  }
+}

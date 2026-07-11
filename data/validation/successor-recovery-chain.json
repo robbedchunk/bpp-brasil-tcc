@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "parent": {
+    "sourceCommit": "0b7fdb77d6f593e27a66b8aec42d55d849f2e226",
+    "planPath": "data/validation/successor-recovery-plan.json",
+    "planFileSha256": "5ddcc9d8f49cab7370f1cb79868469797f323f0044e23895c5aecef5cb56024b",
+    "validatorArtifactSha256": "946e7fea7c29e788c0616bc62164e60b61d02f40c543acd872b1f430d5d710d3",
+    "attestationKeyId": "b9583b0ea8efeb057d8fbbb01d7028063857dad6461354af7265e061faef022a"
+  },
+  "plan": {
+    "retailerId": "carrefour",
+    "purpose": "extraction",
+    "activeVersion": 5,
+    "ancestorFailedVersions": [
+      6
+    ],
+    "failedVersion": 7,
+    "toVersion": 8,
+    "activeStrategySha256": "ce0757d400c9f63704765d57d244a45eb3819d4589bf7ebed269249ea102999b",
+    "failedStrategySha256": "1b92a7385cfd65b32a5c745988bc3f5b793448f4fae9b0dd9429a02b56a4c8e1",
+    "candidatePath": "data/validation/candidates/carrefour-extraction-v8.json",
+    "candidateFileSha256": "8de40bfa871b564b4ad604caa355265a812c4ced2185e70d8049f1b15df69d3a",
+    "strategySha256": "3ef41c63c73f8b20e2da8a0941b7898769daef38629d5691e943850dae0eeac1",
+    "failedAttemptPath": "data/validation/attempts/carrefour-extraction-v7.json",
+    "failedAttemptFileSha256": "110305cfd8024a5a79a8fa6875ec31a8c28e02c02a96cd8baf3ad1b4bae00748",
+    "failedAttemptReceiptSha256": "47763465a4b34af3d6bf2cdbdd33b7d42c2c0a822370e970ac7cf4fd73c2acce",
+    "failedAttemptSampleSetSha256": "09f0bc891d3eaf3f9f4557714c9156e6906ee195e7d16c19d08ca6a6ef3c8620",
+    "configPatch": {
+      "cep": "01001-000",
+      "platformEvidence": {
+        "platform": "VTEX public catalog plus checkout region",
+        "observedAt": "2026-07-11T14:55:42.000Z",
+        "urls": [
+          "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search/mercearia?_from=0&_to=49&sc=2",
+          "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/category/tree/3",
+          "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01001000&sc=2"
+        ],
+        "notes": "The public category tree identifies seven food-at-home departments. The recorded São Paulo CEP 01001-000 maps to covered food store carrefourbrfood396 and the non-secret VTEX region used only by extraction."
+      },
+      "storeMapping": {
+        "storeId": "carrefourbrfood396",
+        "erpCode": null,
+        "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01001000&sc=2"
+      }
+    },
+    "reason": "Carrefour extraction v6 and v7 remain preserved below-gate experiments; v8 moves the recorded São Paulo delivery context to the official Sé region that produced 28/30 complete offers on the unchanged challenge."
+  }
+}
