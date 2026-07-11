@@ -258,7 +258,7 @@ function stripOptionalNulls(value: unknown, schema: z.core.$ZodType): unknown {
   if (schema instanceof z.ZodObject && value !== null && typeof value === "object" && !Array.isArray(value)) {
     const result: Record<string, unknown> = { ...value };
     for (const [key, field] of Object.entries(schema.shape)) {
-      if (result[key] === null && field.isOptional() && !field.isNullable()) {
+      if (result[key] === null && field.isOptional()) {
         delete result[key];
       } else if (key in result) {
         result[key] = stripOptionalNulls(result[key], field);

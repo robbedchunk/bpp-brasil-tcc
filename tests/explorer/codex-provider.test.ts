@@ -547,15 +547,35 @@ describe("Codex SDK strategy provider", () => {
     });
   });
 
-  it("treats null optional fields in the final response as absent", async () => {
+  it("treats a null GET body in the final response as absent", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-null-fields-test-"));
     roots.push(workspacePath);
-    const responseWithNullOptionalField = {
+    const getStrategy = {
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: {
+        method: "GET",
+        url: "{productUrl}",
+        headers: {},
+      },
+      fields: {
+        title: "$.title",
+        brand: "$.brand",
+        price: "$.price",
+        promoPrice: "$.promoPrice",
+        unit: "$.unit",
+        availability: "$.availability",
+      },
+    } as const;
+    const responseWithNullBody = {
       strategy: {
-        ...strategy,
-        selectors: {
-          ...strategy.selectors,
-          title: [{ selector: ".product-title", attribute: null }],
+        ...getStrategy,
+        request: {
+          ...getStrategy.request,
+          // Wire null means absence for optional fields, so an explicit JSON-null POST body cannot be represented.
+          body: null,
         },
       },
     };
@@ -564,8 +584,8 @@ describe("Codex SDK strategy provider", () => {
       codexFactory: () => ({
         startThread: () => ({
           runStreamed: async () => {
-            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
-            return streamed(JSON.stringify(responseWithNullOptionalField), usage(1, 1));
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy: getStrategy }));
+            return streamed(JSON.stringify(responseWithNullBody), usage(1, 1));
           },
         }),
       }),
@@ -577,7 +597,59 @@ describe("Codex SDK strategy provider", () => {
       allowedDomains: ["shop.test"],
       workspacePath,
       prompt: "Create the artifact.",
-    })).resolves.toMatchObject({ status: "candidate", strategy });
+    })).resolves.toMatchObject({ status: "candidate", strategy: getStrategy });
+  });
+
+  it("restores a null cursor initial value through its Zod default", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-null-cursor-test-"));
+    roots.push(workspacePath);
+    const cursorStrategy = {
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: {
+        method: "GET",
+        url: "https://shop.test/products?cursor={cursor}",
+        headers: {},
+      },
+      itemsPath: "$.items",
+      refFields: { url: "$.url" },
+      pagination: {
+        kind: "cursor",
+        nextCursorPath: "$.nextCursor",
+        maxPages: 10,
+      },
+      maxProducts: 100,
+    } as const;
+    const responseWithNullInitial = {
+      strategy: {
+        ...cursorStrategy,
+        pagination: { ...cursorStrategy.pagination, initial: null },
+      },
+    };
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => {
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy: cursorStrategy }));
+            return streamed(JSON.stringify(responseWithNullInitial), usage(1, 1));
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "discovery",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "candidate",
+      strategy: { ...cursorStrategy, pagination: { ...cursorStrategy.pagination, initial: null } },
+    });
   });
 
   it("retains streamed usage when the SDK generator throws after turn completion", async () => {
