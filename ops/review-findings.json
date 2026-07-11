@@ -103,22 +103,22 @@
       "id": "m7-carrefour-derived-regional-context",
       "milestone": "M7",
       "severity": "critical",
-      "status": "open",
-      "fixCommit": null
+      "status": "resolved",
+      "fixCommit": "89644ce66bbcb29d88bff87cbf730db908b24270"
     },
     {
       "id": "m7-carrefour-cross-origin-regional-header",
       "milestone": "M7",
       "severity": "important",
-      "status": "open",
-      "fixCommit": null
+      "status": "resolved",
+      "fixCommit": "89644ce66bbcb29d88bff87cbf730db908b24270"
     },
     {
       "id": "m7-discovery-timeout-test-load-flake",
       "milestone": "M7",
       "severity": "important",
-      "status": "open",
-      "fixCommit": null
+      "status": "resolved",
+      "fixCommit": "89644ce66bbcb29d88bff87cbf730db908b24270"
     }
   ]
 }
