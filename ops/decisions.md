@@ -82,6 +82,24 @@
   one-shot services, but both heartbeat and backup drills exited successfully;
   this host-level limit remains visible for operator follow-up.
 
+## 2026-07-10 — M7 publication boundary
+
+- Publication auditing scans the prospective Git tree and every blob reachable
+  from local refs. Findings expose only rule IDs and safe locations; matched
+  credential or private payload values are never printed or hashed into reports.
+- Sanitized bounded HTML under `tests/fixtures/` remains public test evidence.
+  Runtime raw HTML/replay archives, `.env`, profiles, logs, alerts, locks,
+  backups, SQLite sidecars, and raw drill receipts remain ignored and private.
+- The observation SQLite snapshot may retain nullable replay metadata columns,
+  but public database/CSV auditing rejects raw bodies, credentials, personal
+  data, absolute host paths, and tracked replay targets.
+- Fresh-clone verification removes credential integrations, uses an isolated
+  database and HOME, performs no live retailer/model/alert call, and proves the
+  public analysis can be regenerated from committed CSV inputs.
+- The author controls remote creation and publication. A history secret blocks
+  publication and requires rotation plus explicit approval before destructive
+  history rewriting.
+
 ## 2026-07-10 — M6 index method and public snapshots
 
 - Index calculation is read-only with respect to SQLite. Derived rows are

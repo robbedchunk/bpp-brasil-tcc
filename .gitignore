@@ -20,6 +20,11 @@ data/*.sqlite.migration-*
 *.log
 !data/precos.sqlite
 
+# Local analysis and acceptance scratch
+__pycache__/
+*.pyc
+.venv/
+
 # Test and editor artifacts
 playwright-report/
 test-results/

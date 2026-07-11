@@ -22,6 +22,8 @@
     "analysis:test": "vitest run tests/analysis",
     "analysis": "var/analysis-venv/bin/python analysis/generate.py --input data/exports --output analysis/output",
     "research:snapshot": "npm run build && bash ops/run-weekly-index.sh",
+    "audit:publication": "tsx scripts/audit-publication.ts",
+    "verify:fresh-clone": "bash ops/verify-fresh-clone.sh",
     "test": "vitest run",
     "test:live": "vitest run",
     "typecheck": "tsc --noEmit"
