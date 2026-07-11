@@ -42,6 +42,44 @@ describe("daily pipeline", () => {
       pipeline: "collect",
       status: "completed",
     });
+    const heartbeat = database.prepare("SELECT details_json FROM heartbeats").get() as {
+      details_json: string;
+    };
+    expect(JSON.parse(heartbeat.details_json)).toMatchObject({ trigger: "manual" });
+  });
+
+  it("records explicit installed-timer provenance without relying on wall-clock time", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database, "a");
+
+    await runDaily({
+      database,
+      trigger: "systemd-timer",
+      now: () => new Date("2026-07-10T09:47:00.000Z"),
+      collect: async () => ({
+        id: "run-a",
+        retailerId: "a",
+        stage: "collect",
+        attempted: 1,
+        ok: 1,
+        failed: 0,
+        successRate: 1,
+        status: "completed",
+        startedAt: "2026-07-10T09:47:00.000Z",
+        finishedAt: "2026-07-10T09:47:00.000Z",
+        dryRun: false,
+      }),
+    });
+
+    const row = database.prepare("SELECT details_json FROM heartbeats").get() as {
+      details_json: string;
+    };
+    expect(JSON.parse(row.details_json)).toMatchObject({
+      trigger: "systemd-timer",
+      timerUnit: "precos-daily.timer",
+      runIds: ["run-a"],
+    });
   });
 
   it("does not record a completion heartbeat for a dry run", async () => {

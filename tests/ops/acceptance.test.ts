@@ -59,8 +59,12 @@ function seedCollection(
   ok = 27,
   attempted = 30,
   scheduledTime = "06:00:00.000Z",
+  trigger: "manual" | "systemd-timer" = "systemd-timer",
 ): void {
   const runId = `run-${retailerId}-${day}`;
+  const scheduledAt = `${day}T${scheduledTime}`;
+  const completedAt = new Date(Date.parse(scheduledAt) + 10 * 60_000).toISOString();
+  const observedAt = new Date(Date.parse(scheduledAt) + 5 * 60_000).toISOString();
   database.prepare(`
     INSERT INTO runs(
       id, retailer_id, stage, collection_day, strategy_id, strategy_version,
@@ -74,8 +78,8 @@ function seedCollection(
     attempted,
     ok,
     attempted - ok,
-    `${day}T${scheduledTime}`,
-    `${day}T06:10:00.000Z`,
+    scheduledAt,
+    completedAt,
   );
   const products = database.prepare(
     "SELECT id FROM products WHERE retailer_id = ? ORDER BY id LIMIT ?",
@@ -92,7 +96,7 @@ function seedCollection(
       product.id,
       runId,
       `strategy-${retailerId}`,
-      `${day}T06:05:00.000Z`,
+      observedAt,
       day,
     );
   }
@@ -101,9 +105,13 @@ function seedCollection(
     VALUES (?, 'collect', ?, ?, 'completed', ?)
   `).run(
     `heartbeat-${runId}`,
-    `${day}T${scheduledTime}`,
-    `${day}T06:10:00.000Z`,
-    JSON.stringify({ runIds: [runId] }),
+    scheduledAt,
+    completedAt,
+    JSON.stringify({
+      trigger,
+      ...(trigger === "systemd-timer" ? { timerUnit: "precos-daily.timer" } : {}),
+      runIds: [runId],
+    }),
   );
 }
 
@@ -223,10 +231,47 @@ describe("acceptance status and evidence", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta"]) {
       seedRetailer(database, retailer);
-      seedCollection(database, retailer, "2026-07-09", 30, 30, "15:00:00.000Z");
-      seedCollection(database, retailer, "2026-07-10", 30, 30, "15:00:00.000Z");
+      seedCollection(database, retailer, "2026-07-09", 30, 30, "06:05:00.000Z", "manual");
+      seedCollection(database, retailer, "2026-07-10", 30, 30, "06:05:00.000Z", "manual");
     }
     expect(evaluateM2(database, new Date("2026-07-10T18:00:00.000Z")).criterion.status).not.toBe("pass");
+  });
+
+  it("accepts timer-provenanced persistent catch-up outside the nominal 03:00 window", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-09", 30, 30, "09:47:00.000Z");
+      seedCollection(database, retailer, "2026-07-10", 30, 30, "10:12:00.000Z");
+    }
+    expect(evaluateM2(database, new Date("2026-07-10T18:00:00.000Z")).criterion.status)
+      .toBe("pass");
+  });
+
+  it("fails rather than accepting future scheduled, run, or observation evidence", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-11");
+      seedCollection(database, retailer, "2026-07-12");
+    }
+    const result = evaluateM2(database, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+  });
+
+  it("rejects the exact 0.899 validation boundary", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      database.prepare("UPDATE strategies SET validation_rate = 0.899 WHERE retailer_id = ?")
+        .run(retailer);
+      seedCollection(database, retailer, "2026-07-09", 30, 30);
+      seedCollection(database, retailer, "2026-07-10", 30, 30);
+    }
+    const result = evaluateM2(database, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).not.toBe("pass");
+    expect(result.evidence[0]?.facts.qualifyingRetailers).toBe(0);
   });
 
   it("rejects undersized and below-boundary M2 runs", () => {

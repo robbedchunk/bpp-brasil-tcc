@@ -76,8 +76,10 @@ describe("production schedules", () => {
     expect(service).toContain(`WorkingDirectory=${projectRoot}`);
     expect(service).toContain(`ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" daily --json`);
     expect(service).toContain("Environment=TZ=America/Sao_Paulo");
+    expect(service).toContain("Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer");
     expect(service).toContain(`EnvironmentFile=-${projectRoot}/.env`);
     expect(service).toContain("OnSuccess=precos-classification.service");
+    expect(service).toContain("RefuseManualStart=yes");
     const classificationService = await readFile(
       join(destination, "precos-classification.service"),
       "utf8",

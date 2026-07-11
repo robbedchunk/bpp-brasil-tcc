@@ -20,6 +20,12 @@ export interface DailySummary {
 export interface DailyPipelineDependencies
   extends Omit<CollectionPipelineDependencies, "database"> {
   database: Database.Database;
+  /**
+   * Immutable invocation provenance recorded with the completion heartbeat.
+   * Only the installed timer service is allowed to supply `systemd-timer`;
+   * ordinary CLI/API calls deliberately default to `manual`.
+   */
+  trigger?: "manual" | "systemd-timer";
   collect?: (retailerId: string) => Promise<RunSummary>;
   retailerOptions?: (
     retailerId: string,
@@ -81,6 +87,10 @@ export async function runDaily(
       completedAt: finishedAt,
       status: "completed",
       details: {
+        trigger: dependencies.trigger ?? "manual",
+        ...(dependencies.trigger === "systemd-timer"
+          ? { timerUnit: "precos-daily.timer" }
+          : {}),
         retailerIds,
         runIds: runs.map((run) => run.id),
         monitorFailedRunIds,

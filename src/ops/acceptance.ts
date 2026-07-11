@@ -249,10 +249,15 @@ interface M2Row {
   heartbeat_id: string;
   scheduled_for: string;
   completed_at: string;
+  heartbeat_trigger: string | null;
+  timer_unit: string | null;
   run_id: string;
   retailer_id: string;
   collection_day: string;
   status: string;
+  run_started_at: string;
+  run_finished_at: string | null;
+  latest_observation_at: string | null;
   attempted: number;
   ok: number;
   failed: number;
@@ -273,6 +278,8 @@ WITH active_product_counts AS (
     heartbeat.id AS heartbeat_id,
     heartbeat.scheduled_for,
     heartbeat.completed_at,
+    json_extract(heartbeat.details_json, '$.trigger') AS heartbeat_trigger,
+    json_extract(heartbeat.details_json, '$.timerUnit') AS timer_unit,
     run_id.value AS run_id
   FROM heartbeats AS heartbeat,
        json_each(heartbeat.details_json, '$.runIds') AS run_id
@@ -285,17 +292,22 @@ SELECT
   linked.heartbeat_id,
   linked.scheduled_for,
   linked.completed_at,
+  linked.heartbeat_trigger,
+  linked.timer_unit,
   run.id AS run_id,
   run.retailer_id,
   run.collection_day,
   run.status,
+  run.started_at AS run_started_at,
+  run.finished_at AS run_finished_at,
   run.attempted,
   run.ok,
   run.failed,
   strategy.validation_sample_size,
   strategy.validation_rate,
   products.active_products,
-  COUNT(observation.id) AS observation_rows
+  COUNT(observation.id) AS observation_rows,
+  MAX(observation.observed_at) AS latest_observation_at
 FROM heartbeat_run_ids AS linked
 JOIN runs AS run ON run.id = linked.run_id
 JOIN strategies AS strategy ON strategy.id = run.strategy_id
@@ -306,15 +318,43 @@ WHERE run.stage = 'collect'
 GROUP BY linked.heartbeat_id, run.id, strategy.id, products.active_products
 ORDER BY run.collection_day, run.retailer_id, run.started_at, run.id`;
 
-function validateHeartbeatLinks(database: Database.Database): string[] {
+function validTimestampAtOrBefore(value: string | null, now: Date): boolean {
+  if (value === null) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp <= now.getTime();
+}
+
+function scheduledHeartbeatDetails(value: unknown): value is {
+  trigger: "systemd-timer";
+  timerUnit: "precos-daily.timer";
+} {
+  return typeof value === "object" && value !== null
+    && (value as Record<string, unknown>).trigger === "systemd-timer"
+    && (value as Record<string, unknown>).timerUnit === "precos-daily.timer";
+}
+
+function validateHeartbeatLinks(database: Database.Database, now: Date): string[] {
   const rows = database.prepare(`
-    SELECT id, details_json
+    SELECT id, scheduled_for, completed_at, details_json
     FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
     ORDER BY completed_at, id
-  `).all() as Array<{ id: string; details_json: string }>;
+  `).all() as Array<{
+    id: string;
+    scheduled_for: string;
+    completed_at: string;
+    details_json: string;
+  }>;
   const contradictions: string[] = [];
-  const runExists = database.prepare("SELECT 1 FROM runs WHERE id = ?");
+  const runEvidence = database.prepare(`
+    SELECT run.started_at, run.finished_at,
+      MAX(observation.observed_at) AS latest_observation_at
+    FROM runs AS run
+    LEFT JOIN observations AS observation ON observation.run_id = run.id
+    WHERE run.id = ?
+    GROUP BY run.id
+  `);
+  const linkedRunIds = new Set<string>();
   for (const row of rows) {
     let parsed: unknown;
     try {
@@ -329,8 +369,34 @@ function validateHeartbeatLinks(database: Database.Database): string[] {
     if (!Array.isArray(runIds) || runIds.length === 0
       || runIds.some((id) => typeof id !== "string" || id === "")
       || new Set(runIds).size !== runIds.length
-      || runIds.some((id) => runExists.get(id) === undefined)) {
+      || !validTimestampAtOrBefore(row.scheduled_for, now)
+      || !validTimestampAtOrBefore(row.completed_at, now)
+      || Date.parse(row.completed_at) < Date.parse(row.scheduled_for)
+      || ((parsed as Record<string, unknown>).trigger === "systemd-timer"
+        && !scheduledHeartbeatDetails(parsed))) {
       contradictions.push(row.id);
+      continue;
+    }
+    for (const runId of runIds as string[]) {
+      const run = runEvidence.get(runId) as {
+        started_at: string;
+        finished_at: string | null;
+        latest_observation_at: string | null;
+      } | undefined;
+      if (run === undefined
+        || linkedRunIds.has(runId)
+        || !validTimestampAtOrBefore(run.started_at, now)
+        || !validTimestampAtOrBefore(run.finished_at, now)
+        || Date.parse(run.started_at) < Date.parse(row.scheduled_for)
+        || Date.parse(run.finished_at ?? "") > Date.parse(row.completed_at)
+        || (run.latest_observation_at !== null
+          && (!validTimestampAtOrBefore(run.latest_observation_at, now)
+            || Date.parse(run.latest_observation_at) < Date.parse(run.started_at)
+            || Date.parse(run.latest_observation_at) > Date.parse(run.finished_at ?? "")))) {
+        contradictions.push(row.id);
+        break;
+      }
+      linkedRunIds.add(runId);
     }
   }
   return contradictions;
@@ -363,22 +429,12 @@ function saoPauloDay(value: string | Date): string {
   }).format(date);
 }
 
-function saoPauloMinutes(value: string | Date): number {
-  const date = value instanceof Date ? value : new Date(value);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "-1");
-  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "-1");
-  return hour * 60 + minute;
-}
-
-function isScheduledCollectionHeartbeat(scheduledFor: string): boolean {
-  const minutes = saoPauloMinutes(scheduledFor);
-  return minutes >= 3 * 60 && minutes <= 3 * 60 + 15;
+function isScheduledCollectionHeartbeat(input: {
+  heartbeat_trigger: string | null;
+  timer_unit: string | null;
+}): boolean {
+  return input.heartbeat_trigger === "systemd-timer"
+    && input.timer_unit === "precos-daily.timer";
 }
 
 function dailyBoundary(day: string): Date {
@@ -405,7 +461,7 @@ function currentScheduledBoundary(first: Date, now: Date, hour: number, minute: 
 
 export function evaluateM2(database: Database.Database, now: Date): CriterionEvaluation {
   const id = "m2-two-consecutive-days";
-  const contradictions = validateHeartbeatLinks(database);
+  const contradictions = validateHeartbeatLinks(database, now);
   const evidenceId = "db-m2-heartbeat-linked-collection-runs";
   if (contradictions.length > 0) {
     const contradictoryEvidence = evidence(
@@ -429,17 +485,26 @@ export function evaluateM2(database: Database.Database, now: Date): CriterionEva
     };
   }
   const allRows = database.prepare(M2_QUERY).all() as M2Row[];
-  const rows = allRows.filter((row) => isScheduledCollectionHeartbeat(row.scheduled_for)
+  const rows = allRows.filter((row) => isScheduledCollectionHeartbeat(row)
     && row.collection_day === saoPauloDay(row.scheduled_for));
   const selectedHeartbeatByDay = new Map<string, string>();
   const heartbeatRows = database.prepare(`
-    SELECT id, scheduled_for, completed_at FROM heartbeats
+    SELECT id, scheduled_for, completed_at,
+      json_extract(details_json, '$.trigger') AS heartbeat_trigger,
+      json_extract(details_json, '$.timerUnit') AS timer_unit
+    FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
     ORDER BY scheduled_for, id
-  `).all() as Array<{ id: string; scheduled_for: string; completed_at: string }>;
-  const scheduledHeartbeats = heartbeatRows.filter((heartbeat) => isScheduledCollectionHeartbeat(heartbeat.scheduled_for));
+  `).all() as Array<{
+    id: string;
+    scheduled_for: string;
+    completed_at: string;
+    heartbeat_trigger: string | null;
+    timer_unit: string | null;
+  }>;
+  const scheduledHeartbeats = heartbeatRows.filter(isScheduledCollectionHeartbeat);
   for (const heartbeat of heartbeatRows) {
-    if (!isScheduledCollectionHeartbeat(heartbeat.scheduled_for)) continue;
+    if (!isScheduledCollectionHeartbeat(heartbeat)) continue;
     const day = saoPauloDay(heartbeat.scheduled_for);
     if (!selectedHeartbeatByDay.has(day)) selectedHeartbeatByDay.set(day, heartbeat.id);
   }
@@ -1081,6 +1146,10 @@ export function validateTimerDefinitions(
     const installed = readFileSync(classificationInstalledPath, "utf8");
     valid &&= /OnSuccess=precos-classification\.service/u.test(daily)
       && /OnSuccess=precos-classification\.service/u.test(installedDaily)
+      && /RefuseManualStart=yes/u.test(daily)
+      && /RefuseManualStart=yes/u.test(installedDaily)
+      && /Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer/u.test(daily)
+      && /Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer/u.test(installedDaily)
       && /After=precos-daily\.service/u.test(classification)
       && /WorkingDirectory=@PROJECT_ROOT@/u.test(classification)
       && /Environment=@RUNTIME_PATH@/u.test(classification)
@@ -1148,11 +1217,19 @@ function m7Evaluation(
   const currentBackupStart = currentScheduledBoundary(firstBackupStart, now, 4, 15);
   const currentBackupDeadline = currentScheduledBoundary(firstBackupDeadline, now, 5, 15);
   const heartbeatCandidates = database.prepare(`
-    SELECT scheduled_for, completed_at FROM heartbeats
+    SELECT scheduled_for, completed_at,
+      json_extract(details_json, '$.trigger') AS heartbeat_trigger,
+      json_extract(details_json, '$.timerUnit') AS timer_unit
+    FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
     ORDER BY completed_at DESC, id DESC
-  `).all() as Array<{ scheduled_for: string; completed_at: string }>;
-  const latestHeartbeat = heartbeatCandidates.find((heartbeat) => isScheduledCollectionHeartbeat(heartbeat.scheduled_for)
+  `).all() as Array<{
+    scheduled_for: string;
+    completed_at: string;
+    heartbeat_trigger: string | null;
+    timer_unit: string | null;
+  }>;
+  const latestHeartbeat = heartbeatCandidates.find((heartbeat) => isScheduledCollectionHeartbeat(heartbeat)
     && Date.parse(heartbeat.scheduled_for) >= currentDailyStart.getTime());
   const heartbeatAgeHours = latestHeartbeat === undefined
     ? null

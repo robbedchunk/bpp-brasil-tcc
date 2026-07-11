@@ -776,6 +776,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         pipelineLockPath(),
         () => withDatabase((database) => runDaily({
           database,
+          trigger: environment.PRECOS_SCHEDULE_SOURCE === "systemd-timer"
+            ? "systemd-timer"
+            : "manual",
           limit: Math.min(options.limit ?? applicationConfig.dailyPageCap, 2_000),
           dryRun: options.dryRun === true,
           concurrency: applicationConfig.pageConcurrency,
