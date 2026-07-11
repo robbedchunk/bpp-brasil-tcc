@@ -56,6 +56,15 @@ of rebuilding from a dirty tree. Missing or mismatched evidence is never
 overwritten. Trusted-host attempts below 27/30 are preserved automatically in
 `data/validation/attempts/` and require a successor strategy version.
 
+When a candidate fails, its version is permanently burned. Recovery plans and
+strategy-only candidate files under `data/validation/` bind each later version
+to the signed failed receipt, its source commit, the pinned validator digest,
+and any restricted retailer-level CEP/store patch. A multi-step failure chain
+is append-only: no failed receipt is deleted, rewritten, or later reused as
+activation evidence. Already-active purposes retain their original immutable
+evidence while only the pending purpose is revalidated against the current
+independent challenge.
+
 The exploration/healing path uses the same runner from the committed bundled
 `dist/scripts/validate-strategies.js`. Each candidate is checked against a
 preselected authoritative challenge in a private temporary config directory;

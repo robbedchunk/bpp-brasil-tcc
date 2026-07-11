@@ -404,3 +404,28 @@
   input they parse. Source/config evolution is isolated until a compatible,
   verified deployment can occur; a frozen binary alone is not a release
   boundary.
+
+## 2026-07-11 — Validator rotation and burned-version recovery
+
+- The corrected discovery/healing and index implementation changed the pinned
+  trusted-validator bundle. All eight active strategy purposes were therefore
+  re-attested instead of silently accepting receipts from the prior trust
+  anchor. Six first successors passed. Carrefour extraction v6 scored 26/30
+  and Extra discovery v4 scored 24/30; both signed failures remain published
+  and were never activated.
+- Extra v5 keeps the 3,000-product ceiling but uses deterministic ascending-price
+  category order, allocates 2,200 Alimentos and 750 Bebidas records, and adds
+  the official 50-record baby-cereal segment. It passed the unchanged trusted
+  challenge at 27/30. No live product was hidden or marked inactive to improve
+  the score.
+- Carrefour's default Paulista region was too volatile for the fixed meat-heavy
+  challenge. The charter permits a retailer-specific covered São Paulo CEP when
+  delivery coverage requires it. The Brooklin candidate (v7, CEP `04601-000`)
+  also scored 26/30 and remains a second burned version. Bounded comparisons of
+  official checkout regions then selected CEP `01001-000` (Praça da Sé), region
+  `v2.682B43B8BB2E50ABE226417A4A61990F`, and food store
+  `carrefourbrfood396`; v8 passed 28/30 with catalog seller `1` unchanged.
+- The failed receipts, candidate strategy JSON, parent plans, source commits,
+  validator digest, and config-only CEP transitions form an append-only public
+  recovery chain. Challenge selection, validation threshold, seller binding,
+  and authoritative catalog references were not weakened.
