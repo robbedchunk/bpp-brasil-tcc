@@ -124,7 +124,7 @@ function createPoliteGate(
 
 interface BlockingController {
   beforeAttempt(): Promise<boolean>;
-  observe(result: ExtractionResult): void;
+  completeAttempt(result: ExtractionResult): void;
   readonly stopped: boolean;
   readonly stopCategory: FailureCategory | null;
 }
@@ -141,6 +141,7 @@ function createBlockingController(
   configured: BlockingBackoffPolicy | undefined,
   sleep: (milliseconds: number) => Promise<void>,
   clock: () => number,
+  politeGate: () => Promise<void>,
 ): BlockingController {
   const source = configured ?? DEFAULT_BLOCKING_POLICY;
   const policy = {
@@ -163,53 +164,96 @@ function createBlockingController(
   };
   policy.maxDelayMs = Math.max(policy.initialDelayMs, policy.maxDelayMs);
 
-  let consecutiveHard = 0;
-  let consecutiveTransport = 0;
+  let hardFailures = 0;
+  let transportFailures = 0;
+  let blockingAttempts = 0;
   let notBefore = clock();
+  let inFlight = 0;
+  let provisionalStop = false;
   let stopped = false;
   let stopCategory: FailureCategory | null = null;
   let queue = Promise.resolve();
+  const stateWaiters = new Set<() => void>();
+
+  const notifyStateChange = (): void => {
+    const waiters = [...stateWaiters];
+    stateWaiters.clear();
+    waiters.forEach((resolveWaiter) => resolveWaiter());
+  };
+  const waitForStateChange = (): Promise<void> =>
+    new Promise((resolveWaiter) => stateWaiters.add(resolveWaiter));
 
   return {
     async beforeAttempt(): Promise<boolean> {
       const turn = queue.then(async () => {
-        if (stopped) return false;
-        const delay = Math.max(0, notBefore - clock());
-        if (delay > 0) await sleep(delay);
-        return !stopped;
+        let politeReady = false;
+        while (true) {
+          if (stopped) return false;
+          if (provisionalStop) {
+            if (inFlight === 0) {
+              stopped = true;
+              return false;
+            }
+            await waitForStateChange();
+            continue;
+          }
+          if (!politeReady) {
+            await politeGate();
+            politeReady = true;
+            continue;
+          }
+          const delay = Math.max(0, notBefore - clock());
+          if (delay > 0) {
+            await sleep(delay);
+            continue;
+          }
+          if (stopped || provisionalStop) continue;
+          inFlight += 1;
+          return true;
+        }
       });
       queue = turn.then(() => undefined, () => undefined);
       return turn;
     },
-    observe(result: ExtractionResult): void {
+    completeAttempt(result: ExtractionResult): void {
+      if (inFlight <= 0) throw new Error("Blocking controller completed an unstarted attempt");
       const category = result.ok === false ? result.failure?.category : undefined;
-      let sequence = 0;
-      let limit = 0;
       if (category !== undefined && HARD_BLOCKING_FAILURES.has(category)) {
-        consecutiveHard += 1;
-        consecutiveTransport = 0;
-        sequence = consecutiveHard;
-        limit = policy.hardFailureLimit;
+        hardFailures += 1;
+        blockingAttempts += 1;
       } else if (category !== undefined && TRANSPORT_FAILURES.has(category)) {
-        consecutiveTransport += 1;
-        consecutiveHard = 0;
-        sequence = consecutiveTransport;
-        limit = policy.transportFailureLimit;
+        transportFailures += 1;
+        blockingAttempts += 1;
       } else {
-        consecutiveHard = 0;
-        consecutiveTransport = 0;
+        hardFailures = 0;
+        transportFailures = 0;
+        blockingAttempts = 0;
         notBefore = clock();
-        return;
+        provisionalStop = false;
+        stopCategory = null;
       }
 
-      if (sequence >= limit) {
-        stopped = true;
-        stopCategory = category ?? null;
-        return;
+      if (category !== undefined && (
+        HARD_BLOCKING_FAILURES.has(category) || TRANSPORT_FAILURES.has(category)
+      )) {
+        const qualifiedTransport = transportFailures >= 2 ? transportFailures : 0;
+        const unifiedAccessStreak = hardFailures + qualifiedTransport;
+        const reachedStop = transportFailures >= Math.max(2, policy.transportFailureLimit)
+          || (hardFailures > 0 && unifiedAccessStreak >= policy.hardFailureLimit);
+        if (reachedStop) {
+          if (!provisionalStop) stopCategory = category;
+          provisionalStop = true;
+        } else {
+          const exponential = policy.initialDelayMs
+            * (2 ** Math.max(0, blockingAttempts - 1));
+          const bounded = Math.min(policy.maxDelayMs, exponential);
+          notBefore = Math.max(notBefore, clock()) + bounded;
+        }
       }
-      const exponential = policy.initialDelayMs * (2 ** Math.max(0, sequence - 1));
-      const bounded = Math.min(policy.maxDelayMs, exponential);
-      notBefore = Math.max(notBefore, clock()) + bounded;
+
+      inFlight -= 1;
+      if (provisionalStop && inFlight === 0) stopped = true;
+      notifyStateChange();
     },
     get stopped(): boolean {
       return stopped;
@@ -285,18 +329,20 @@ export async function runCollection(
       retailerId,
       { size: DAILY_REPLAY_SAMPLE, random },
     );
+    const sleep = dependencies.sleep ?? ((milliseconds: number) =>
+      new Promise<void>((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
+    const clock = dependencies.clock ?? Date.now;
     const politeGate = createPoliteGate(
       dependencies.politeDelayMs,
       random,
-      dependencies.sleep ?? ((milliseconds) =>
-        new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
-      dependencies.clock ?? Date.now,
+      sleep,
+      clock,
     );
     const blockingController = createBlockingController(
       dependencies.blockingPolicy,
-      dependencies.sleep ?? ((milliseconds) =>
-        new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
-      dependencies.clock ?? Date.now,
+      sleep,
+      clock,
+      politeGate,
     );
 
     const persistAttempt = async (
@@ -354,15 +400,18 @@ export async function runCollection(
         counters.attempted += 1;
         let result: ExtractionResult;
         try {
-          await politeGate();
           result = await execute(active.strategy, product);
         } catch (error) {
           result = rejected(error);
         }
         const pending = { product, result };
         const html = result.html;
-        const evidence = await persistAttempt(pending);
-        blockingController.observe(result);
+        let evidence: ReplayEvidenceRef | undefined;
+        try {
+          evidence = await persistAttempt(pending);
+        } finally {
+          blockingController.completeAttempt(result);
+        }
         if (html === undefined || evidence === undefined) return;
         try {
           await replayReservoir.consider(html, evidence);
@@ -410,6 +459,7 @@ export async function runCollection(
     status = pipelineFailed
       ? counters.ok > 0 ? "partial" : "failed"
       : terminalStatus(counters.ok, counters.failed);
+    const skipped = Math.max(0, products.length - counters.attempted);
     finalizeRun(
       dependencies.database,
       runId,
@@ -417,6 +467,11 @@ export async function runCollection(
       status,
       finishedAt,
       finalError,
+      {
+        planned: products.length,
+        skipped,
+        stoppedForBlocking: stopped,
+      },
     );
   }
   return {

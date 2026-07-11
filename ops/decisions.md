@@ -179,16 +179,20 @@
 
 ## 2026-07-10 — Static charter-gap remediation
 
-- Collection uses a retailer-local blocking controller. Three consecutive hard
-  failures (`403`, `429`, CAPTCHA, or domain denial) or three consecutive
-  timeout/network failures stop new starts. Backoff begins at one second,
-  doubles, and is capped at eight seconds. Any nonblocking outcome resets the
-  sequence because parse/missing/invalid-price evidence is drift, not access
-  blocking. In particular, an already-running success received after two fast
-  hard failures resets the sequence before the third-failure stop threshold.
+- Collection uses one retailer-local access streak. Hard failures (`403`, `429`,
+  CAPTCHA, or domain denial) contribute immediately; timeout/network failures
+  contribute only after repeated transport evidence. They do not reset one
+  another, so alternating categories still stop. Backoff begins at one second,
+  doubles, is capped at eight seconds, and its serialized gate rechecks a deadline
+  extended while sleeping. Any nonblocking outcome resets the sequence.
 - The concurrency pool remains between three and five. Work already in flight
-  finishes and persists; only actual attempts affect run counters and failure
-  rows. Summaries expose planned, attempted, skipped, and blocking-stop facts.
+  finishes and persists. A threshold is provisional until that executing wave
+  resolves, but once committed it remains latched. Polite-queued work rechecks the
+  latch before execution, so only actual starts affect counters and failure rows.
+  Finalization atomically patches validated planned/skipped/blocking-stop metadata;
+  `planned = attempted + skipped` is required. A final-product threshold keeps the
+  stop fact with zero skipped so the health monitor alerts regardless of the 70%
+  shortcut and never spends healing-model budget.
 - Browser contexts retain the identifying academic user agent and all existing
   network controls. The only stealth profile is the charter-authorized minimum:
   Chromium's `AutomationControlled` signal is disabled, locale/timezone/viewport

@@ -46,11 +46,14 @@ npm run precos -- status --json
 ```
 
 Collection treats HTTP 403/429, CAPTCHA, and denied-domain results as hard
-blocking evidence. Three consecutive hard failures stop new product starts;
-timeout/network evidence requires three consecutive failures. Before those
-limits, starts use exponential delays beginning at one second, with an
-eight-second cap. Already in-flight requests finish and persist normally;
-unstarted products are reported as skipped, not inserted as synthetic failures.
+blocking evidence in one retailer-local access streak. Timeout/network evidence
+must repeat before joining that same streak, so alternating hard and transport
+categories cannot evade the stop; any responding extraction result or success
+resets it. Before the threshold, starts use exponential delays beginning at one
+second, with an eight-second cap. The serialized admission gate rechecks both an
+extended deadline and blocking state after every wait. Requests already executing
+finish; work only queued for polite spacing is not attempted after a stop.
+Unstarted products are reported as skipped, not inserted as synthetic failures.
 
 ## Logs, alerts, and health
 
@@ -59,6 +62,13 @@ permissions and recursive redaction. A valid `NTFY_TOPIC` sends to ntfy; missing
 invalid, or failed ntfy delivery falls back locally. Alert conditions include a
 stale collection heartbeat, blocking/degradation, healing failure, pending
 classification/provider work, and budget breach.
+
+Collection finalization atomically records coherent `planned`, `skipped`, and
+`stoppedForBlocking` metadata with the run counters. The monitor treats that stop
+fact as blocking even when aggregate extraction success is at least 70%, alerts,
+and spends no healing-model budget. The fact remains true when the threshold is
+reached on the final planned product (`skipped = 0`) so access evidence is not
+hidden by the success-rate shortcut.
 
 The hourly checker alerts when no successful collection heartbeat exists or the
 latest is older than 24 hours. Missing collection days remain gaps.

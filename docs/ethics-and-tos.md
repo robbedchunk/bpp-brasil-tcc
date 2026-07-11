@@ -16,15 +16,17 @@ session identifiers, address details, and unrelated page state are removed.
 - identifiable research user agent where practical;
 - robots.txt respected for sitemap and DOM discovery.
 
-Three consecutive hard access failures, or three consecutive timeout/network
-failures, stop the affected retailer's unstarted remainder. Requests already in
-flight finish and are recorded; skipped products are never fabricated as failed
-attempts. The browser uses only the charter-approved minimal stable São Paulo
-profile (`pt-BR`, `AutomationControlled` disabled, and `navigator.webdriver`
-normalized) while retaining the identifying academic user agent. The system does
-not use proxies, CAPTCHA-solving/bypass, stolen sessions, broader fingerprint
-spoofing, or paid anti-blocking services. Any such change requires author
-approval and is outside the current pilot.
+Hard access failures share one persistent streak; transport failures join it only
+after repeated timeout/network evidence. Alternating those categories therefore
+cannot bypass the stop, while a responding parse result or success resets the
+streak. Requests already executing finish and are recorded, but work waiting only
+for polite spacing is cancelled and never counted; skipped products are never
+fabricated as failed attempts. The browser uses only the charter-approved minimal
+stable São Paulo profile (`pt-BR`, `AutomationControlled` disabled, and
+`navigator.webdriver` normalized) while retaining the identifying academic user
+agent. The system does not use proxies, CAPTCHA-solving/bypass, stolen sessions,
+broader fingerprint spoofing, or paid anti-blocking services. Any such change
+requires author approval and is outside the current pilot.
 
 ## Site terms and legal limits
 

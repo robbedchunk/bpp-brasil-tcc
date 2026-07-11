@@ -108,6 +108,72 @@ describe("drift monitor state machine", () => {
       .toEqual({ n: 0 });
   });
 
+  it("alerts on a persisted controller stop even above the healthy-rate shortcut", async () => {
+    const database = seed();
+    insertRun(database, "high-rate-blocked-run", [
+      { category: "http-403", responded: true },
+      { category: "http-429", responded: true },
+      { category: "captcha", responded: true },
+      { category: "domain-denied", responded: false },
+    ], 10, "partial");
+    database.prepare(
+      `UPDATE runs
+       SET error_category = 'domain-denied',
+           metadata_json = json_patch(metadata_json, ?)
+       WHERE id = 'high-rate-blocked-run'`,
+    ).run(JSON.stringify({ stoppedForBlocking: true, planned: 30, skipped: 16 }));
+    let healingCalls = 0;
+    const alerts: AlertEvent[] = [];
+
+    const decision = await monitorRun("high-rate-blocked-run", {
+      database,
+      heal: async () => {
+        healingCalls += 1;
+        throw new Error("must not heal a controller-forced blocking stop");
+      },
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(decision).toMatchObject({ health: "blocking", action: "alerted" });
+    expect(healingCalls).toBe(0);
+    expect(alerts).toEqual([expect.objectContaining({
+      title: "Retailer collection is blocked",
+      details: expect.objectContaining({
+        stoppedForBlocking: true,
+        planned: 30,
+        attempted: 14,
+        skipped: 16,
+      }),
+    })]);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM healing_events").get())
+      .toEqual({ n: 0 });
+  });
+
+  it("keeps final-product blocking detection actionable with zero skipped", async () => {
+    const database = seed();
+    insertRun(database, "final-product-blocked-run", [
+      { category: "http-403", responded: true },
+      { category: "http-429", responded: true },
+      { category: "captcha", responded: true },
+    ], 10, "partial");
+    database.prepare(
+      `UPDATE runs
+       SET error_category = 'captcha', metadata_json = json_patch(metadata_json, ?)
+       WHERE id = 'final-product-blocked-run'`,
+    ).run(JSON.stringify({ stoppedForBlocking: true, planned: 13, skipped: 0 }));
+    const alerts: AlertEvent[] = [];
+
+    const decision = await monitorRun("final-product-blocked-run", {
+      database,
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(decision).toMatchObject({ health: "blocking", action: "alerted" });
+    expect(alerts).toHaveLength(1);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM healing_events").get())
+      .toEqual({ n: 0 });
+  });
+
   it("only queues healing after a terminal drift run", async () => {
     const database = seed();
     insertRun(database, "drift-run", [

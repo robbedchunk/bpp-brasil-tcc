@@ -51,6 +51,12 @@ export interface RunCounters {
   failed: number;
 }
 
+export interface RunFinalizationMetadata {
+  planned?: number;
+  skipped?: number;
+  stoppedForBlocking?: boolean;
+}
+
 export interface ReplayReference {
   path: string;
   sha256: string;
@@ -121,6 +127,9 @@ export interface StoredRunHealth {
   failed: number;
   startedAt: string;
   finishedAt: string | null;
+  planned: number | null;
+  skipped: number;
+  stoppedForBlocking: boolean;
 }
 
 export interface StoredRunFailureEvidence {
@@ -229,14 +238,56 @@ export function finalizeRun(
   status: "completed" | "partial" | "failed",
   finishedAt: string,
   error?: { category: string; message: string },
+  metadata?: RunFinalizationMetadata,
 ): void {
   if (counters.attempted !== counters.ok + counters.failed) {
     throw new Error("Run counters must satisfy attempted = ok + failed");
   }
+  const metadataPatch: RunFinalizationMetadata = {};
+  if (metadata?.planned !== undefined) {
+    if (!Number.isSafeInteger(metadata.planned) || metadata.planned < 0) {
+      throw new Error("Run planned count must be a non-negative safe integer");
+    }
+    metadataPatch.planned = metadata.planned;
+  }
+  if (metadata?.skipped !== undefined) {
+    if (!Number.isSafeInteger(metadata.skipped) || metadata.skipped < 0) {
+      throw new Error("Run skipped count must be a non-negative safe integer");
+    }
+    metadataPatch.skipped = metadata.skipped;
+  }
+  if (
+    (metadataPatch.planned === undefined) !== (metadataPatch.skipped === undefined)
+  ) {
+    throw new Error("Run planned and skipped counts must be finalized together");
+  }
+  if (
+    metadataPatch.planned !== undefined
+    && metadataPatch.skipped !== undefined
+    && metadataPatch.planned !== counters.attempted + metadataPatch.skipped
+  ) {
+    throw new Error("Run planned count must equal attempted plus skipped");
+  }
+  if (metadata?.stoppedForBlocking !== undefined) {
+    if (typeof metadata.stoppedForBlocking !== "boolean") {
+      throw new Error("Run blocking-stop fact must be boolean");
+    }
+    metadataPatch.stoppedForBlocking = metadata.stoppedForBlocking;
+  }
+  if (
+    metadataPatch.stoppedForBlocking === true
+    && (
+      metadataPatch.planned === undefined
+      || metadataPatch.skipped === undefined
+    )
+  ) {
+    throw new Error("Blocking detection requires finalized planned and skipped counts");
+  }
   const result = database.prepare(
     `UPDATE runs
      SET status = ?, attempted = ?, ok = ?, failed = ?, finished_at = ?,
-         error_category = ?, error_message = ?
+         error_category = ?, error_message = ?,
+         metadata_json = json_patch(metadata_json, ?)
      WHERE id = ? AND status = 'running' AND finished_at IS NULL`,
   ).run(
     status,
@@ -246,6 +297,7 @@ export function finalizeRun(
     finishedAt,
     error?.category ?? null,
     error?.message ?? null,
+    JSON.stringify(metadataPatch),
     runId,
   );
   if (result.changes !== 1) throw new Error(`Run ${runId} was already finalized or missing`);
@@ -697,13 +749,38 @@ export function findRunHealthEvidence(
     throw new Error(`Collection run ${runId} was not found`);
   }
   let responseHints: boolean[] = [];
+  let planned: number | null = null;
+  let skipped = 0;
+  let stoppedForBlocking = false;
   try {
-    const metadata = JSON.parse(row.metadata_json) as { failureResponses?: unknown };
+    const metadata = JSON.parse(row.metadata_json) as {
+      failureResponses?: unknown;
+      planned?: unknown;
+      skipped?: unknown;
+      stoppedForBlocking?: unknown;
+    };
     if (
       Array.isArray(metadata.failureResponses)
       && metadata.failureResponses.every((value) => typeof value === "boolean")
     ) {
       responseHints = metadata.failureResponses;
+    }
+    const plannedCandidate = Number.isSafeInteger(metadata.planned)
+      && Number(metadata.planned) >= 0
+      ? Number(metadata.planned)
+      : null;
+    const skippedCandidate = Number.isSafeInteger(metadata.skipped)
+      && Number(metadata.skipped) >= 0
+      ? Number(metadata.skipped)
+      : null;
+    if (
+      plannedCandidate !== null
+      && skippedCandidate !== null
+      && plannedCandidate === row.attempted + skippedCandidate
+    ) {
+      planned = plannedCandidate;
+      skipped = skippedCandidate;
+      stoppedForBlocking = metadata.stoppedForBlocking === true;
     }
   } catch {
     // Immutable failure categories remain sufficient when old metadata has no hints.
@@ -729,6 +806,9 @@ export function findRunHealthEvidence(
       failed: row.failed,
       startedAt: row.started_at,
       finishedAt: row.finished_at,
+      planned,
+      skipped,
+      stoppedForBlocking,
     },
     failures: failureRows.map((failure, index) => {
       const category = storedFailureCategory(failure.category);

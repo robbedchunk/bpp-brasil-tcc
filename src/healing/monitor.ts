@@ -75,6 +75,9 @@ export async function monitorRun(
         attempted: evidence.run.attempted,
         ok: evidence.run.ok,
         failed: evidence.run.failed,
+        planned: evidence.run.planned,
+        skipped: evidence.run.skipped,
+        stoppedForBlocking: evidence.run.stoppedForBlocking,
       },
     });
     return {

@@ -49,6 +49,19 @@ describe("collection run failure classification", () => {
     )).toBe("healthy");
   });
 
+  it("classifies a controller-forced blocking stop above 0.7 as blocking", () => {
+    expect(assessRunHealth({
+      attempted: 14,
+      ok: 10,
+      failed: 4,
+      status: "partial",
+      stoppedForBlocking: true,
+    }, failures(4, "http-403", true))).toMatchObject({
+      health: "blocking",
+      blockingRatio: 1,
+    });
+  });
+
   it("treats 29/30 responding extraction failures as dominant drift despite one unknown", () => {
     const assessment = assessRunHealth(run(0, 30), [
       ...failures(29, "missing-fields", true),

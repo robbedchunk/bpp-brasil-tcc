@@ -7,6 +7,7 @@ export interface RunHealthInput {
   ok: number;
   failed: number;
   status: string;
+  stoppedForBlocking?: boolean;
 }
 
 export interface RunFailureEvidence {
@@ -54,7 +55,11 @@ export function assessRunHealth(
   ) {
     throw new Error("Run counters must be non-negative and internally consistent");
   }
-  if (run.attempted > 0 && run.ok / run.attempted >= 0.7) {
+  if (
+    run.stoppedForBlocking !== true
+    && run.attempted > 0
+    && run.ok / run.attempted >= 0.7
+  ) {
     return { health: "healthy", driftRatio: 0, blockingRatio: 0, ambiguousRatio: 0 };
   }
 
@@ -81,11 +86,13 @@ export function assessRunHealth(
   const driftRatio = drift / denominator;
   const blockingRatio = blocking / denominator;
   const ambiguousRatio = ambiguous / denominator;
-  const health: RunHealth = blockingRatio >= 0.2
+  const health: RunHealth = run.stoppedForBlocking === true
     ? "blocking"
-    : driftRatio >= 0.8
-      ? "drift"
-      : "mixed";
+    : blockingRatio >= 0.2
+      ? "blocking"
+      : driftRatio >= 0.8
+        ? "drift"
+        : "mixed";
   return { health, driftRatio, blockingRatio, ambiguousRatio };
 }
 
