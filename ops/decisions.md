@@ -14,6 +14,21 @@
   admissions expire before Sunday; the installed timer run remains the
   authoritative scheduled scale gate.
 
+## 2026-07-11 — Full daily-cap rotation rehearsal
+
+- After broad discovery, one manual production-equivalent daily rotation ran
+  from 04:50:04 to 05:23:40 São Paulo time: 8,000 attempts across four
+  sequential retailers in 33 minutes 36 seconds, within the documented
+  one-hour operations envelope.
+- Carrefour completed 1,812/2,000 (90.6%), Extra 1,974/2,000 (98.7%), Pão de
+  Açúcar 1,989/2,000 (99.45%), and St. Marché 2,000/2,000 (100%). Individual
+  unavailable/no-positive-price outcomes remained failures; no value was
+  imputed to increase a rate.
+- All four run lifecycles became terminal, monitoring produced no failed run,
+  and no retailer-level exception occurred. The completion heartbeat records
+  `trigger=manual`, so acceptance deliberately excludes it from M2 and waits
+  for the July 12 installed timer.
+
 ## 2026-07-11 — Carrefour discovery v4 retained as a failed validation experiment
 
 - Trusted validation of `carrefour-discovery-v4` preselected the 30 authoritative
