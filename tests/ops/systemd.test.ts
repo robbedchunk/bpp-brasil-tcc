@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   chmod,
   cp,
@@ -31,6 +32,10 @@ const sourceTreeClean = execFileSync(
   ["status", "--porcelain=v1", "--untracked-files=all"],
   { cwd: projectRoot, encoding: "utf8" },
 ).trim() === "";
+const releaseSigningKeyAvailable = existsSync(join(
+  projectRoot,
+  "var/operations/validation-attestation-private.pem",
+));
 
 async function removeReadOnlyTree(path: string): Promise<void> {
   const entry = await lstat(path).catch(() => null);
@@ -181,7 +186,7 @@ describe("production schedules", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.skipIf(!sourceTreeClean)("preserves schedule activation while binding each deployment to a new frozen release", async () => {
+  it.skipIf(!sourceTreeClean || !releaseSigningKeyAvailable)("preserves schedule activation while binding each deployment to a new frozen release", async () => {
     const home = await temporaryDirectory("precos-systemd-refresh-");
     const destination = join(home, "units");
     const receiptPath = join(home, "operations", "systemd-install.json");
