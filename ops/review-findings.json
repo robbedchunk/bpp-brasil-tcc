@@ -91,6 +91,13 @@
       "severity": "important",
       "status": "resolved",
       "fixCommit": "d9d500352870161364db8e749c3e27d2e012a115"
+    },
+    {
+      "id": "m7-honest-incomplete-panel-gating",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "cfe4af3c485cdde84de75babb0da865fa282bb1e"
     }
   ]
 }
