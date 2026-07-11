@@ -33,7 +33,7 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 3,
+    "discovery": 5,
     "extraction": 4
   },
   "discovery": {
@@ -53,7 +53,7 @@
       "body": {
         "partner": "linx",
         "page": "{page}",
-        "sortBy": "relevance",
+        "sortBy": "ascPrice",
         "resultsPerPage": 36,
         "multiCategory": "{segment}",
         "storeId": 923,
@@ -78,12 +78,17 @@
       {
         "value": "alimentos",
         "sourceCategory": "Alimentos",
-        "maxProducts": 2400
+        "maxProducts": 2200
       },
       {
         "value": "bebidas",
         "sourceCategory": "Bebidas",
-        "maxProducts": 600
+        "maxProducts": 750
+      },
+      {
+        "value": "bebe-e-crianca|nutricao-infantil|cereais-infantil",
+        "sourceCategory": "Clube Extra",
+        "maxProducts": 50
       }
     ],
     "maxProducts": 3000
@@ -147,13 +152,13 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:09:33.239Z",
+      "validatedAt": "2026-07-11T14:52:30.285Z",
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/extra-mercado-discovery-v3.json",
-      "receiptSha256": "37c796b3d3b3144e2d97f530f541c7925f815806c6aca7c6a0da602d19e652ef"
+      "receiptPath": "data/validation/extra-mercado-discovery-v5.json",
+      "receiptSha256": "9c5f491ab622730d8ce48a6b34d2b590eae15af867cb6790437e4965c61f5db8"
     },
     "extraction": {
       "externallyValidated": true,

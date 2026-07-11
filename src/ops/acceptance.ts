@@ -1546,11 +1546,41 @@ function validateFailedValidationAttemptRegistry(
         ["show", `${entry.strategySourceCommit}:retailers/${parsed.retailerId}.json`],
         { cwd: root, encoding: "utf8" },
       )));
+      let declaredStrategy = historicalConfig[parsed.purpose];
+      if (strategyEvidenceSha256(declaredStrategy) !== parsed.strategySha256) {
+        const recovery = committedJson(
+          root,
+          entry.strategySourceCommit,
+          SUCCESSOR_RECOVERY_PLAN_PATH,
+        ) as { schemaVersion?: unknown; plans?: unknown };
+        if (recovery.schemaVersion !== 1 || !Array.isArray(recovery.plans)) {
+          throw new Error("Failed receipt recovery declaration is malformed");
+        }
+        const matches = recovery.plans.filter((candidate) => {
+          if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+            return false;
+          }
+          const value = candidate as Record<string, unknown>;
+          return value.retailerId === parsed.retailerId
+            && value.purpose === parsed.purpose
+            && value.toVersion === parsed.strategyVersion
+            && value.strategySha256 === parsed.strategySha256
+            && typeof value.candidatePath === "string";
+        }) as Array<Record<string, unknown>>;
+        if (matches.length !== 1 || typeof matches[0]?.candidatePath !== "string") {
+          throw new Error("Failed receipt recovery strategy is not uniquely declared");
+        }
+        declaredStrategy = parseStrategy(committedJson(
+          root,
+          entry.strategySourceCommit,
+          matches[0].candidatePath,
+        ));
+      }
       if (!sourceCommitDeclaresStrategyVersion(root, entry.strategySourceCommit, {
         retailerId: parsed.retailerId,
         purpose: parsed.purpose,
         version: parsed.strategyVersion,
-        strategy: historicalConfig[parsed.purpose],
+        strategy: declaredStrategy,
       })) {
         throw new Error("Failed receipt strategy version lacks historical identity");
       }
@@ -1571,7 +1601,7 @@ function validateFailedValidationAttemptRegistry(
         retailerId: parsed.retailerId,
         purpose: parsed.purpose,
         strategyVersion: parsed.strategyVersion,
-        strategy: historicalConfig[parsed.purpose],
+        strategy: declaredStrategy,
         verificationPublicKey,
         authoritativeRefs: historicalRefs,
       });

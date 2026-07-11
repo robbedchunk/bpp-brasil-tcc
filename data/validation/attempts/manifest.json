@@ -14,6 +14,12 @@
       "strategySourceCommit": "00278a685724a7452837204bee321705c2bad506"
     },
     {
+      "path": "data/validation/attempts/carrefour-extraction-v7.json",
+      "fileSha256": "110305cfd8024a5a79a8fa6875ec31a8c28e02c02a96cd8baf3ad1b4bae00748",
+      "receiptSha256": "47763465a4b34af3d6bf2cdbdd33b7d42c2c0a822370e970ac7cf4fd73c2acce",
+      "strategySourceCommit": "0b7fdb77d6f593e27a66b8aec42d55d849f2e226"
+    },
+    {
       "path": "data/validation/attempts/extra-mercado-discovery-v4.json",
       "fileSha256": "063cb9849adfcdc222caa65105fd6c51669898c3aa7e5dc59dad6aebaa116fa7",
       "receiptSha256": "0d96e0f3cd9eb003bfef7fbf8985f586cad5ffeb00349d0d6dfe1e60167178c0",
