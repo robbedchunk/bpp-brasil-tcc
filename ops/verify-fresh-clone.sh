@@ -44,9 +44,10 @@ run_check smoke bash ops/smoke.sh
 run_check publication npm run audit:publication -- --json
 run_check analysis npm run analysis
 
-database_absolute="$clone_root/$DATABASE_PATH"
-sqlite3 "$database_absolute" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null
-rm -f -- "${database_absolute}-wal" "${database_absolute}-shm"
+while IFS= read -r -d '' database_absolute; do
+  sqlite3 "$database_absolute" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null
+  rm -f -- "${database_absolute}-wal" "${database_absolute}-shm"
+done < <(find "$clone_root/data" "$clone_root/var" -type f -name '*.sqlite' -print0)
 
 [[ ! -e "$clone_root/.env" ]]
 [[ "$(find "$clone_root/data/raw-html" "$clone_root/var/log" "$clone_root/var/backups" \
