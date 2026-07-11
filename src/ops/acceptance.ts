@@ -1408,6 +1408,16 @@ function sourceWorktreeClean(root: string): boolean {
   });
 }
 
+export function scheduledWindowIsPending(input: {
+  now: Date;
+  deadline: Date;
+  evidenceSatisfied: boolean;
+  serviceActive: boolean;
+}): boolean {
+  return input.serviceActive
+    || (input.now.getTime() < input.deadline.getTime() && !input.evidenceSatisfied);
+}
+
 function m1Inventory(root: string, now: Date): AcceptanceEvidence {
   const requiredFiles = [
     "tests/normalize/brl.test.ts",
@@ -2049,6 +2059,8 @@ function m7Evaluation(
     && Math.abs(statSync(backupFiles[0]).mtimeMs - backupServiceStart) <= 60 * 60 * 1_000;
   const realBackupCurrent = newestBackupAgeHours !== null && newestBackupAgeHours <= 26
     && newestBackupAfterCurrentWindow && scheduledBackupIntegrityValid && backupBoundToService;
+  const dailyWindowSatisfied = latestHeartbeat !== undefined && dailyScheduledServiceSucceeded;
+  const backupWindowSatisfied = realBackupCurrent && backupScheduledServiceSucceeded;
   let backupFileHealthy = false;
   let backupAgeHours: number | null = null;
   if (typeof backup?.facts.backupArtifactIdSha256 === "string"
@@ -2101,6 +2113,8 @@ function m7Evaluation(
     dailyScheduledServiceSucceeded,
     backupScheduledServiceSucceeded,
     scheduledBackupBoundToService: backupBoundToService,
+    dailyWindowSatisfied,
+    backupWindowSatisfied,
   });
   const review = reviewFindingState(root, "M7", now);
   const criterionEvidenceIds = [evidenceId, review.evidence.id];
@@ -2121,8 +2135,17 @@ function m7Evaluation(
     || !freshMatches) {
     return { criterion: criterion(id, "fail", "Required static operations, receipt integrity, or timer evidence is invalid", ["EVIDENCE_CONTRADICTION"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
   }
-  if (now.getTime() < currentDailyDeadline.getTime() || now.getTime() < currentBackupDeadline.getTime()
-    || dailyService?.active === true || backupService?.active === true) {
+  if (scheduledWindowIsPending({
+    now,
+    deadline: currentDailyDeadline,
+    evidenceSatisfied: dailyWindowSatisfied,
+    serviceActive: dailyService?.active === true,
+  }) || scheduledWindowIsPending({
+    now,
+    deadline: currentBackupDeadline,
+    evidenceSatisfied: backupWindowSatisfied,
+    serviceActive: backupService?.active === true,
+  })) {
     return {
       criterion: criterion(id, "pending", "The first applicable scheduled daily/backup windows have not both elapsed", ["SCHEDULED_RUN_NOT_YET_DUE"], criterionEvidenceIds),
       gates: [gate(id, "time", "SCHEDULED_RUN_NOT_YET_DUE", activation.toISOString(), "Let both installed São Paulo schedules reach their first real windows", "npm run acceptance -- --json", criterionEvidenceIds)],

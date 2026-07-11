@@ -43,6 +43,7 @@ import {
   renderAcceptanceMarkdown,
   readSystemdInstallationState,
   reviewFindingState,
+  scheduledWindowIsPending,
   validateAcceptanceReportShape,
   validateTimerDefinitions,
   type AcceptanceReport,
@@ -416,6 +417,34 @@ function seedM4Evidence(database: Database.Database, estimateSource: string): vo
 }
 
 describe("acceptance status and evidence", () => {
+  it("closes a scheduled window early only with completed causal evidence", () => {
+    const now = new Date("2026-07-11T07:20:00.000Z");
+    const deadline = new Date("2026-07-11T08:15:00.000Z");
+    expect(scheduledWindowIsPending({
+      now,
+      deadline,
+      evidenceSatisfied: true,
+      serviceActive: false,
+    })).toBe(false);
+    expect(scheduledWindowIsPending({
+      now,
+      deadline,
+      evidenceSatisfied: false,
+      serviceActive: false,
+    })).toBe(true);
+    expect(scheduledWindowIsPending({
+      now,
+      deadline,
+      evidenceSatisfied: true,
+      serviceActive: true,
+    })).toBe(true);
+    expect(scheduledWindowIsPending({
+      now: new Date("2026-07-11T08:16:00.000Z"),
+      deadline,
+      evidenceSatisfied: false,
+      serviceActive: false,
+    })).toBe(false);
+  });
   it("uses the single exact report/drill CLI contract", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
     expect(packageJson.scripts.acceptance).toBe("tsx ops/acceptance.ts report");
