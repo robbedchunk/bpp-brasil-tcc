@@ -12,6 +12,9 @@ describe("fresh-clone verifier", () => {
     expect(script).toContain("npm run audit:publication -- --json");
     expect(script).toContain("npm run analysis");
     expect(script).toContain("trap cleanup EXIT");
+    expect(script).toContain("PRAGMA wal_checkpoint(TRUNCATE)");
+    expect(script).toContain("*.sqlite-wal");
+    expect(script).toContain("*.sqlite-shm");
     expect(script).not.toContain("systemctl --user enable");
   });
 });
