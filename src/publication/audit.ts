@@ -111,7 +111,9 @@ const RAW_HTML_COLUMN = /^(?:raw_html|html|response_body|body)$/iu;
 const RAW_HTML_CONTENT = /<!doctype\s+html|<html(?:\s|>)/iu;
 const PRIVATE_ABSOLUTE_PATH = /(?:^|[\s"'])\/(?:home|root|Users|private|tmp)\//u;
 const FIXTURE_PRIVATE_CONTENT = /\b(?:set-cookie|cookie|session[_-]?id|customer[_-]?address|delivery[_-]?address|address\s*:|cpf|e-?mail|localstorage|authorization)\b/iu;
+const PUBLIC_PRIVATE_CONTENT = /(?:\bset-cookie\s*:|\bcookie\s*[:=]|\bsession[_-]?(?:id|token)?\s*[:=]|\b(?:customer|delivery)[_-]?address\s*[:=]|\bcpf\s*[:=]|\be-?mail\s*[:=]|\blocalstorage\b|\bauthorization\s*:)/iu;
 const DATABASE_PRIVATE_SCHEMA = /^(?:raw_html|html|response_body|body|cookie|set_cookie|authorization|secret|token|browser_state|browser_profile)$/iu;
+const SQLITE_MAGIC = Buffer.from("SQLite format 3\0", "binary");
 
 interface SecretRule {
   id: string;
@@ -141,6 +143,11 @@ function inside(root: string, candidate: string): boolean {
 
 function sha256(value: Uint8Array | string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isSqliteDatabase(content: Uint8Array): boolean {
+  return content.length >= SQLITE_MAGIC.length
+    && Buffer.from(content).subarray(0, SQLITE_MAGIC.length).equals(SQLITE_MAGIC);
 }
 
 function git(root: string, args: string[], encoding: "utf8"): string;
@@ -325,9 +332,6 @@ function auditDatabase(
         if (RAW_HTML_COLUMN.test(column.name)) {
           results.push(finding("PUBLIC_DATABASE_RAW_HTML", "public-database", columnLocation, "Raw response body columns are not publishable"));
         }
-        if (!/TEXT|BLOB|CLOB|JSON/iu.test(column.type) && !RAW_HTML_COLUMN.test(column.name) && column.name !== "response_path") {
-          continue;
-        }
         const rows = database.prepare(
           `SELECT ${quoteIdentifier(column.name)} AS value FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(column.name)} IS NOT NULL`,
         ).iterate() as Iterable<{ value: unknown }>;
@@ -343,6 +347,9 @@ function auditDatabase(
           }
           if (PRIVATE_ABSOLUTE_PATH.test(text)) {
             results.push(finding("PUBLIC_DATABASE_PRIVATE_PATH", "public-database", columnLocation, "Private absolute paths are not publishable"));
+          }
+          if (PUBLIC_PRIVATE_CONTENT.test(text)) {
+            results.push(finding("PUBLIC_DATABASE_PRIVATE_DATA", "public-database", columnLocation, "Cookie, session, authorization, or personal data is not publishable"));
           }
           results.push(...secretFindings(value, columnLocation, "public-database"));
           if (column.name === "response_path") {
@@ -390,6 +397,17 @@ function auditCsv(content: Uint8Array, location: string): PublicationFinding[] {
     for (const column of header) {
       if (PRIVATE_COLUMN.test(column)) {
         results.push(finding("PUBLIC_CSV_PRIVATE_COLUMN", "public-export", `${location}:${column}`, "Public CSV exposes a private runtime column"));
+      }
+    }
+    for (const [rowIndex, row] of rows.slice(1).entries()) {
+      for (const [columnIndex, cell] of row.entries()) {
+        const cellLocation = `${location}:${header[columnIndex] ?? `column-${columnIndex + 1}`}:row-${rowIndex + 2}`;
+        if (RAW_HTML_CONTENT.test(cell)) {
+          results.push(finding("PUBLIC_CSV_RAW_HTML", "public-export", cellLocation, "Raw HTML content is not publishable"));
+        }
+        if (PUBLIC_PRIVATE_CONTENT.test(cell)) {
+          results.push(finding("PUBLIC_CSV_PRIVATE_DATA", "public-export", cellLocation, "Cookie, session, authorization, or personal data is not publishable"));
+        }
       }
     }
   } catch {
@@ -556,50 +574,120 @@ function auditAcceptanceArtifact(content: Uint8Array, path: string): Publication
       const report = parsed as Record<string, unknown>;
       const milestones = report.milestones as Record<string, unknown> | undefined;
       const topKeys = ["databaseSha256", "evaluatedCommit", "evidence", "generatedAt", "milestones", "overallStatus", "pendingGates", "publication", "schemaVersion", "timezone"];
-      if (Object.keys(report).sort().join("\0") !== topKeys.join("\0")
+      const isTimestamp = (value: unknown): value is string => typeof value === "string"
+        && Number.isFinite(Date.parse(value))
+        && new Date(value).toISOString() === value;
+      const isNonempty = (value: unknown): value is string => typeof value === "string"
+        && value.trim() !== "" && !/[\r\n]/u.test(value);
+      const hasExactKeys = (value: Record<string, unknown>, keys: string[]): boolean =>
+        Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+      const statuses = new Set(["pass", "pending", "fail"]);
+      if (!hasExactKeys(report, topKeys)
         || report.schemaVersion !== 1
+        || !isTimestamp(report.generatedAt)
         || typeof report.evaluatedCommit !== "string" || !COMMIT_PATTERN.test(report.evaluatedCommit)
         || typeof report.databaseSha256 !== "string" || !SHA256_PATTERN.test(report.databaseSha256)
         || report.timezone !== "America/Sao_Paulo"
-        || !["pass", "pending", "fail"].includes(String(report.overallStatus))
+        || !statuses.has(String(report.overallStatus))
         || typeof milestones !== "object" || milestones === null
         || Object.keys(milestones).sort().join("\0") !== ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7"].join("\0")
         || !Array.isArray(report.evidence) || !Array.isArray(report.pendingGates)
-        || typeof report.publication !== "object" || report.publication === null
-        || (report.publication as Record<string, unknown>).status !== "pass") {
+        || typeof report.publication !== "object" || report.publication === null || Array.isArray(report.publication)) {
         throw new Error("shape");
+      }
+      const publication = report.publication as Record<string, unknown>;
+      const publicationKeys = [
+        "commit", "findings", "generatedAt", "historicalSecrets", "publicDataFindings",
+        "readmeClaims", "requiredDocsMissing", "schemaVersion", "status",
+        "trackedPrivateArtifacts", "trackedRawHtml", "trackedSecrets",
+        "unsafeLinksOrSubmodules", "workingTreeClean",
+      ];
+      const publicationArrays = [
+        "findings", "historicalSecrets", "publicDataFindings", "requiredDocsMissing",
+        "trackedPrivateArtifacts", "trackedRawHtml", "trackedSecrets", "unsafeLinksOrSubmodules",
+      ];
+      if (!hasExactKeys(publication, publicationKeys)
+        || publication.schemaVersion !== 1 || publication.status !== "pass"
+        || publication.commit !== report.evaluatedCommit || !isTimestamp(publication.generatedAt)
+        || publication.workingTreeClean !== true
+        || publicationArrays.some((key) => !Array.isArray(publication[key]) || (publication[key] as unknown[]).length !== 0)
+        || typeof publication.readmeClaims !== "object" || publication.readmeClaims === null
+        || Object.values(publication.readmeClaims as Record<string, unknown>).some((claim) => claim !== true)) {
+        throw new Error("publication");
       }
       const evidenceIds = new Set<string>();
       for (const item of report.evidence) {
         if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error("evidence");
         const row = item as Record<string, unknown>;
-        if (typeof row.id !== "string" || evidenceIds.has(row.id)
-          || typeof row.source !== "string" || isAbsolute(row.source)
+        const evidenceKeys = ["facts", "id", "kind", "observedAt", "source", ...(row.sha256 === undefined ? [] : ["sha256"] )];
+        if (!hasExactKeys(row, evidenceKeys)
+          || !isNonempty(row.id) || evidenceIds.has(row.id)
+          || !["command", "database-query", "file", "service", "receipt"].includes(String(row.kind))
+          || !isNonempty(row.source) || isAbsolute(row.source)
+          || !isTimestamp(row.observedAt)
+          || (row.sha256 !== undefined && (typeof row.sha256 !== "string" || !SHA256_PATTERN.test(row.sha256)))
           || typeof row.facts !== "object" || row.facts === null || Array.isArray(row.facts)
-          || Object.values(row.facts as Record<string, unknown>).some((fact) => fact !== null && !["string", "number", "boolean"].includes(typeof fact))) {
+          || Object.entries(row.facts as Record<string, unknown>).some(([key, fact]) =>
+            key.trim() === "" || fact !== null && !["string", "number", "boolean"].includes(typeof fact)
+              || typeof fact === "number" && !Number.isFinite(fact))) {
           throw new Error("evidence");
         }
-        evidenceIds.add(row.id);
+        evidenceIds.add(row.id as string);
       }
       const milestoneStatuses: string[] = [];
+      const criteria = new Map<string, string>();
       for (const id of ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7"]) {
         const milestone = milestones[id] as Record<string, unknown> | undefined;
         if (typeof milestone !== "object" || milestone === null
-          || !["pass", "pending", "fail"].includes(String(milestone.status))
+          || !hasExactKeys(milestone, ["criteria", "status"])
+          || !statuses.has(String(milestone.status))
           || !Array.isArray(milestone.criteria) || milestone.criteria.length === 0) throw new Error("milestone");
+        const criterionStatuses: string[] = [];
         for (const item of milestone.criteria) {
           if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error("criterion");
           const current = item as Record<string, unknown>;
-          if (typeof current.id !== "string" || !["pass", "pending", "fail"].includes(String(current.status))
-            || !Array.isArray(current.reasonCodes) || current.reasonCodes.some((code) => typeof code !== "string")
-            || !Array.isArray(current.evidenceIds) || current.evidenceIds.some((evidenceId) => typeof evidenceId !== "string" || !evidenceIds.has(evidenceId))) {
+          if (!hasExactKeys(current, ["evidenceIds", "id", "reasonCodes", "status", "summary"])
+            || !isNonempty(current.id) || criteria.has(current.id)
+            || !statuses.has(String(current.status)) || !isNonempty(current.summary)
+            || !Array.isArray(current.reasonCodes)
+            || current.reasonCodes.some((code) => !isNonempty(code))
+            || new Set(current.reasonCodes).size !== current.reasonCodes.length
+            || !Array.isArray(current.evidenceIds) || current.evidenceIds.length === 0
+            || new Set(current.evidenceIds).size !== current.evidenceIds.length
+            || current.evidenceIds.some((evidenceId) => typeof evidenceId !== "string" || !evidenceIds.has(evidenceId))) {
             throw new Error("criterion");
           }
+          criteria.set(current.id as string, String(current.status));
+          criterionStatuses.push(String(current.status));
         }
+        const milestoneAggregate = criterionStatuses.includes("fail") ? "fail"
+          : criterionStatuses.includes("pending") ? "pending" : "pass";
+        if (milestoneAggregate !== milestone.status) throw new Error("milestone aggregation");
         milestoneStatuses.push(String(milestone.status));
       }
+      const gatedCriteria = new Set<string>();
+      for (const item of report.pendingGates) {
+        if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error("gate");
+        const current = item as Record<string, unknown>;
+        if (!hasExactKeys(current, ["criterionId", "evidenceIds", "kind", "nextAction", "reasonCode", "recheckCommand", "since"])
+          || !isNonempty(current.criterionId) || criteria.get(current.criterionId) !== "pending"
+          || !["time", "credential", "site", "authority"].includes(String(current.kind))
+          || !isNonempty(current.reasonCode) || !isNonempty(current.nextAction)
+          || !isNonempty(current.recheckCommand)
+          || current.since !== null && !isTimestamp(current.since)
+          || !Array.isArray(current.evidenceIds) || current.evidenceIds.length === 0
+          || new Set(current.evidenceIds).size !== current.evidenceIds.length
+          || current.evidenceIds.some((evidenceId) => typeof evidenceId !== "string" || !evidenceIds.has(evidenceId))) {
+          throw new Error("gate");
+        }
+        gatedCriteria.add(current.criterionId as string);
+      }
+      if ([...criteria].some(([criterionId, status]) => status === "pending" && !gatedCriteria.has(criterionId))) {
+        throw new Error("ungated pending criterion");
+      }
       const aggregate = milestoneStatuses.includes("fail") ? "fail" : milestoneStatuses.includes("pending") ? "pending" : "pass";
-      if (aggregate !== report.overallStatus) throw new Error("aggregation");
+      if (aggregate !== report.overallStatus
+        || (aggregate === "pass" && (report.pendingGates as unknown[]).length !== 0)) throw new Error("aggregation");
     }
     const serialized = JSON.stringify(parsed);
     if (PRIVATE_ABSOLUTE_PATH.test(serialized)
@@ -627,13 +715,17 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
     throw new TypeError("Fresh-clone receipt must be an object");
   }
   const value = input as Record<string, unknown>;
+  const exactKeys = (object: Record<string, unknown>, keys: string[]): boolean =>
+    Object.keys(object).sort().join("\0") === [...keys].sort().join("\0");
   if (
-    value.schemaVersion !== 1
+    !exactKeys(value, ["artifacts", "checks", "completedAt", "runtimes", "schemaVersion", "sourceCommit", "status"])
+    || value.schemaVersion !== 1
     || value.status !== "pass"
     || typeof value.sourceCommit !== "string"
     || !COMMIT_PATTERN.test(value.sourceCommit)
     || typeof value.completedAt !== "string"
     || !Number.isFinite(Date.parse(value.completedAt))
+    || new Date(value.completedAt).toISOString() !== value.completedAt
     || typeof value.runtimes !== "object"
     || value.runtimes === null
     || !Array.isArray(value.checks)
@@ -642,6 +734,9 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
     throw new TypeError("Fresh-clone receipt has an invalid shape");
   }
   const runtimes = value.runtimes as Record<string, unknown>;
+  if (!exactKeys(runtimes, ["node", "npm", "python"])) {
+    throw new TypeError("Fresh-clone receipt runtimes are not exactly allowlisted");
+  }
   for (const name of ["node", "npm", "python"]) {
     if (typeof runtimes[name] !== "string" || runtimes[name] === "") {
       throw new TypeError("Fresh-clone receipt runtime is invalid");
@@ -656,6 +751,8 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
     if (
       typeof check !== "object"
       || check === null
+      || Array.isArray(check)
+      || !exactKeys(check as Record<string, unknown>, ["exitCode", "id", "outputSha256"])
       || typeof (check as Record<string, unknown>).id !== "string"
       || (check as Record<string, unknown>).exitCode !== 0
       || typeof (check as Record<string, unknown>).outputSha256 !== "string"
@@ -671,9 +768,13 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
   }
   const artifactPaths: string[] = [];
   for (const artifact of value.artifacts) {
+    if (typeof artifact !== "object" || artifact === null || Array.isArray(artifact)) {
+      throw new TypeError("Fresh-clone receipt artifact is invalid");
+    }
     const item = artifact as Record<string, unknown>;
     if (
-      typeof item?.path !== "string"
+      !exactKeys(item, ["path", "sha256"])
+      || typeof item.path !== "string"
       || isAbsolute(item.path)
       || item.path.split("/").includes("..")
       || typeof item.sha256 !== "string"
@@ -799,7 +900,7 @@ export async function auditPublication(
   try {
     const auditedDatabasePaths = new Set<string>();
     for (const [path, content] of prospectiveFiles) {
-      if (!/\.sqlite$/u.test(path)) continue;
+      if (!isSqliteDatabase(content)) continue;
       const temporary = join(temporaryDatabases, `${sha256(path)}.sqlite`);
       writeFileSync(temporary, content, { mode: 0o600 });
       const sidecars = (["wal", "shm"] as const).map((suffix) => ({
@@ -816,7 +917,7 @@ export async function auditPublication(
       auditedDatabasePaths.add(resolve(root, path));
     }
     for (const [path, content] of worktreeFiles) {
-      if (!/\.sqlite$/u.test(path) || prospectiveFiles.get(path)?.equals(content) === true) continue;
+      if (!isSqliteDatabase(content) || prospectiveFiles.get(path)?.equals(content) === true) continue;
       const temporary = join(temporaryDatabases, `${sha256(`worktree:${path}`)}.sqlite`);
       writeFileSync(temporary, content, { mode: 0o600 });
       const sidecars = (["wal", "shm"] as const).map((suffix) => ({ suffix, bytes: worktreeFiles.get(`${path}-${suffix}`)?.length ?? 0 }));

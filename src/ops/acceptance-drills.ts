@@ -44,7 +44,7 @@ const ALERT_FACT_KEYS = [
   "latestHeartbeatIdUnchanged", "simulatedStale",
 ] as const;
 const BACKUP_FACT_KEYS = [
-  "backupPath", "backupSha256", "contentFingerprint", "countsMatched",
+  "backupArtifactIdSha256", "backupSha256", "contentFingerprint", "countsMatched",
   "criticalTableCount", "criticalTableCountsSha256", "fileMode",
   "foreignKeyViolations", "integrityCheck", "restoreIntegrityCheck",
   "restoreTargetWasSource", "retentionSelfTestPassed", "sourceDatabaseSha256",
@@ -92,10 +92,8 @@ export function validatePublicDrillReceipt(
       || typeof facts.drillIdSha256 !== "string" || !HEX_64.test(facts.drillIdSha256)) {
       throw new TypeError("Public alert receipt facts are invalid");
     }
-  } else if (typeof facts.backupPath !== "string"
-    || isAbsolute(facts.backupPath) || facts.backupPath.split("/").includes("..")
-    || !facts.backupPath.startsWith("var/backups/precos-drill-")
-    || ![facts.backupSha256, facts.contentFingerprint, facts.criticalTableCountsSha256, facts.sourceDatabaseSha256]
+  } else if (![facts.backupArtifactIdSha256, facts.backupSha256, facts.contentFingerprint,
+    facts.criticalTableCountsSha256, facts.sourceDatabaseSha256]
       .every((item) => typeof item === "string" && HEX_64.test(item))
     || facts.fileMode !== "0600"
     || facts.integrityCheck !== "ok" || facts.restoreIntegrityCheck !== "ok"
@@ -127,7 +125,7 @@ export function validatePublicDrillReceipt(
       || facts.countsMatched !== true || facts.restoreTargetWasSource !== false
       || facts.retentionSelfTestPassed !== true || facts.sourceFingerprintMatchesBackup !== true
       || facts.sourceUnchangedAfterBackup !== true
-      || typeof facts.criticalTableCount !== "number" || facts.criticalTableCount <= 0) {
+      || facts.criticalTableCount !== CRITICAL_TABLES.length) {
       throw new TypeError("Passing backup receipt contradicts its integrity/restore facts");
     }
   }
@@ -443,6 +441,7 @@ export async function runBackupDrill(options: BackupDrillOptions): Promise<Publi
     && backupFacts.fingerprint === restoredFacts.fingerprint
     && sourceUnchanged
     && retentionPassed
+    && Object.keys(sourceFacts.counts).length === CRITICAL_TABLES.length
     && fileMode === "0600"
     && resolve(restorePath) !== sourcePath;
   const receipt: PublicDrillReceipt = {
@@ -454,7 +453,7 @@ export async function runBackupDrill(options: BackupDrillOptions): Promise<Publi
     implementationSha256: implementationSha256(),
     reasonCodes: coherent ? [] : [sourceUnchanged ? "DATABASE_INTEGRITY_FAILED" : "SCHEDULED_RUN_NOT_YET_DUE"],
     facts: {
-      backupPath: relative(root, backupPath).split(sep).join("/"),
+      backupArtifactIdSha256: sha256(filename),
       integrityCheck: backupFacts.integrity,
       foreignKeyViolations: backupFacts.foreignKeyViolations,
       restoreIntegrityCheck: restoredFacts.integrity,

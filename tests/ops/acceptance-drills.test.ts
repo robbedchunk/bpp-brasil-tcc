@@ -79,11 +79,50 @@ describe("safe acceptance drills", () => {
       retentionSelfTestPassed: true,
     });
     expect(await readFile(fixture.path)).toEqual(before);
-    expect(String(receipt.facts.backupPath ?? "")).not.toMatch(/^\//u);
+    expect(receipt.facts.backupArtifactIdSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(JSON.stringify(receipt)).not.toContain("var/backups");
+    expect(JSON.stringify(receipt)).not.toContain("precos-drill-");
     expect(() => validatePublicDrillReceipt({
       ...receipt,
       facts: { ...receipt.facts, sourceFingerprintMatchesBackup: false },
     }, "backup")).toThrow(/contradict/i);
+  });
+
+  it("records a validated local fallback when ntfy rejects the drill", async () => {
+    const fixture = await databaseFixture();
+    const fallbackPath = join(fixture.root, "var", "log", "alerts.jsonl");
+    const receipt = await runAlertDrill({
+      projectRoot: fixture.root,
+      databasePath: fixture.path,
+      fallbackPath,
+      ntfyTopic: "acceptance-test-topic",
+      fetch: async () => new Response("unavailable", { status: 503 }),
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+    });
+    expect(receipt).toMatchObject({ drill: "alert", status: "pass" });
+    expect(receipt.facts).toMatchObject({
+      channel: "local-after-ntfy-failure",
+      httpStatus: 503,
+      fallbackFileMode: "0600",
+    });
+    expect(() => validatePublicDrillReceipt(receipt, "alert")).not.toThrow();
+  });
+
+  it("cannot pass backup evidence when any critical evidence table is absent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-drill-incomplete-"));
+    directories.push(root);
+    const path = join(root, "incomplete.sqlite");
+    const database = openDatabase(path);
+    database.exec("DROP TABLE cost_ledger;");
+    database.close();
+    const receipt = await runBackupDrill({
+      projectRoot: root,
+      databasePath: path,
+      backupDirectory: join(root, "var", "backups"),
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+    });
+    expect(receipt.status).toBe("fail");
+    expect(receipt.facts.criticalTableCount).toBeLessThan(10);
   });
 
   it("fails closed when the database resolves outside the project root", async () => {

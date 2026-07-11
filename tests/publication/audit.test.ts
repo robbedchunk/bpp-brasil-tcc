@@ -325,6 +325,29 @@ describe("publication audit", () => {
     ]));
   });
 
+  it("detects SQLite by magic and scans typeless cells plus CSV values", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await mkdir(join(root, "data"), { recursive: true });
+    const extensionless = join(root, "data", "public-snapshot");
+    const database = new Database(extensionless);
+    database.exec("CREATE TABLE payload(value);");
+    database.prepare("INSERT INTO payload(value) VALUES (?)")
+      .run("<html>Set-Cookie: session_id=private</html>");
+    database.close();
+    await writeFile(join(root, "data", "values.csv"),
+      'id,value\n1,"<html>Set-Cookie: session_id=private</html>"\n');
+    git(root, "add", "data");
+
+    const report = await auditPublication(options(root));
+    expect(report.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "PUBLIC_DATABASE_RAW_HTML", location: "data/public-snapshot:payload.value" }),
+      expect.objectContaining({ ruleId: "PUBLIC_DATABASE_PRIVATE_DATA", location: "data/public-snapshot:payload.value" }),
+      expect.objectContaining({ ruleId: "PUBLIC_CSV_RAW_HTML" }),
+      expect.objectContaining({ ruleId: "PUBLIC_CSV_PRIVATE_DATA" }),
+    ]));
+  });
+
   it("makes dynamic README acceptance claims mandatory", async () => {
     const root = await temporaryRoot();
     await initializeRepository(root);
@@ -364,6 +387,78 @@ describe("publication audit", () => {
       ...valid,
       checks: [valid.checks[0], valid.checks[0]],
     })).toThrow(/unique|check/i);
+  });
+
+  it("rejects malformed public acceptance timestamps, criteria, summaries, and evidence", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await mkdir(join(root, "data", "acceptance"), { recursive: true });
+    const evaluatedCommit = git(root, "rev-parse", "HEAD");
+    const generatedAt = "2026-07-10T12:00:00.000Z";
+    const readmeClaims = Object.fromEntries([
+      "researchPilot", "activeDevelopment", "defendedMethodClaim",
+      "noStatisticalValidationClaim", "rawHtmlExcluded", "outOfScopeExplicit",
+      "acceptanceCommandDocumented", "acceptanceReportLinked",
+    ].map((key) => [key, true]));
+    const publication = {
+      schemaVersion: 1,
+      generatedAt,
+      commit: evaluatedCommit,
+      status: "pass",
+      trackedSecrets: [],
+      historicalSecrets: [],
+      trackedPrivateArtifacts: [],
+      trackedRawHtml: [],
+      unsafeLinksOrSubmodules: [],
+      publicDataFindings: [],
+      requiredDocsMissing: [],
+      readmeClaims,
+      workingTreeClean: true,
+      findings: [],
+    };
+    const criterion = {
+      id: "verified-criterion",
+      status: "pass",
+      summary: "Verified with public evidence",
+      reasonCodes: [],
+      evidenceIds: ["public-evidence"],
+    };
+    const valid = {
+      schemaVersion: 1,
+      generatedAt,
+      timezone: "America/Sao_Paulo",
+      evaluatedCommit,
+      databaseSha256: "a".repeat(64),
+      overallStatus: "pass",
+      milestones: Object.fromEntries(["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7"]
+        .map((id) => [id, { status: "pass", criteria: [{ ...criterion, id: `${id.toLowerCase()}-verified` }] }])),
+      publication,
+      pendingGates: [],
+      evidence: [{
+        id: "public-evidence",
+        kind: "file",
+        source: "README.md",
+        observedAt: generatedAt,
+        facts: { verified: true },
+      }],
+    };
+    const path = join(root, "data", "acceptance", "acceptance.json");
+    const schemaFindings = async (value: unknown) => {
+      await writeFile(path, `${JSON.stringify(value)}\n`);
+      const report = await auditPublication(options(root));
+      return report.publicDataFindings.filter((item) => item.ruleId === "PUBLIC_ACCEPTANCE_SCHEMA");
+    };
+    expect(await schemaFindings(valid)).toEqual([]);
+    expect(await schemaFindings({ ...valid, generatedAt: 123 })).not.toEqual([]);
+    const emptyId = structuredClone(valid);
+    emptyId.milestones.M0.criteria[0]!.id = "";
+    expect(await schemaFindings(emptyId)).not.toEqual([]);
+    const missingSummary = structuredClone(valid) as unknown as { milestones: Record<string, { criteria: Array<Record<string, unknown>> }> };
+    delete missingSummary.milestones.M0!.criteria[0]!.summary;
+    expect(await schemaFindings(missingSummary)).not.toEqual([]);
+    const noEvidence = structuredClone(valid);
+    noEvidence.milestones.M0.criteria[0]!.evidenceIds = [];
+    expect(await schemaFindings(noEvidence)).not.toEqual([]);
   });
 
   it("passes against the prospective real publication tree", async () => {

@@ -29,14 +29,14 @@ clone_root="$temporary_root/repository"
 home_root="$temporary_root/home"
 logs_root="$temporary_root/logs"
 mkdir -m 0700 "$home_root" "$logs_root"
-export HOME="$home_root"
+source "$PROJECT_ROOT/ops/fresh-clone-environment.sh"
+sanitize_fresh_clone_environment "$home_root"
 git clone --no-local --quiet "$PROJECT_ROOT" "$clone_root"
 
 source_commit="$(git -C "$clone_root" rev-parse HEAD)"
 export PROJECT_ROOT="$clone_root"
 export DATABASE_PATH=var/acceptance/precos.sqlite
 export TZ=America/Sao_Paulo
-unset OPENAI_API_KEY CODEX_API_KEY NTFY_TOPIC LIVE_OPENAI
 
 check_ids=()
 check_hashes=()
