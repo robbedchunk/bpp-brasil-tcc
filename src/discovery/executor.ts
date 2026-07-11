@@ -14,6 +14,7 @@ export interface DiscoveryExecutionContext extends ExtractionExecutionContext {
   beforeRequest?: () => Promise<void>;
   reportCompletion?: (evidence: DiscoveryCompletionEvidence) => void;
   reportRefDocument?: (ref: ProductRef, documentUrl: string) => void;
+  stopAfterProducts?: number;
 }
 
 export interface DiscoveryCompletionEvidence {

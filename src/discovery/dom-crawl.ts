@@ -92,6 +92,10 @@ export async function discoverDomCrawl(
     ...context,
     allowDocumentUrl: (url) => robotsCanFetch(context, url),
   };
+  const executionProductLimit = Math.min(
+    strategy.maxProducts,
+    Math.max(1, Math.trunc(context.stopAfterProducts ?? strategy.maxProducts)),
+  );
   try {
     return await withRestrictedPage(strategy.allowedDomains, restrictedContext, async (session) => {
     const refs: ProductRef[] = [];
@@ -217,7 +221,7 @@ export async function discoverDomCrawl(
           ref,
           session.finalDocumentUrl ?? session.page.url(),
         );
-        if (refs.length >= strategy.maxProducts) {
+        if (refs.length >= executionProductLimit) {
           context.reportCompletion?.({ complete: false, reason: "product_cap_reached" });
           return refs;
         }

@@ -142,6 +142,14 @@ async function handleRequest(
   const request = route.request();
   const isMainDocument = request.isNavigationRequest()
     && request.frame() === session.page.mainFrame();
+  if (isMainDocument) {
+    // Each explicit top-level navigation gets an independent bounded response
+    // budget. Redirect hops and subresources for that document still share the
+    // same ceiling, while a multi-page crawl cannot exhaust later pages merely
+    // because earlier bounded documents were read.
+    budget.bytes = 0;
+    budget.redirects = 0;
+  }
   if (
     request.isNavigationRequest()
     && executionContext.allowDocumentUrl?.(request.url()) === false

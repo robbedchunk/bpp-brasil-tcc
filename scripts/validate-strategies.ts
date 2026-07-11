@@ -671,6 +671,7 @@ async function discoverySamples(
     timeoutMs,
     totalTimeoutMs: timeoutMs,
     maxBodyBytes,
+    stopAfterProducts: SAMPLE_SIZE,
     beforeRequest: () => recorder.pace(),
     onMainDocumentResponse: (evidence) => recorder.markMainDocument(evidence),
     reportRefDocument: (ref, documentUrl) => {

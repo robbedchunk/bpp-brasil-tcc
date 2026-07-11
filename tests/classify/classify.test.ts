@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { Decimal } from "decimal.js";
 import { describe, expect, it } from "vitest";
@@ -466,6 +468,7 @@ async function invokeCli(
 describe("classification CLI", () => {
   it("reports missing-key products pending, writes a local-path alert, and stores no evidence", async () => {
     const database = openDatabase(":memory:");
+    const projectRoot = await mkdtemp(join(tmpdir(), "classification-cli-"));
     try {
       seedItems(database);
       seedProducts(database, 1);
@@ -474,7 +477,7 @@ describe("classification CLI", () => {
       const result = await invokeCli(["classify", "--json"], {
         database,
         databasePath: ":memory:",
-        env: { PROJECT_ROOT: process.cwd(), OPENAI_API_KEY: "" },
+        env: { PROJECT_ROOT: projectRoot, OPENAI_API_KEY: "" },
         alertSink: { send: async (event) => { alerts.push(event); } },
       });
 
@@ -493,11 +496,13 @@ describe("classification CLI", () => {
       expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get()).toEqual({ count: 0 });
     } finally {
       database.close();
+      await rm(projectRoot, { recursive: true, force: true });
     }
   });
 
   it("prints a dry-run plan without requiring a provider or emitting an alert", async () => {
     const database = openDatabase(":memory:");
+    const projectRoot = await mkdtemp(join(tmpdir(), "classification-cli-"));
     try {
       seedItems(database);
       seedProducts(database, 1);
@@ -506,7 +511,7 @@ describe("classification CLI", () => {
       const result = await invokeCli(["classify", "--dry-run", "--json"], {
         database,
         databasePath: ":memory:",
-        env: { PROJECT_ROOT: process.cwd() },
+        env: { PROJECT_ROOT: projectRoot },
         alertSink: { send: async (event) => { alerts.push(event); } },
       });
 
@@ -515,18 +520,20 @@ describe("classification CLI", () => {
       expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get()).toEqual({ count: 0 });
     } finally {
       database.close();
+      await rm(projectRoot, { recursive: true, force: true });
     }
   });
 
   it("exports a requested review sample as deterministic JSON even without --json", async () => {
     const database = openDatabase(":memory:");
+    const projectRoot = await mkdtemp(join(tmpdir(), "classification-cli-"));
     try {
       seedItems(database);
       seedProducts(database, 2);
       const result = await invokeCli(["classify", "--review-sample", "200"], {
         database,
         databasePath: ":memory:",
-        env: { PROJECT_ROOT: process.cwd() },
+        env: { PROJECT_ROOT: projectRoot },
         productClassifier: new FixtureClassifier(),
       });
 
@@ -535,6 +542,7 @@ describe("classification CLI", () => {
       expect(output.reviewSample).toHaveLength(2);
     } finally {
       database.close();
+      await rm(projectRoot, { recursive: true, force: true });
     }
   });
 });

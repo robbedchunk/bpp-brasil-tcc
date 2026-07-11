@@ -296,6 +296,27 @@ describe("discovery pipeline", () => {
     expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
   });
 
+  it("passes the durable run limit down as the discovery consumer cap", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+    let receivedCap: number | undefined;
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      limit: 2,
+      execute: async function* (_strategy, context) {
+        receivedCap = context.stopAfterProducts;
+        yield { canonicalUrl: "https://shop.test/1", externalId: "1", sourceCategory: "food" };
+        yield { canonicalUrl: "https://shop.test/2", externalId: "2", sourceCategory: "food" };
+      },
+    });
+
+    expect(receivedCap).toBe(2);
+    expect(summary).toMatchObject({ attempted: 2, ok: 2 });
+  });
+
   it("performs no executor or robots traffic after the discovery cap is exhausted", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);

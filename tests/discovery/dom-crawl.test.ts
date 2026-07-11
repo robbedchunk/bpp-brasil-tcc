@@ -54,6 +54,15 @@ describe("DOM crawl discovery", () => {
         ).join(""));
         return;
       }
+      if (request.url === "/budget-pages?page=1") {
+        response.end(`${"a".repeat(220)}<a class="product" href="/produto/budget-1">1</a>
+          <a class="next" href="/budget-pages?page=2">next</a>`);
+        return;
+      }
+      if (request.url === "/budget-pages?page=2") {
+        response.end(`${"b".repeat(220)}<a class="product" href="/produto/budget-2">2</a>`);
+        return;
+      }
       if (request.url === "/empty") {
         response.end("<p>No catalog links</p>");
         return;
@@ -148,6 +157,55 @@ describe("DOM crawl discovery", () => {
     expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
       `${server.origin}/produto/1`,
       `${server.origin}/produto/2`,
+    ]);
+  });
+
+  it("honors a smaller consumer sample cap without changing the strategy", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/many`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 5,
+    });
+    const completions: Array<{ complete: boolean; reason: string }> = [];
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+      stopAfterProducts: 2,
+      reportCompletion: (evidence) => completions.push(evidence),
+    }));
+
+    expect(refs).toHaveLength(2);
+    expect(completions).toEqual([{ complete: false, reason: "product_cap_reached" }]);
+  });
+
+  it("applies the aggregate body ceiling independently to each top-level page", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/budget-pages?page=1`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      paginationSelectors: [{ selector: "a.next", attribute: "href" }],
+      maxPages: 2,
+      maxProducts: 5,
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+      maxBodyBytes: 400,
+    }));
+
+    expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
+      `${server.origin}/produto/budget-1`,
+      `${server.origin}/produto/budget-2`,
     ]);
   });
 

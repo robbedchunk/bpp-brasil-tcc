@@ -379,6 +379,10 @@ export async function runDiscovery(
           collectionDay: day,
           now,
         });
+        context.stopAfterProducts = Math.min(
+          context.stopAfterProducts ?? limit,
+          limit,
+        );
         const inheritedCompletionReporter = context.reportCompletion;
         context.reportCompletion = (evidence) => {
           inheritedCompletionReporter?.(evidence);
