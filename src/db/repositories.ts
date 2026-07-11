@@ -943,6 +943,75 @@ export function recordHealingWorkerError(
   }
 }
 
+export interface HealingWorkerFailureResolution {
+  event: HealingEventRecord;
+  recoveryPending: boolean;
+  linkedExplorationRunId?: string;
+}
+
+export function finishHealingWorkerFailureIfSafe(
+  database: Database.Database,
+  input: {
+    healingEventId: string;
+    errorMessage: string;
+    finishedAt: string;
+  },
+): HealingWorkerFailureResolution {
+  const resolve = database.transaction((): HealingWorkerFailureResolution => {
+    const event = findHealingEvent(database, "id = ?", input.healingEventId);
+    if (event === null) {
+      throw new Error(`Healing event ${input.healingEventId} was not found`);
+    }
+    if (event.status === "queued") {
+      return { event, recoveryPending: true };
+    }
+    if (event.status !== "open") {
+      return {
+        event,
+        recoveryPending: terminalHealingStatus(event.status) === null,
+      };
+    }
+
+    const linked = database.prepare(
+      `SELECT exploration_runs.id, exploration_runs.status,
+              model_budget_reservations.status AS reservation_status,
+              exploration_recovery_adjustments.id AS adjustment_id
+       FROM exploration_runs
+       LEFT JOIN model_budget_reservations
+         ON model_budget_reservations.exploration_run_id = exploration_runs.id
+       LEFT JOIN exploration_recovery_adjustments
+         ON exploration_recovery_adjustments.exploration_run_id = exploration_runs.id
+       WHERE exploration_runs.healing_event_id = ?
+       LIMIT 1`,
+    ).get(input.healingEventId) as {
+      id: string;
+      status: string;
+      reservation_status: string | null;
+      adjustment_id: string | null;
+    } | undefined;
+    if (linked !== undefined) {
+      return {
+        event,
+        recoveryPending: true,
+        linkedExplorationRunId: linked.id,
+      };
+    }
+
+    const failed = finishHealingEvent(database, {
+      healingEventId: input.healingEventId,
+      status: "failed",
+      attempts: event.attempts,
+      finishedAt: input.finishedAt,
+      details: {
+        workerError: input.errorMessage,
+        recoverySafetyProof: "no-linked-exploration",
+      },
+    });
+    return { event: failed, recoveryPending: false };
+  });
+  return resolve.immediate();
+}
+
 export function claimStaleHealingEvent(
   database: Database.Database,
   healingEventId: string,

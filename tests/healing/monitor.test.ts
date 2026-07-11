@@ -1148,6 +1148,246 @@ describe("drift monitor state machine", () => {
     });
   });
 
+  it("preserves linked recovery after a transient onset read failure and retries without generation", async () => {
+    const database = seed();
+    seedRetailer(database, "retailer-2");
+    seedStrategy(database, "extraction", extractionStrategy, "retailer-2");
+    insertRun(database, "transient-onset-read", [
+      { category: "missing-fields", responded: true },
+    ]);
+    insertRun(database, "transient-later-retailer", [
+      { category: "missing-fields", responded: true },
+    ], 0, "failed", "retailer-2");
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "transient-onset-read",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    beginHealingEvent(database, {
+      retailerId: "retailer-2",
+      purpose: "extraction",
+      onsetRunId: "transient-later-retailer",
+      detectedAt: "2026-07-10T00:01:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: healing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:02:00.000Z",
+    });
+    reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 50,
+      now: new Date("2026-07-10T00:02:00.000Z"),
+    });
+    const originalPrepare = database.prepare.bind(database);
+    let failOnsetRead = true;
+    (database as any).prepare = (source: string) => {
+      if (
+        failOnsetRead
+        && source.includes("FROM runs WHERE id = ? AND stage = 'collect'")
+      ) {
+        failOnsetRead = false;
+        throw new Error("fixture transient onset evidence read failure");
+      }
+      return originalPrepare(source);
+    };
+    const explored: string[] = [];
+    const alerts: AlertEvent[] = [];
+
+    const first = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:40:00.000Z"),
+      explore: async (retailerId) => {
+        explored.push(retailerId);
+        if (retailerId === "retailer-1") {
+          throw new Error("linked recovery must not regenerate");
+        }
+        return {
+          explorationRunId: "transient-later-unavailable",
+          activated: false,
+          attempts: 0,
+          externalScore: null,
+          outcome: "provider_unavailable",
+          costUsd: 0,
+        };
+      },
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(first).toMatchObject({
+      queued: 2,
+      processed: 1,
+      providerUnavailable: 1,
+      inProgress: 1,
+      workerErrors: 1,
+      failed: 0,
+    });
+    expect(explored).toEqual(["retailer-2"]);
+    expect(alerts.some(({ title }) => title === "Healing worker recovery pending")).toBe(true);
+    expect(database.prepare(
+      "SELECT status FROM healing_events WHERE id = ?",
+    ).get(healing.event.id)).toEqual({ status: "open" });
+    expect(database.prepare(
+      "SELECT status, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({ status: "running", cost_usd: 0 });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "reserved", actual_cost_usd: 0 });
+
+    const retry = await healPendingEvents({
+      database,
+      retailerId: "retailer-1",
+      now: () => new Date("2026-07-10T01:00:00.000Z"),
+      explore: async () => {
+        throw new Error("stale linked recovery must reconcile without a model call");
+      },
+    });
+
+    expect(retry).toMatchObject({
+      queued: 1,
+      processed: 1,
+      deferred: 1,
+      inProgress: 0,
+      workerErrors: 0,
+    });
+    expect(explored).toEqual(["retailer-2"]);
+    expect(database.prepare(
+      "SELECT status, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({ status: "finished", cost_usd: 5 });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "settled", actual_cost_usd: 5 });
+  });
+
+  it("keeps a generic failure recovery-pending when the safety proof query fails", async () => {
+    const database = seed();
+    seedRetailer(database, "retailer-2");
+    seedStrategy(database, "extraction", extractionStrategy, "retailer-2");
+    insertRun(database, "safety-query-failure", [
+      { category: "missing-fields", responded: true },
+    ]);
+    insertRun(database, "safety-query-later", [
+      { category: "missing-fields", responded: true },
+    ], 0, "failed", "retailer-2");
+    const protectedEvent = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "safety-query-failure",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    beginHealingEvent(database, {
+      retailerId: "retailer-2",
+      purpose: "extraction",
+      onsetRunId: "safety-query-later",
+      detectedAt: "2026-07-10T00:01:00.000Z",
+    });
+    const originalPrepare = database.prepare.bind(database);
+    let failOnsetRead = true;
+    let failSafetyProof = true;
+    (database as any).prepare = (source: string) => {
+      if (
+        failOnsetRead
+        && source.includes("FROM runs WHERE id = ? AND stage = 'collect'")
+      ) {
+        failOnsetRead = false;
+        throw new Error("fixture generic worker failure");
+      }
+      if (
+        failSafetyProof
+        && source.includes("FROM exploration_runs")
+        && source.includes("healing_event_id")
+      ) {
+        failSafetyProof = false;
+        throw new Error("fixture safety proof storage failure");
+      }
+      return originalPrepare(source);
+    };
+    const explored: string[] = [];
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:40:00.000Z"),
+      explore: async (retailerId) => {
+        explored.push(retailerId);
+        return {
+          explorationRunId: `safety-query-${retailerId}`,
+          activated: false,
+          attempts: 0,
+          externalScore: null,
+          outcome: "provider_unavailable",
+          costUsd: 0,
+        };
+      },
+    });
+
+    expect(summary).toMatchObject({
+      queued: 2,
+      processed: 1,
+      providerUnavailable: 1,
+      inProgress: 1,
+      workerErrors: 1,
+      failed: 0,
+    });
+    expect(explored).toEqual(["retailer-2"]);
+    expect(database.prepare(
+      "SELECT status FROM healing_events WHERE id = ?",
+    ).get(protectedEvent.event.id)).toEqual({ status: "open" });
+  });
+
+  it("force-closes a generic worker failure only after proving no linked recovery exists", async () => {
+    const database = seed();
+    insertRun(database, "generic-no-recovery", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const event = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "generic-no-recovery",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    const originalPrepare = database.prepare.bind(database);
+    let failOnsetRead = true;
+    (database as any).prepare = (source: string) => {
+      if (
+        failOnsetRead
+        && source.includes("FROM runs WHERE id = ? AND stage = 'collect'")
+      ) {
+        failOnsetRead = false;
+        throw new Error("fixture generic worker failure without linked recovery");
+      }
+      return originalPrepare(source);
+    };
+
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:40:00.000Z"),
+      explore: async () => {
+        throw new Error("onset read failure must occur before exploration");
+      },
+    });
+
+    expect(summary).toMatchObject({
+      queued: 1,
+      processed: 1,
+      failed: 1,
+      inProgress: 0,
+      workerErrors: 1,
+    });
+    expect(database.prepare(
+      "SELECT status FROM healing_events WHERE id = ?",
+    ).get(event.event.id)).toEqual({ status: "failed" });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_runs WHERE healing_event_id = ?",
+    ).get(event.event.id)).toEqual({ count: 0 });
+  });
+
   it("isolates each pending retailer and persists a sanitized worker error", async () => {
     const database = seed();
     seedRetailer(database, "retailer-2");

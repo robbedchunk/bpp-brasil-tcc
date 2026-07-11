@@ -4,8 +4,8 @@ import {
   beginHealingEvent,
   claimStaleHealingEvent,
   consecutiveFailedHealingEvents,
-  findHealingEventById,
   findRunHealthEvidence,
+  finishHealingWorkerFailureIfSafe,
   finishHealingEvent,
   listPendingHealingEvents,
   promoteQueuedHealingEvent,
@@ -478,8 +478,9 @@ export async function healPendingEvents(
       countOutcome(outcome.status);
     } catch (error) {
       summary.workerErrors += 1;
-      const recoveryPending = error instanceof HealingRecoveryPendingError
+      let recoveryPending = error instanceof HealingRecoveryPendingError
         || (error instanceof ExplorationEvidenceError && error.terminalCommitFailed);
+      let safetyProofFailed = false;
       const message = redactSandboxText(
         error instanceof Error ? error.message : String(error) || "Unknown worker error",
       ).slice(0, 2_000);
@@ -488,44 +489,39 @@ export async function healPendingEvents(
       } catch {
         // Continue to later retailers even if this event's evidence store is unavailable.
       }
+      let completed = null;
+      if (!recoveryPending) {
+        try {
+          const resolution = finishHealingWorkerFailureIfSafe(dependencies.database, {
+            healingEventId: event.id,
+            errorMessage: message,
+            finishedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+          });
+          recoveryPending = resolution.recoveryPending;
+          completed = resolution.event;
+        } catch {
+          recoveryPending = true;
+          safetyProofFailed = true;
+        }
+      }
       if (recoveryPending) {
         countOutcome("in_progress");
         try {
           await dependencies.alertSink?.send({
             severity: "error",
             title: "Healing worker recovery pending",
-            message: "Atomic terminal persistence failed; the open event and durable exploration evidence were preserved for stale-worker reconciliation",
-            details: { healingEventId: event.id, retailerId: event.retailerId, error: message },
+            message: "Recoverable exploration state could not be safely ruled out; the event and durable evidence remain open for stale-worker reconciliation",
+            details: {
+              healingEventId: event.id,
+              retailerId: event.retailerId,
+              error: message,
+              safetyProofFailed,
+            },
           });
         } catch {
           // Persisted evidence and later retailer processing take precedence.
         }
         continue;
-      }
-      let current = null;
-      try {
-        current = findHealingEventById(dependencies.database, event.id);
-      } catch {
-        // Continue and count the isolated failure even if this evidence read fails.
-      }
-      if (current?.status === "open") {
-        try {
-          finishHealingEvent(dependencies.database, {
-            healingEventId: event.id,
-            status: "failed",
-            attempts: current.attempts,
-            finishedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-            details: { workerError: message },
-          });
-        } catch {
-          // The worker error count remains truthful even if lifecycle storage fails.
-        }
-      }
-      let completed = null;
-      try {
-        completed = findHealingEventById(dependencies.database, event.id);
-      } catch {
-        // The isolated failure is counted below and later retailers still run.
       }
       countOutcome(
         completed?.status === "recovered"
