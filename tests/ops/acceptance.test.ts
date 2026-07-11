@@ -46,6 +46,7 @@ import {
   readSystemdInstallationState,
   reviewFindingState,
   scheduledWindowIsPending,
+  sourceWorktreeClean,
   validateAcceptanceReportShape,
   validateTimerDefinitions,
   type AcceptanceReport,
@@ -499,6 +500,30 @@ describe("acceptance status and evidence", () => {
     }
   });
 
+  it("preserves porcelain status columns when allowing only modified acceptance evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-worktree-clean-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Evidence Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "evidence@example.test"], { cwd: root });
+      await mkdir(join(root, "data", "acceptance", "evidence"), { recursive: true });
+      await mkdir(join(root, "src"), { recursive: true });
+      const receipt = join(root, "data", "acceptance", "evidence", "fresh-clone.json");
+      const source = join(root, "src", "implementation.ts");
+      await writeFile(receipt, "{}\n");
+      await writeFile(source, "export const implemented = true;\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+
+      await writeFile(receipt, "{\"updated\":true}\n");
+      expect(sourceWorktreeClean(root)).toBe(true);
+      await writeFile(source, "export const implemented = false;\n");
+      expect(sourceWorktreeClean(root)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "src/changed.ts",
     "tests/changed.test.ts",
@@ -882,12 +907,57 @@ describe("acceptance status and evidence", () => {
       deployedAt,
       "c".repeat(32),
     ).criterion.status).toBe("pass");
-    expect(evaluateM2(
+    const wrongRelease = evaluateM2(
       database,
       new Date("2026-07-10T12:00:00.000Z"),
       deployedAt,
       "d".repeat(32),
-    ).criterion.status).not.toBe("pass");
+    );
+    expect(wrongRelease.criterion.status).toBe("fail");
+    expect(wrongRelease.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+  });
+
+  it("ignores legacy heartbeat provenance before deployment but rejects it in the current window", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-09", 30, 30);
+      seedCollection(database, retailer, "2026-07-10", 30, 30);
+    }
+    const legacyDetails = JSON.stringify({
+      trigger: "systemd-timer",
+      runIds: ["legacy-run"],
+      monitorFailedRunIds: [],
+      retailerFailures: [],
+    });
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('legacy-heartbeat', 'collect', '2026-07-08T06:00:00.000Z',
+        '2026-07-08T06:01:00.000Z', 'completed', ?)
+    `).run(legacyDetails);
+    const deployedAt = new Date("2026-07-09T00:00:00.000Z");
+    const current = evaluateM2(
+      database,
+      new Date("2026-07-10T12:00:00.000Z"),
+      deployedAt,
+      "c".repeat(32),
+    );
+    expect(current.criterion.status).toBe("pass");
+    expect(current.evidence[0]?.facts.contradictoryHeartbeats).toBe(0);
+
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('current-legacy-shape', 'collect', '2026-07-10T08:00:00.000Z',
+        '2026-07-10T08:01:00.000Z', 'completed', ?)
+    `).run(legacyDetails);
+    const malformedCurrent = evaluateM2(
+      database,
+      new Date("2026-07-10T12:00:00.000Z"),
+      deployedAt,
+      "c".repeat(32),
+    );
+    expect(malformedCurrent.criterion.status).toBe("fail");
+    expect(malformedCurrent.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
   });
 
   it("uses only the latest classification and retains low-confidence products in M3", () => {
@@ -928,6 +998,55 @@ describe("acceptance status and evidence", () => {
     expect(m3Criterion(result, "m3-classification-coverage").status).toBe("pass");
     expect(result.evidence.find((item) => item.id === "db-m3-latest-classification-coverage")?.facts.activeProducts).toBe(20);
     expect(result.evidence.find((item) => item.id === "db-m3-latest-classification-coverage")?.facts.highConfidenceProducts).toBe(16);
+  });
+
+  it("ignores predeployment legacy heartbeat schema for the current M3 panel", () => {
+    const database = fixture();
+    const runIds: string[] = [];
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(database, retailer, 1);
+      seedCollection(
+        database,
+        retailer,
+        "2026-07-10",
+        1,
+        1,
+        "06:00:00.000Z",
+        "systemd-timer",
+        {},
+        false,
+      );
+      runIds.push(`run-${retailer}-2026-07-10`);
+    }
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('legacy-panel-heartbeat', 'collect', '2026-07-08T06:00:00.000Z',
+        '2026-07-08T06:01:00.000Z', 'completed', ?)
+    `).run(JSON.stringify({
+      trigger: "systemd-timer",
+      runIds: ["legacy-run"],
+      monitorFailedRunIds: [],
+      retailerFailures: [],
+    }));
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('current-panel-heartbeat', 'collect', '2026-07-10T06:00:00.000Z',
+        '2026-07-10T06:11:00.000Z', 'completed', ?)
+    `).run(JSON.stringify({
+      ...scheduledProvenance("2026-07-10T06:00:00.000Z"),
+      runIds,
+      monitorFailedRunIds: [],
+      retailerFailures: [],
+    }));
+    const result = evaluateM3(database, {
+      credentialConfigured: false,
+      siteValidated: true,
+      deployedAt: new Date("2026-07-09T00:00:00.000Z"),
+      releaseId: "c".repeat(32),
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(result, "m3-live-panel").status).toBe("pass");
+    expect(result.evidence.find((item) => item.id === "db-m3-live-panel")?.facts)
+      .toMatchObject({ contradictoryHeartbeats: 0 });
   });
 
   it("keeps M4 credential and spend gates pending without invoking a provider", () => {
@@ -1238,6 +1357,10 @@ describe("acceptance status and evidence", () => {
         `${JSON.stringify({ schemaVersion: 1, attempts: [] })}\n`,
       );
       await writeFile(
+        join(root, "data", "validation", "successor-plans.json"),
+        `${JSON.stringify({ schemaVersion: 1, plans: [] })}\n`,
+      );
+      await writeFile(
         join(root, "ops", "validation-attestation-public.pem"),
         TEST_VALIDATION_PUBLIC_KEY.export({ type: "spki", format: "pem" }),
       );
@@ -1318,6 +1441,7 @@ describe("acceptance status and evidence", () => {
       expect(passed.criterion.status).toBe("pass");
       expect(passed.evidence[0]?.facts).toMatchObject({
         activeStrategies: 2,
+        receiptFiles: 2,
         validReceipts: 2,
         missingActiveReceipts: 0,
         malformedReceipts: 0,
@@ -1392,6 +1516,28 @@ describe("acceptance status and evidence", () => {
 
       expect(evaluateActiveStrategyValidationReceipts(root, database, now).criterion.status)
         .toBe("pass");
+
+      database.exec(`
+        DROP TRIGGER strategies_active_validation_binding_no_update;
+        DROP TRIGGER strategies_lifecycle_is_monotonic;
+      `);
+      database.prepare(`
+        UPDATE strategies
+        SET active = 0,
+          activated_at = '2026-07-11T09:00:00.000Z',
+          retired_at = '2026-07-11T10:30:00.000Z'
+        WHERE retailer_id = 'carrefour' AND purpose = 'extraction'
+      `).run();
+      expect(evaluateActiveStrategyValidationReceipts(root, database, now).criterion.status)
+        .toBe("pass");
+
+      database.prepare(`
+        UPDATE strategies SET activated_at = '2026-07-11T09:00:00.000Z'
+        WHERE retailer_id = 'carrefour' AND purpose = 'discovery'
+      `).run();
+      const activeChronologyAttack = evaluateActiveStrategyValidationReceipts(root, database, now);
+      expect(activeChronologyAttack.criterion.status).toBe("fail");
+      expect(activeChronologyAttack.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

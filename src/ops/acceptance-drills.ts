@@ -21,6 +21,7 @@ import Database from "better-sqlite3";
 import { EXPECTED_SCHEMA_MIGRATIONS } from "../db/database.js";
 import { resolveAcceptanceEvaluatedCommit } from "./evidence-cut.js";
 import {
+  canonicalReleaseJson,
   validateFrozenRelease,
   type ReleaseManifest,
 } from "./release-manifest.js";
@@ -463,6 +464,18 @@ function journalMatchesInvocation(output: string, invocationId: string): boolean
   return matched;
 }
 
+export function canonicalJournalJson(output: string): string {
+  const entries = output.split(/\r?\n/u).filter((line) => line.trim() !== "");
+  const canonical = entries.map((line) => {
+    const entry: unknown = JSON.parse(line);
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new TypeError("Journal JSON entries must be objects");
+    }
+    return canonicalReleaseJson(entry);
+  });
+  return canonical.length === 0 ? "" : `${canonical.join("\n")}\n`;
+}
+
 export async function runAlertDrill(options: AlertDrillOptions): Promise<PublicDrillReceipt> {
   const root = realpathSync(options.projectRoot);
   const path = safeDatabasePath(root, options.databasePath);
@@ -511,9 +524,18 @@ export async function runAlertDrill(options: AlertDrillOptions): Promise<PublicD
   await run("systemctl", ["--user", "reset-failed", transientUnit], baseOptions);
   const journalArgs = ["--user", "-u", transientUnit, "--output=json", "--no-pager", "--all"];
   const journal = await run("journalctl", journalArgs, baseOptions);
-  const journalBytes = Buffer.byteLength(journal.stdout);
-  const journalInvocationMatched = /^[a-f0-9]{32}$/u.test(invocationId)
-    && journalMatchesInvocation(journal.stdout, invocationId);
+  let canonicalJournal = "";
+  let journalCanonical = false;
+  try {
+    canonicalJournal = canonicalJournalJson(journal.stdout);
+    journalCanonical = true;
+  } catch {
+    canonicalJournal = "";
+  }
+  const journalBytes = Buffer.byteLength(canonicalJournal);
+  const journalInvocationMatched = journalCanonical
+    && /^[a-f0-9]{32}$/u.test(invocationId)
+    && journalMatchesInvocation(canonicalJournal, invocationId);
 
   const stagingParent = join(root, "var/acceptance");
   mkdirSync(stagingParent, { recursive: true, mode: 0o700 });
@@ -625,7 +647,7 @@ export async function runAlertDrill(options: AlertDrillOptions): Promise<PublicD
         execMainStatus,
         invocationId,
         journalBytes,
-        journalSha256: sha256(journal.stdout),
+        journalSha256: sha256(canonicalJournal),
         journalInvocationMatched,
         dbInitCommandSha256: commandSha256(release.nodePath, dbInitArgs),
         dbInitExitCode: dbInit.exitCode,

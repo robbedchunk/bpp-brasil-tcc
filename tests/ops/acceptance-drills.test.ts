@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
 import {
+  canonicalJournalJson,
   runAlertDrill,
   runBackupDrill,
   validatePublicDrillReceipt,
@@ -114,6 +115,29 @@ async function testAlertRunner(root: string): Promise<{
 }
 
 describe("safe acceptance drills", () => {
+  it("canonicalizes journal object keys without erasing entry order or multiplicity", () => {
+    const first = { MESSAGE: "first", NESTED: { z: 1, a: 2 } };
+    const second = { MESSAGE: "second", USER_INVOCATION_ID: "b".repeat(32) };
+    const reordered = {
+      NESTED: { a: 2, z: 1 },
+      MESSAGE: "first",
+    };
+    expect(canonicalJournalJson(
+      `${JSON.stringify(first)}\r\n${JSON.stringify(second)}\r\n`,
+    )).toBe(canonicalJournalJson(
+      `${JSON.stringify(reordered)}\n${JSON.stringify(second)}\n`,
+    ));
+    expect(canonicalJournalJson(
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`,
+    )).not.toBe(canonicalJournalJson(
+      `${JSON.stringify(second)}\n${JSON.stringify(first)}\n`,
+    ));
+    expect(canonicalJournalJson(`${JSON.stringify(first)}\n${JSON.stringify(first)}\n`))
+      .not.toBe(canonicalJournalJson(`${JSON.stringify(first)}\n`));
+    expect(() => canonicalJournalJson("not-json\n")).toThrow();
+    expect(() => canonicalJournalJson("null\n")).toThrow(/objects/iu);
+  });
+
   it("binds a real-failure/isolated-heartbeat workflow without changing production heartbeats", async () => {
     const fixture = await databaseFixture();
     const { runner, commands } = await testAlertRunner(fixture.root);

@@ -32,7 +32,11 @@ import {
   validateStrategyEvidence,
   validationReceiptSha256,
 } from "../strategies/validation-evidence.js";
-import { validatePublicDrillReceipt, type PublicDrillReceipt } from "./acceptance-drills.js";
+import {
+  canonicalJournalJson,
+  validatePublicDrillReceipt,
+  type PublicDrillReceipt,
+} from "./acceptance-drills.js";
 import {
   assertHealingSabotageReceiptFresh,
   validateHealingSabotageEvidence,
@@ -572,7 +576,11 @@ function scheduledHeartbeatDetails(value: unknown): value is {
     }));
 }
 
-function validateHeartbeatLinks(database: Database.Database, now: Date): string[] {
+function validateHeartbeatLinks(
+  database: Database.Database,
+  now: Date,
+  scope: { deployedAt?: Date; releaseId?: string } = {},
+): string[] {
   const rows = database.prepare(`
     SELECT id, scheduled_for, completed_at, details_json
     FROM heartbeats
@@ -595,6 +603,11 @@ function validateHeartbeatLinks(database: Database.Database, now: Date): string[
   `);
   const linkedRunIds = new Set<string>();
   for (const row of rows) {
+    if (scope.deployedAt !== undefined
+      && Number.isFinite(Date.parse(row.scheduled_for))
+      && Date.parse(row.scheduled_for) < scope.deployedAt.getTime()) {
+      continue;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(row.details_json);
@@ -620,7 +633,9 @@ function validateHeartbeatLinks(database: Database.Database, now: Date): string[
       || !validTimestampAtOrBefore(row.completed_at, now)
       || Date.parse(row.completed_at) < Date.parse(row.scheduled_for)
       || ((parsed as Record<string, unknown>).trigger === "systemd-timer"
-        && !scheduledHeartbeatDetails(parsed))) {
+        && (!scheduledHeartbeatDetails(parsed)
+          || (scope.releaseId !== undefined
+            && (parsed as Record<string, unknown>).releaseId !== scope.releaseId)))) {
       contradictions.push(row.id);
       continue;
     }
@@ -738,7 +753,10 @@ export function evaluateM2(
   expectedReleaseId: string | null = null,
 ): CriterionEvaluation {
   const id = "m2-two-consecutive-days";
-  const contradictions = validateHeartbeatLinks(database, now);
+  const contradictions = validateHeartbeatLinks(database, now, {
+    ...(scheduleActivatedAt === null ? {} : { deployedAt: scheduleActivatedAt }),
+    ...(expectedReleaseId === null ? {} : { releaseId: expectedReleaseId }),
+  });
   const evidenceId = "db-m2-heartbeat-linked-collection-runs";
   if (contradictions.length > 0) {
     const contradictoryEvidence = evidence(
@@ -805,8 +823,7 @@ export function evaluateM2(
     && (expectedReleaseId === null || (heartbeat.release_id === expectedReleaseId
       && scheduleActivatedAt !== null
       && Date.parse(heartbeat.scheduled_for) >= scheduleActivatedAt.getTime())));
-  for (const heartbeat of heartbeatRows) {
-    if (!isScheduledCollectionHeartbeat(heartbeat)) continue;
+  for (const heartbeat of scheduledHeartbeats) {
     const day = saoPauloDay(heartbeat.scheduled_for);
     if (!selectedHeartbeatByDay.has(day)) selectedHeartbeatByDay.set(day, heartbeat.id);
   }
@@ -965,7 +982,10 @@ export function evaluateM3(
     && options.blockedDayTriggerProven === true;
   const panelPass = retailerFacts.activeRetailers >= 4 || panelExceptionPass;
 
-  const contradictions = validateHeartbeatLinks(database, now);
+  const contradictions = validateHeartbeatLinks(database, now, {
+    ...(options.deployedAt === undefined ? {} : { deployedAt: options.deployedAt }),
+    ...(options.releaseId === undefined ? {} : { releaseId: options.releaseId }),
+  });
   const scheduledRows = contradictions.length === 0
     ? (database.prepare(M2_QUERY).all() as M2Row[]).filter((row) =>
         isScheduledCollectionHeartbeat(row)
@@ -1390,7 +1410,8 @@ export function evaluateActiveStrategyValidationReceipts(
   }
   const validationRoot = join(root, "data/validation");
   const files = existsSync(validationRoot)
-    ? readdirSync(validationRoot).filter((name) => name.endsWith(".json")).sort()
+    ? readdirSync(validationRoot).filter((name) =>
+        /^[a-z0-9-]+-(?:discovery|extraction)-v[1-9]\d*\.json$/u.test(name)).sort()
     : [];
   const receipts = new Map<string, string>();
   const receiptHashes: Array<{ path: string; sha256: string }> = [];
@@ -1499,6 +1520,11 @@ export function evaluateActiveStrategyValidationReceipts(
         : strategy.activated_at !== null
           && strategy.retired_at !== null
           && Date.parse(strategy.retired_at) >= Date.parse(strategy.activated_at);
+      const validationLifecycleValid = strategy.active === 1
+        ? strategy.activated_at !== null
+          && Date.parse(strategy.activated_at) >= Date.parse(validated.validatedAt)
+        : strategy.retired_at !== null
+          && Date.parse(strategy.retired_at) >= Date.parse(validated.validatedAt);
       const activeArtifactBindingValid = strategy.active !== 1 || (
         trustedValidatorArtifactSha256 !== null
         && validated.executor.artifactSha256 === trustedValidatorArtifactSha256
@@ -1512,9 +1538,9 @@ export function evaluateActiveStrategyValidationReceipts(
         || validated.score !== strategy.validation_rate
         || validated.validatedAt !== strategy.validated_at
         || !lifecycleValid
+        || !validationLifecycleValid
         || !activeArtifactBindingValid
         || strategy.activated_at === null
-        || Date.parse(strategy.activated_at) < Date.parse(validated.validatedAt)
         || Date.parse(validated.validatedAt) > now.getTime()) {
         throw new TypeError("Validation receipt does not bind the database activation aggregate");
       }
@@ -2005,13 +2031,21 @@ export function evaluateM5HealingDrill(
   };
 }
 
-function sourceWorktreeClean(root: string): boolean {
-  const porcelain = git(root, ["status", "--porcelain=v1"]);
+export function sourceWorktreeClean(root: string): boolean {
+  let porcelain: string;
+  try {
+    porcelain = execFileSync("git", ["status", "--porcelain=v1"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trimEnd();
+  } catch {
+    return false;
+  }
   if (porcelain === "") return true;
-  return porcelain.split("\n").every((line) => {
+  return porcelain.split(/\r?\n/u).every((line) => {
     const raw = line.slice(3);
-    const path = raw.includes(" -> ") ? raw.split(" -> ").at(-1) ?? raw : raw;
-    return allowedEvidencePath(path);
+    return raw.split(" -> ").every(allowedEvidencePath);
   });
 }
 
@@ -2707,9 +2741,9 @@ function m7Evaluation(
     && /^[a-f0-9]{32}$/u.test(alert.facts.invocationId)
     && /^precos-alert-drill-[a-f0-9]{12}\.service$/u.test(alertUnit)) {
     try {
-      const journal = execFileSync("journalctl", [
+      const journal = canonicalJournalJson(execFileSync("journalctl", [
         "--user", "-u", alertUnit, "--output=json", "--no-pager", "--all",
-      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
       const invocationMatched = journal.split("\n").filter(Boolean).some((line) => {
         try {
           const entry = JSON.parse(line) as Record<string, unknown>;
