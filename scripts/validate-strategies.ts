@@ -72,6 +72,7 @@ export interface ValidationRunDependencies {
   database: Database.Database;
   outputDirectory: string;
   signingPrivateKey: KeyObject;
+  discoveryChallengeRunId?: string;
   fetch?: FetchLike;
   browser?: Browser;
   now?: () => Date;
@@ -368,7 +369,34 @@ class ExchangeRecorder {
 function authoritativeRefs(
   database: Database.Database,
   retailerId: string,
+  discoveryChallengeRunId?: string,
 ): ProductRef[] {
+  if (discoveryChallengeRunId !== undefined) {
+    return (database.prepare(
+      `WITH challenge AS (
+         SELECT canonical_url, MIN(day_ordinal) AS ordinal
+         FROM discovery_reference_admissions
+         WHERE run_id = ? AND canonical_url IS NOT NULL
+         GROUP BY canonical_url
+       )
+       SELECT product.canonical_url, product.retailer_product_id,
+              product.source_category
+       FROM challenge
+       JOIN products AS product
+         ON product.retailer_id = ?
+        AND product.canonical_url = challenge.canonical_url
+       WHERE product.active = 1 AND product.in_scope = 1
+       ORDER BY challenge.ordinal, product.canonical_url`,
+    ).all(discoveryChallengeRunId, retailerId) as Array<{
+      canonical_url: string;
+      retailer_product_id: string | null;
+      source_category: string | null;
+    }>).map((row) => ({
+      canonicalUrl: row.canonical_url,
+      externalId: row.retailer_product_id,
+      sourceCategory: row.source_category,
+    }));
+  }
   return (database.prepare(
     `SELECT canonical_url, retailer_product_id, source_category
      FROM products
@@ -825,7 +853,38 @@ export async function validateConfiguredStrategy(
   dependencies: ValidationRunDependencies,
 ): Promise<ValidationRunResult> {
   if (!config.active) throw new Error(`Retailer ${config.id} is not active`);
-  const refs = authoritativeRefs(dependencies.database, config.id);
+  if (dependencies.discoveryChallengeRunId !== undefined) {
+    if (purpose !== "discovery") {
+      throw new Error("A discovery challenge run cannot select extraction references");
+    }
+    const challengeRun = dependencies.database.prepare(
+      `SELECT retailer_id AS retailerId, stage, strategy_id AS strategyId,
+              status, finished_at AS finishedAt
+       FROM runs WHERE id = ?`,
+    ).get(dependencies.discoveryChallengeRunId) as {
+      retailerId: string;
+      stage: string;
+      strategyId: string | null;
+      status: string;
+      finishedAt: string | null;
+    } | undefined;
+    const expectedStrategyId = `${config.id}-discovery-v${config.strategyVersions.discovery}`;
+    if (
+      challengeRun === undefined
+      || challengeRun.retailerId !== config.id
+      || challengeRun.stage !== "discover"
+      || challengeRun.strategyId !== expectedStrategyId
+      || challengeRun.status === "running"
+      || challengeRun.finishedAt === null
+    ) {
+      throw new Error("Discovery validation requires a terminal matching candidate preflight run");
+    }
+  }
+  const refs = authoritativeRefs(
+    dependencies.database,
+    config.id,
+    dependencies.discoveryChallengeRunId,
+  );
   if (refs.length < SAMPLE_SIZE) {
     throw new Error(
       `${config.id} has ${refs.length}/${SAMPLE_SIZE} authoritative in-scope product references`,
@@ -990,6 +1049,7 @@ async function main(): Promise<void> {
   }
   const databasePath = resolve(options.database);
   const configsDirectory = resolve(options.configs);
+  const discoveryChallengeRuns = new Map<string, string>();
   if (options.prepareDiscoveryChallenge === true && purposes.includes("discovery")) {
     const writable = openDatabase(databasePath);
     try {
@@ -1013,6 +1073,7 @@ async function main(): Promise<void> {
             + `${summary.inScope} in scope; ${SAMPLE_SIZE} are required`,
           );
         }
+        discoveryChallengeRuns.set(config.id, summary.id);
         process.stdout.write(`${JSON.stringify({
           event: "discovery-challenge-prepared",
           retailerId: config.id,
@@ -1045,6 +1106,9 @@ async function main(): Promise<void> {
           database,
           outputDirectory: resolve(options.outputDirectory),
           signingPrivateKey,
+          ...(purpose === "discovery" && discoveryChallengeRuns.has(config.id)
+            ? { discoveryChallengeRunId: discoveryChallengeRuns.get(config.id) }
+            : {}),
           ...(pacingMs === undefined ? {} : { pacingMs }),
           timeoutMs,
           maxBodyBytes,

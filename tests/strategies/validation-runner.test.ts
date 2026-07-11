@@ -348,6 +348,78 @@ describe("trusted live-host validation runner", () => {
       .toEqual(challenge.map((ref) => ref.canonicalUrl));
   });
 
+  it("selects a prepared challenge in the candidate run admission order", async () => {
+    const retailer = config("extra-mercado");
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const refs = Array.from({ length: 31 }, (_value, index) => ({
+      canonicalUrl: `https://www.extramercado.com.br/produto/${4_000 + index}/prepared-${index}`,
+      externalId: String(4_000 + index),
+      sourceCategory: "Alimentos",
+    }));
+    seed(database, retailer, refs);
+    const strategyId = `${retailer.id}-discovery-v${retailer.strategyVersions.discovery}`;
+    const runId = "prepared-discovery-challenge";
+    database.prepare(
+      `INSERT INTO strategies
+       (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+        validation_sample_size, validation_successes, validation_rate, active)
+       VALUES (?, ?, 'discovery', 1, ?, ?, 'candidate preflight', 0, 0, NULL, 0)`,
+    ).run(
+      strategyId,
+      retailer.id,
+      retailer.strategyVersions.discovery,
+      JSON.stringify(retailer.discovery),
+    );
+    database.prepare(
+      `INSERT INTO runs
+       (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+        status, attempted, ok, failed, started_at)
+       VALUES (?, ?, 'discover', '2026-07-11', ?, ?, 'running', 0, 0, 0,
+               '2026-07-11T06:01:00.000Z')`,
+    ).run(runId, retailer.id, strategyId, retailer.strategyVersions.discovery);
+    const admit = database.prepare(
+      `INSERT INTO discovery_reference_admissions
+       (id, run_id, retailer_id, collection_day, day_ordinal,
+        canonical_url, admitted_at)
+       VALUES (?, ?, ?, '2026-07-11', ?, ?, '2026-07-11T06:01:00.000Z')`,
+    );
+    refs.forEach((ref, index) => admit.run(
+      `prepared-reference-${index}`,
+      runId,
+      retailer.id,
+      index + 1,
+      ref.canonicalUrl,
+    ));
+    database.prepare(
+      `UPDATE runs SET status = 'completed', attempted = 31, ok = 31,
+                       finished_at = '2026-07-11T06:01:01.000Z'
+       WHERE id = ?`,
+    ).run(runId);
+    const directory = await outputDirectory();
+
+    const result = await validateConfiguredStrategy(retailer, "discovery", {
+      database,
+      outputDirectory: directory,
+      signingPrivateKey: TEST_SIGNING_PRIVATE_KEY,
+      discoveryChallengeRunId: runId,
+      fetch: async () => new Response(JSON.stringify({
+        products: refs.slice(0, 30).map((ref) => ({
+          id: Number(ref.externalId),
+          urlDetails: ref.canonicalUrl,
+        })),
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+      sleep: async () => undefined,
+      clock: () => 0,
+      now: () => new Date("2026-07-11T06:01:30.000Z"),
+      runtime: "node-v24.18.0",
+    });
+
+    expect(result.evidence).toMatchObject({ valid: 30, score: 1 });
+    expect(result.evidence.samples.map(({ ref }) => ref.canonicalUrl))
+      .toEqual(refs.slice(0, 30).map((ref) => ref.canonicalUrl));
+  });
+
   it("captures St Marche browser page evidence for DOM-crawl discovery", async () => {
     const retailer = config("st-marche");
     const database = openDatabase(":memory:");

@@ -12,6 +12,18 @@
   preflight, preserves all live catalog rows, then starts a new external run
   against 30 references fixed before that validation run begins.
 
+## 2026-07-11 — Pão de Açúcar discovery v2 retained as a failed validation experiment
+
+- The v2 candidate preflight admitted 120/120 references, but relevance-sorted
+  late-page membership changed before external validation; 18/30 preselected
+  references repeated. Its signed non-activating receipt is retained under
+  `data/validation/attempts/`, and discovery advances to v3.
+- The independently executed extraction v2 receipt passed 30/30 and remains the
+  immutable extraction receipt; a discovery failure does not erase that result.
+- Candidate challenge selection now binds to the first 30 durable admissions of
+  the exact terminal preflight run. This keeps the sample fixed before external
+  execution while avoiding timestamp order and late-page volatility.
+
 ## 2026-07-10 — M0 foundation
 
 - The supported runtime is Node `>=24 <25` with npm `>=11 <12`; package install

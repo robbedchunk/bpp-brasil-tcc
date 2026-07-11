@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { APIConnectionError } from "openai";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   finalizeClassificationBatch,
@@ -187,6 +190,7 @@ describe("asynchronous OpenAI classification batches", () => {
 
   it("exposes a locked operator CLI for asynchronous submission", async () => {
     const database = openDatabase(":memory:");
+    const projectRoot = await mkdtemp(join(tmpdir(), "classification-batch-cli-"));
     try {
       seed(database);
       const client = new FakeBatchClient();
@@ -199,7 +203,7 @@ describe("asynchronous OpenAI classification batches", () => {
       ], {
         database,
         env: {
-          PROJECT_ROOT: process.cwd(),
+          PROJECT_ROOT: projectRoot,
           OPENAI_API_KEY: "fixture-key",
           OPENAI_CLASSIFICATION_MODEL: "gpt-5.6-luna",
         },
@@ -212,6 +216,7 @@ describe("asynchronous OpenAI classification batches", () => {
         .toEqual({ count: 1 });
     } finally {
       database.close();
+      await rm(projectRoot, { recursive: true, force: true });
     }
   });
 

@@ -457,14 +457,15 @@ describe("live retailer configuration", () => {
     if (current === undefined) return;
     const discoveryReceipt = testReceipt(current, "discovery");
     const extractionReceipt = testReceipt(current, "extraction");
+    const mismatchedSuccesses = current.validation.extraction.successes - 1;
     const changed = {
       ...current,
       validation: {
         ...current.validation,
         extraction: {
           ...current.validation.extraction,
-          successes: 29,
-          score: 29 / 30,
+          successes: mismatchedSuccesses,
+          score: mismatchedSuccesses / 30,
           receiptSha256: validationReceiptSha256(extractionReceipt),
         },
         discovery: {
