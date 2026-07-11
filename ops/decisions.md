@@ -1,5 +1,19 @@
 # Operations decisions
 
+## 2026-07-11 — Broad-catalog rehearsal before the first Sunday timer
+
+- The production-equivalent `discover --limit 3000` command ran sequentially
+  from 04:43:28 to 04:48:00 São Paulo time, using the live active strategies and
+  durable per-retailer/day admission gates.
+- Carrefour persisted 2,880/2,880 references in 75.073 seconds, Extra
+  2,545/2,545 in 65.782 seconds, Pão de Açúcar 2,640/2,640 in 67.035 seconds,
+  and St. Marché 2,500/2,500 in 64.576 seconds: 10,565 successes, zero failures,
+  and a 272.48-second total makespan.
+- Every snapshot remained explicitly incomplete (`product_cap_reached` or
+  `page_cap_reached`), so the rehearsal deactivated no catalog row. The July 11
+  admissions expire before Sunday; the installed timer run remains the
+  authoritative scheduled scale gate.
+
 ## 2026-07-11 — Carrefour discovery v4 retained as a failed validation experiment
 
 - Trusted validation of `carrefour-discovery-v4` preselected the 30 authoritative
