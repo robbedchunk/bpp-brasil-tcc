@@ -22,6 +22,19 @@ Extraction API and URL templates may use only `{productUrl}`, `{externalId}`, an
 MUST reference the sampled product through one of these placeholders: each of
 the 30 validation samples binds to a different product.
 
+Extraction field-value contracts enforced by the host:
+
+- `title` must resolve to a descriptive, non-placeholder text title (2–500
+  characters and containing a letter).
+- `price` is required and `promoPrice`, when present, must be positive finite
+  numbers or valid BRL-formatted amounts; `promoPrice` cannot exceed `price`.
+- `availability` must resolve to an explicit boolean (for example VTEX
+  `commertialOffer.IsAvailable`, **not** `AvailableQuantity`). Booleans, `1`/
+  `0`, and recognized availability words are accepted; arbitrary quantities are
+  not.
+- `brand` and `unit` are optional; when present they should be nonblank text.
+  Units such as `500 g`, `1 kg`, `250 ml`, and `1 l` are normalized by the host.
+
 Discovery tier order is `sitemap`, `api`, `dom-crawl`, then the same restricted
 operation-list `script` tier. API discovery may use `{page}`, `{pageSize}`,
 `{offset}`, `{from}`, `{to}`, `{cursor}`, and `{segment}` placeholders. When

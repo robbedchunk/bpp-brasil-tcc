@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
 import {
   link,
   lstat,
   mkdir,
   mkdtemp,
   open,
+  readdir,
   readFile,
   rm,
   unlink,
@@ -45,6 +46,81 @@ function runnerOutputTails(error: { stdout?: unknown; stderr?: unknown }): strin
   return [
     ...(stdout.length === 0 ? [] : [`stdout tail:\n${stdout}`]),
     ...(stderr.length === 0 ? [] : [`stderr tail:\n${stderr}`]),
+  ].join("\n");
+}
+
+async function receiptFailureSummary(outputDirectory: string): Promise<string | undefined> {
+  const paths: string[] = [];
+  const collect = async (directory: string): Promise<void> => {
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await collect(path);
+      } else if (entry.isFile() && entry.name.endsWith(".json")) {
+        paths.push(path);
+      }
+    }
+  };
+  await collect(outputDirectory);
+
+  for (const path of paths.sort()) {
+    try {
+      const receipt = JSON.parse(await readFile(path, "utf8")) as {
+        attempted?: unknown;
+        valid?: unknown;
+        score?: unknown;
+        samples?: unknown;
+      };
+      if (
+        !Number.isSafeInteger(receipt.attempted)
+        || !Number.isSafeInteger(receipt.valid)
+        || !Number.isFinite(receipt.score)
+        || !Array.isArray(receipt.samples)
+      ) continue;
+      const failures = new Map<string, number>();
+      for (const sample of receipt.samples) {
+        if (sample === null || typeof sample !== "object") continue;
+        const outcome = (sample as { outcome?: unknown }).outcome;
+        if (outcome === null || typeof outcome !== "object") continue;
+        const failure = (outcome as { failure?: unknown }).failure;
+        if (failure === null || typeof failure !== "object") continue;
+        const category = (failure as { category?: unknown }).category;
+        const message = (failure as { message?: unknown }).message;
+        if (typeof category !== "string" || typeof message !== "string") continue;
+        const key = `${category}: ${redactSandboxText(message)}`;
+        failures.set(key, (failures.get(key) ?? 0) + 1);
+      }
+      const details = [...failures.entries()]
+        .sort(([leftKey, leftCount], [rightKey, rightCount]) =>
+          rightCount - leftCount || leftKey.localeCompare(rightKey))
+        .slice(0, 3)
+        .map(([failure, count]) => `${count}x ${failure}`);
+      return redactSandboxText([
+        `score ${receipt.valid}/${receipt.attempted} (${receipt.score})`,
+        ...details,
+      ].join("; ")).slice(0, 500);
+    } catch {
+      // A malformed scratch receipt must not mask the runner's original error.
+    }
+  }
+  return undefined;
+}
+
+function runnerFailureMessage(
+  message: string,
+  receiptSummary: string | undefined,
+  tails: string,
+): string {
+  return [
+    message,
+    ...(receiptSummary === undefined ? [] : [`receipt failure summary: ${receiptSummary}`]),
+    ...(tails.length === 0 ? [] : [tails]),
   ].join("\n");
 }
 
@@ -278,14 +354,18 @@ export function createTrustedCandidateValidator(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error) || "Trusted validation runner failed";
         const tails = runnerOutputTails(error as { stdout?: unknown; stderr?: unknown });
-        throw new Error(tails.length === 0 ? message : `${message}\n${tails}`, { cause: error });
+        const summary = await receiptFailureSummary(outputDirectory);
+        throw new Error(runnerFailureMessage(message, summary, tails), { cause: error });
       }
       const output = result.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1);
       if (output === undefined) {
         const tails = runnerOutputTails(result);
-        throw new Error(
-          `Trusted validation runner returned no receipt summary${tails.length === 0 ? "" : `\n${tails}`}`,
-        );
+        const summary = await receiptFailureSummary(outputDirectory);
+        throw new Error(runnerFailureMessage(
+          "Trusted validation runner returned no receipt summary",
+          summary,
+          tails,
+        ));
       }
       const summary = JSON.parse(output) as { path?: unknown };
       if (typeof summary.path !== "string") {

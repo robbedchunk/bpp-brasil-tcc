@@ -81,7 +81,25 @@ describe("generated-strategy trusted validator bridge", () => {
     const diagnostic = createTrustedCandidateValidator({
       database,
       projectRoot: root,
-      executeRunner: async () => {
+      executeRunner: async (_executable, arguments_) => {
+        const outputIndex = arguments_.indexOf("--output-directory");
+        const outputDirectory = arguments_[outputIndex + 1];
+        if (outputDirectory === undefined) throw new Error("Missing fixture output directory");
+        await mkdir(join(outputDirectory, "attempts"), { recursive: true });
+        await writeFile(join(outputDirectory, "attempts", "failed.json"), JSON.stringify({
+          attempted: 30,
+          valid: 0,
+          score: 0,
+          samples: Array.from({ length: 30 }, () => ({
+            outcome: {
+              status: "invalid",
+              failure: {
+                category: "missing-fields",
+                message: "Availability must map to an explicit boolean value",
+              },
+            },
+          })),
+        }));
         throw Object.assign(new Error("Command failed: validation runner"), {
           stdout: "sample summary: 24/30 valid\nAuthorization: Bearer runner-secret",
           stderr: "Refusing to bind non-activatable validation evidence",
@@ -92,6 +110,9 @@ describe("generated-strategy trusted validator bridge", () => {
       () => { throw new Error("Expected runner failure"); },
       (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
+        expect(message).toContain(
+          "receipt failure summary: score 0/30 (0); 30x missing-fields: Availability must map to an explicit boolean value",
+        );
         expect(message).toContain("sample summary: 24/30 valid");
         expect(message).toContain("Refusing to bind non-activatable validation evidence");
         expect(message).not.toContain("runner-secret");
