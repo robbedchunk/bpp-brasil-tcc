@@ -23,7 +23,7 @@
   },
   "seedHints": ["alimentos", "bebidas"],
   "politeDelayMs": { "min": 200, "max": 300 },
-  "strategyVersions": { "discovery": 3, "extraction": 2 },
+  "strategyVersions": { "discovery": 4, "extraction": 2 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
@@ -36,7 +36,7 @@
       "body": {
         "partner": "linx",
         "page": "{page}",
-        "sortBy": "relevance",
+      "sortBy": "descPrice",
         "resultsPerPage": 36,
         "multiCategory": "{segment}",
         "storeId": 61,
@@ -109,7 +109,7 @@
       "successes": 30,
       "score": 1,
       "evidence": "Trusted execution of the official store-61 Alimentos category page returned 30/30 canonical IDs and URLs; declarative segment provenance supplies the authoritative food category.",
-      "receiptPath": "data/validation/pao-de-acucar-discovery-v3.json",
+      "receiptPath": "data/validation/pao-de-acucar-discovery-v4.json",
       "receiptSha256": null
     },
     "extraction": {

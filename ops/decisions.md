@@ -24,6 +24,18 @@
   the exact terminal preflight run. This keeps the sample fixed before external
   execution while avoiding timestamp order and late-page volatility.
 
+## 2026-07-11 — Pão de Açúcar discovery v3 identifies nondeterministic relevance cohorts
+
+- Even with the challenge fixed to the first 30 durable v3 admissions, a repeated
+  identical `relevance` request returned a disjoint product cohort; v3 scored
+  0/30. Its signed receipt is retained as a second non-activating experiment.
+- The retailer storefront bundle declares `ascPrice` and `descPrice` sort modes.
+  Bounded same-body diagnostics against the official endpoint showed the
+  `descPrice` first page repeating the identical 36/36 IDs, whereas `relevance`
+  produced disjoint 0/36 cohorts.
+- Discovery v4 changes only the declarative sort to `descPrice`; it remains
+  bounded, store-61-specific, and subject to a new independent signed receipt.
+
 ## 2026-07-10 — M0 foundation
 
 - The supported runtime is Node `>=24 <25` with npm `>=11 <12`; package install
