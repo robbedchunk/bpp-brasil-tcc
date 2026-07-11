@@ -17,6 +17,30 @@ function parseFailure(message: string, responded: boolean): ExtractionResult {
   };
 }
 
+function applyRegionalContext(
+  request: ReturnType<typeof renderRequestTemplate>,
+  strategy: ApiExtractionStrategy,
+): ReturnType<typeof renderRequestTemplate> {
+  if (strategy.regionalContext === undefined) return request;
+  const payload = {
+    campaigns: null,
+    channel: strategy.regionalContext.salesChannel,
+    priceTables: null,
+    regionId: strategy.regionalContext.regionId,
+    utm_campaign: null,
+    utm_source: null,
+    utmi_campaign: null,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  return {
+    ...request,
+    headers: {
+      ...request.headers,
+      cookie: `vtex_segment=${encoded}`,
+    },
+  };
+}
+
 export async function executeApi(
   strategy: ApiExtractionStrategy,
   ref: ProductRef,
@@ -32,7 +56,11 @@ export async function executeApi(
     );
   }
 
-  const fetched = await fetchBounded(request, strategy.allowedDomains, context);
+  const fetched = await fetchBounded(
+    applyRegionalContext(request, strategy),
+    strategy.allowedDomains,
+    context,
+  );
   if (!fetched.ok) return { ok: false, failure: fetched.failure };
 
   let document: unknown;

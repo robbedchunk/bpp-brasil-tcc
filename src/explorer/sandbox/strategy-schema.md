@@ -6,7 +6,11 @@ Every strategy has `schemaVersion: 1`, a matching `purpose`, an ordered tier tag
 
 Extraction tier order:
 
-1. `api`: declarative request plus JSON paths for title, brand, price, promo price, unit, and availability.
+1. `api`: declarative request plus JSON paths for title, brand, price, promo
+   price, unit, and availability. A VTEX API may additionally declare
+   `regionalContext: { "kind": "vtex-segment", "regionId": "v2.…", "salesChannel": "2" }`;
+   the trusted host derives the public region selector at request time. Never
+   store Cookie, Authorization, Set-Cookie, or Proxy-Authorization headers.
 2. `embedded-json`: declarative HTML request, embedded source (`json-ld`, `next-data`, or selected script), and JSON paths.
 3. `dom`: URL template plus ordered selector lists for all six fields.
 4. `script`: only the closed, typed operation list documented by the host schema; never arbitrary JavaScript.

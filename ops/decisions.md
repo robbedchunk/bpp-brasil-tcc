@@ -227,3 +227,21 @@
   backup receipts expose hashes and integrity facts, never the private backup
   filename. Fresh-clone verification scrubs timer-install, credential, npm,
   browser, Python, and analysis environment inheritance before cloning.
+
+## 2026-07-11 — Carrefour regional activation
+
+- Carrefour's public checkout-region endpoint maps CEP `01310-100` and sales
+  channel `2` to region `v2.ED060FE4CF8359428D52ABC52B3F1E1E`. The ordinary
+  catalog response was therefore not region-complete, but the same public
+  region identifier deterministically changes its offers.
+- API extraction v3 stores only a typed `regionalContext` (region ID and sales
+  channel). The executor derives VTEX's segment header in memory for the one
+  bounded request. Declarative strategies now reject stored Cookie,
+  Authorization, Set-Cookie, and Proxy-Authorization headers, so no session
+  value enters config, SQLite, fixtures, logs, or publication artifacts.
+- Cafe discovery v3 returned 30 unique product references. Independent,
+  sequential, one-second-paced execution produced 28/30 complete regional
+  offers (`0.9333`); the two honest failures had no positive price. This clears
+  the external `>=0.9` activation gate without a proxy, browser bypass, paid
+  service, or fabricated value, so Carrefour joins the daily panel as the third
+  active retailer.

@@ -17,6 +17,12 @@ operation program. Lower tiers are preferred. HTTP/navigation is limited to
 configured retailer domains. Tier 4 cannot execute arbitrary JavaScript or
 access process/filesystem state.
 
+For VTEX catalogs that require a delivery region, an API strategy may store the
+public checkout-region identifier and sales channel as typed regional context.
+The trusted executor derives the region selector only in memory for the bounded
+retailer request; declarative strategies cannot store cookie or authorization
+headers, and no session identifier enters evidence or publication artifacts.
+
 An exploration worker may use broad tools only inside a disposable sandbox. Its
 sole output is typed strategy JSON. The trusted host parses it and independently
 validates exactly 30 unique product references; activation requires at least 27

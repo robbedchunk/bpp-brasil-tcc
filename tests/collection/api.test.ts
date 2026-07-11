@@ -97,6 +97,86 @@ describe("API extraction", () => {
     );
   });
 
+  it("derives a VTEX regional segment only in memory", async () => {
+    let derivedPayload: Record<string, unknown> | null = null;
+    const fetch: FetchLike = async (_input, init) => {
+      const runtimeHeader = new Headers(init?.headers).get("cookie");
+      expect(runtimeHeader).toMatch(/^vtex_segment=/u);
+      const encoded = runtimeHeader?.slice("vtex_segment=".length) ?? "";
+      derivedPayload = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      return fixtureResponse(await apiFixture());
+    };
+    const strategy = ApiExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: {
+        method: "GET",
+        url: "https://shop.test/api/products/{externalId}",
+        headers: { accept: "application/json" },
+      },
+      regionalContext: {
+        kind: "vtex-segment",
+        regionId: "v2.REGION_123",
+        salesChannel: "2",
+      },
+      fields,
+    });
+
+    const result = await executeExtraction(strategy, productRef, { fetch });
+    expect(result.ok).toBe(true);
+    expect(derivedPayload).toMatchObject({
+      channel: "2",
+      regionId: "v2.REGION_123",
+      campaigns: null,
+      priceTables: null,
+    });
+    expect(JSON.stringify(strategy)).not.toMatch(/vtex_segment|cookie/iu);
+  });
+
+  it("does not forward a derived regional segment across origins", async () => {
+    const seen: Array<{ url: string; cookie: string | null }> = [];
+    const fetch: FetchLike = async (input, init) => {
+      seen.push({
+        url: String(input),
+        cookie: new Headers(init?.headers).get("cookie"),
+      });
+      if (seen.length === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://cdn.test/products/1" },
+        });
+      }
+      return fixtureResponse(await apiFixture());
+    };
+    const strategy = ApiExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "api",
+      allowedDomains: ["shop.test", "cdn.test"],
+      request: {
+        method: "GET",
+        url: "https://shop.test/api/products/{externalId}",
+        headers: { accept: "application/json" },
+      },
+      regionalContext: {
+        kind: "vtex-segment",
+        regionId: "v2.REGION_123",
+        salesChannel: "2",
+      },
+      fields,
+    });
+
+    const result = await executeExtraction(strategy, productRef, { fetch });
+
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([
+      { url: "https://shop.test/api/products/1%2F2", cookie: expect.stringMatching(/^vtex_segment=/u) },
+      { url: "https://cdn.test/products/1", cookie: null },
+    ]);
+  });
+
   it("renders nested POST body JSON templates without changing value types", async () => {
     let seenBody: unknown;
     let seenUrl = "";

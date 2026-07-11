@@ -150,6 +150,15 @@ function makeRequestTemplateSchema(allowed: readonly Placeholder[]) {
           message: "GET request templates cannot contain a body",
         });
       }
+      for (const name of Object.keys(request.headers)) {
+        if (["authorization", "cookie", "proxy-authorization", "set-cookie"].includes(name.toLowerCase())) {
+          context.addIssue({
+            code: "custom",
+            path: ["headers", name],
+            message: "Credential and cookie headers cannot be stored in declarative strategies",
+          });
+        }
+      }
     });
 }
 
@@ -248,6 +257,14 @@ export const DomFieldSelectorsSchema = z
 
 export type DomSelector = z.infer<typeof DomSelectorSchema>;
 export type DomFieldSelectors = z.infer<typeof DomFieldSelectorsSchema>;
+
+export const RegionalContextSchema = z.object({
+  kind: z.literal("vtex-segment"),
+  regionId: z.string().min(1).max(300).regex(/^v\d+\.[A-Za-z0-9_-]+$/u),
+  salesChannel: z.string().regex(/^\d{1,6}$/u),
+}).strict();
+
+export type RegionalContext = z.infer<typeof RegionalContextSchema>;
 
 export const EmbeddedSourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("json-ld") }).strict(),
@@ -470,6 +487,7 @@ export const ApiExtractionStrategySchema = z
     purpose: z.literal("extraction"),
     tier: z.literal("api"),
     request: ExtractionRequestTemplateSchema,
+    regionalContext: RegionalContextSchema.optional(),
     fields: JsonFieldMapSchema,
   })
   .strict();

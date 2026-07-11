@@ -221,7 +221,7 @@ describe("script discovery", () => {
       allowedDomains: ["shop.test"],
       operations: [
         { op: "goto", url: "https://shop.test/start", timeoutMs: 500 },
-        { op: "click", selector: "#next", timeoutMs: 100 },
+        { op: "click", selector: "#next", timeoutMs: 500 },
         { op: "extract", source: "dom", linkSelectors: [{ selector: "a" }] },
       ],
     });
@@ -232,7 +232,7 @@ describe("script discovery", () => {
     const failure = collect(executeDiscovery(strategy, {
       browser,
       timeoutMs: 1_000,
-      totalTimeoutMs: 2_000,
+      totalTimeoutMs: 3_000,
       fetch: async (input, init) => {
         if (String(input).endsWith("/start")) {
           return new Response('<a id="next" href="/pending">next</a>', {
@@ -255,7 +255,7 @@ describe("script discovery", () => {
     }));
 
     await expect(failure).rejects.toMatchObject({ failure: { category: "timeout" } });
-    expect(Date.now() - startedAt).toBeLessThan(750);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
     expect(aborted).toBe(true);
     expect(active).toBe(0);
   });

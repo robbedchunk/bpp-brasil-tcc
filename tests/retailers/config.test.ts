@@ -40,17 +40,17 @@ describe("live retailer configuration", () => {
   it("activates only externally validated 30-sample primaries", () => {
     const configs = loadRetailerConfigs("retailers");
     expect(configs.filter(({ active }) => active).map(({ id }) => id)).toEqual([
+      "carrefour",
       "extra-mercado",
       "pao-de-acucar",
     ]);
     for (const config of configs.filter(({ active }) => active)) {
       for (const purpose of ["discovery", "extraction"] as const) {
-        expect(config.validation[purpose]).toMatchObject({
-          externallyValidated: true,
-          sampleSize: 30,
-          successes: 30,
-          score: 1,
-        });
+        const validation = config.validation[purpose];
+        expect(validation.externallyValidated).toBe(true);
+        expect(validation.sampleSize).toBe(30);
+        expect(validation.successes).toBeGreaterThanOrEqual(27);
+        expect(validation.score).toBeGreaterThanOrEqual(0.9);
       }
     }
     expect(configs.find(({ id }) => id === "sonda")).toMatchObject({
@@ -90,8 +90,9 @@ describe("live retailer configuration", () => {
 
     expect(database.prepare("SELECT COUNT(*) AS n FROM retailers").get()).toEqual({ n: 5 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM strategies").get()).toEqual({ n: 10 });
-    expect(database.prepare("SELECT COUNT(*) AS n FROM strategies WHERE active = 1").get()).toEqual({ n: 4 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM strategies WHERE active = 1").get()).toEqual({ n: 6 });
     expect(database.prepare("SELECT id FROM retailers WHERE active = 1 ORDER BY id").all()).toEqual([
+      { id: "carrefour" },
       { id: "extra-mercado" },
       { id: "pao-de-acucar" },
     ]);

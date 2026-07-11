@@ -17,6 +17,12 @@ export const DEFAULT_RESEARCH_USER_AGENT =
 
 const PLACEHOLDER_PATTERN = /\{([A-Za-z][A-Za-z0-9]*)\}/gu;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const CROSS_ORIGIN_SENSITIVE_HEADERS = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "set-cookie",
+] as const;
 const CAPTCHA_PATTERN =
   /(?:g-recaptcha|hcaptcha|captcha\s+(?:required|challenge)|verify\s+(?:that\s+)?you\s+are\s+human|verifique\s+que\s+(?:voce|você)\s+(?:e|é)\s+humano)/iu;
 
@@ -464,6 +470,9 @@ export async function fetchBounded(
       }
 
       previousStatus = response.status;
+      if (new URL(nextUrl).origin !== new URL(currentUrl).origin) {
+        for (const name of CROSS_ORIGIN_SENSITIVE_HEADERS) headers.delete(name);
+      }
       currentUrl = nextUrl;
       if (
         response.status === 303

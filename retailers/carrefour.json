@@ -5,25 +5,25 @@
   "baseUrl": "https://mercado.carrefour.com.br",
   "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
   "cep": "01310-100",
-  "active": false,
+  "active": true,
   "backupRank": null,
   "platformEvidence": {
     "platform": "VTEX public catalog plus checkout region",
-    "observedAt": "2026-07-10T15:36:00.000Z",
+    "observedAt": "2026-07-11T04:06:00.000Z",
     "urls": [
-      "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=arroz&_from=0&_to=29",
+      "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=cafe&_from=0&_to=29&sc=2",
       "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
     ],
-    "notes": "Catalog returned 30 records (HTTP 206), but catalog seller 1 did not match CEP region seller carrefourbrfood1935; inactive until store-aware sampling is proven."
+    "notes": "The public CEP lookup yields a non-secret VTEX region identifier. A typed regional context derives the segment header only in memory; the cafe catalog returned 30 references and the trusted executor validated 28/30 regional offers."
   },
   "storeMapping": {
     "storeId": "carrefourbrfood1935",
     "erpCode": null,
     "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
   },
-  "seedHints": ["arroz", "https://mercado.carrefour.com.br/sitemap.xml"],
+  "seedHints": ["cafe", "https://mercado.carrefour.com.br/sitemap.xml"],
   "politeDelayMs": { "min": 900, "max": 1500 },
-  "strategyVersions": { "discovery": 2, "extraction": 2 },
+  "strategyVersions": { "discovery": 3, "extraction": 3 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
@@ -33,7 +33,7 @@
       "method": "GET",
       "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
       "headers": { "accept": "application/json" },
-      "query": { "ft": "arroz", "_from": "{from}", "_to": "{to}" }
+      "query": { "ft": "cafe", "_from": "{from}", "_to": "{to}", "sc": 2 }
     },
     "itemsPath": "$",
     "refFields": {
@@ -54,6 +54,11 @@
       "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
       "headers": { "accept": "application/json" },
       "query": { "fq": "productId:{externalId}", "sc": 2 }
+    },
+    "regionalContext": {
+      "kind": "vtex-segment",
+      "regionId": "v2.ED060FE4CF8359428D52ABC52B3F1E1E",
+      "salesChannel": "2"
     },
     "fields": {
       "title": "$[0].productName",
@@ -88,19 +93,19 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-10T15:36:00.000Z",
+      "validatedAt": "2026-07-11T04:06:00.000Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Official account-host VTEX catalog discovery returned 30/30 canonical product records."
+      "evidence": "Official account-host VTEX cafe discovery returned 30/30 canonical product records for sales channel 2."
     },
     "extraction": {
-      "externallyValidated": false,
-      "validatedAt": "2026-07-10T15:36:00.000Z",
+      "externallyValidated": true,
+      "validatedAt": "2026-07-11T04:06:00.000Z",
       "sampleSize": 30,
-      "successes": 30,
-      "score": 1,
-      "evidence": "Catalog fields were 30/30, but the CEP checkout seller mapping was not reflected in catalog offers; extraction activation denied."
+      "successes": 28,
+      "score": 0.9333333333333333,
+      "evidence": "Trusted sequential validation with the public CEP-derived regional context produced 28/30 complete offers; two unavailable products had no positive price. No cookie is stored in the strategy or evidence."
     }
   }
 }

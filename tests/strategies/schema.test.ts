@@ -67,6 +67,43 @@ describe("extraction strategy schemas", () => {
     });
   });
 
+  it("allows typed regional context but rejects stored cookie/authorization headers", () => {
+    const regional = ApiExtractionStrategySchema.parse({
+      ...extractionBase,
+      tier: "api",
+      request: {
+        method: "GET",
+        url: "https://api.shop.test/products/{externalId}",
+        headers: { accept: "application/json" },
+      },
+      regionalContext: {
+        kind: "vtex-segment",
+        regionId: "v2.ABC_123",
+        salesChannel: "2",
+      },
+      fields: jsonFields,
+    });
+    expect(regional.regionalContext).toEqual({
+      kind: "vtex-segment",
+      regionId: "v2.ABC_123",
+      salesChannel: "2",
+    });
+    expect(JSON.stringify(regional)).not.toMatch(/vtex_segment|cookie/iu);
+
+    for (const name of ["Cookie", "Authorization", "Proxy-Authorization", "Set-Cookie"]) {
+      expect(() => ApiExtractionStrategySchema.parse({
+        ...extractionBase,
+        tier: "api",
+        request: {
+          method: "GET",
+          url: "https://api.shop.test/products/{externalId}",
+          headers: { [name]: "must-not-be-stored" },
+        },
+        fields: jsonFields,
+      })).toThrow(/cannot be stored/iu);
+    }
+  });
+
   it("parses embedded JSON sources", () => {
     for (const source of [
       { kind: "json-ld" },

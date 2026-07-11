@@ -98,6 +98,27 @@
       "severity": "important",
       "status": "resolved",
       "fixCommit": "cfe4af3c485cdde84de75babb0da865fa282bb1e"
+    },
+    {
+      "id": "m7-carrefour-derived-regional-context",
+      "milestone": "M7",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m7-carrefour-cross-origin-regional-header",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m7-discovery-timeout-test-load-flake",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
     }
   ]
 }
