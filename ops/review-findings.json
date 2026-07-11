@@ -23,11 +23,67 @@
       "fixCommit": "adf14e5eb33a63124bea2c36992ecc9540d02d16"
     },
     {
-      "id": "m7-acceptance-publication-adversarial-review",
+      "id": "m7-scheduled-heartbeat-provenance",
       "milestone": "M7",
       "severity": "critical",
-      "status": "open",
-      "fixCommit": null
+      "status": "resolved",
+      "fixCommit": "9432eeb7fdd675bfbd2e3979bb62ab5ff143a18d"
+    },
+    {
+      "id": "m7-public-data-content-audit",
+      "milestone": "M7",
+      "severity": "critical",
+      "status": "resolved",
+      "fixCommit": "2dc9ee5459b13bb059fa2ef31f10221ec9e13b87"
+    },
+    {
+      "id": "m7-fresh-clone-host-isolation",
+      "milestone": "M7",
+      "severity": "critical",
+      "status": "resolved",
+      "fixCommit": "2dc9ee5459b13bb059fa2ef31f10221ec9e13b87"
+    },
+    {
+      "id": "m7-read-only-report-and-m6-regeneration-binding",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "752033406286f6aff4d04605842b794e4e2b7bd4"
+    },
+    {
+      "id": "m7-installed-classification-handoff",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "9432eeb7fdd675bfbd2e3979bb62ab5ff143a18d"
+    },
+    {
+      "id": "m7-m3-m4-adversarial-evidence-bindings",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "752033406286f6aff4d04605842b794e4e2b7bd4"
+    },
+    {
+      "id": "m7-strict-public-receipts-and-schemas",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "2dc9ee5459b13bb059fa2ef31f10221ec9e13b87"
+    },
+    {
+      "id": "m7-schedule-activation-provenance",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "752033406286f6aff4d04605842b794e4e2b7bd4"
+    },
+    {
+      "id": "m7-adversarial-coverage-and-public-documentation",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "752033406286f6aff4d04605842b794e4e2b7bd4"
     }
   ]
 }
