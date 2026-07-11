@@ -7,23 +7,23 @@
     "carrefourbrfood.vtexcommercestable.com.br",
     "mercado.carrefour.com.br"
   ],
-  "cep": "01310-100",
+  "cep": "01001-000",
   "active": true,
   "backupRank": null,
   "platformEvidence": {
     "platform": "VTEX public catalog plus checkout region",
-    "observedAt": "2026-07-11T05:07:25.000Z",
+    "observedAt": "2026-07-11T14:55:42.000Z",
     "urls": [
       "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search/mercearia?_from=0&_to=49&sc=2",
       "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/category/tree/3",
-      "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
+      "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01001000&sc=2"
     ],
-    "notes": "The public category tree identifies seven food-at-home departments. Discovery allocates a bounded 3,000-product sample across all seven with the source category retained per product; the public CEP lookup supplies the non-secret region used only by extraction."
+    "notes": "The public category tree identifies seven food-at-home departments. The recorded São Paulo CEP 01001-000 maps to covered food store carrefourbrfood396 and the non-secret VTEX region used only by extraction."
   },
   "storeMapping": {
-    "storeId": "carrefourbrfood1935",
+    "storeId": "carrefourbrfood396",
     "erpCode": null,
-    "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
+    "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01001000&sc=2"
   },
   "seedHints": [
     "mercearia",
@@ -40,7 +40,7 @@
   },
   "strategyVersions": {
     "discovery": 7,
-    "extraction": 5
+    "extraction": 8
   },
   "discovery": {
     "schemaVersion": 1,
@@ -128,7 +128,7 @@
     },
     "regionalContext": {
       "kind": "vtex-segment",
-      "regionId": "v2.ED060FE4CF8359428D52ABC52B3F1E1E",
+      "regionId": "v2.682B43B8BB2E50ABE226417A4A61990F",
       "salesChannel": "2",
       "catalogSellerId": "1"
     },
@@ -193,13 +193,13 @@
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T10:08:49.684Z",
+      "validatedAt": "2026-07-11T15:00:05.841Z",
       "sampleSize": 30,
       "successes": 28,
       "score": 0.9333333333333333,
       "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/carrefour-extraction-v5.json",
-      "receiptSha256": "7411b8b44b80ab2db4939db71fb5fe9810e73f51d001253e11c57e73e1382998"
+      "receiptPath": "data/validation/carrefour-extraction-v8.json",
+      "receiptSha256": "87ae4c452d5472315e873634a40d3b3aa90e948ac13a8fb31ea96d593ffbab34"
     }
   }
 }

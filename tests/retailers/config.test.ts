@@ -384,7 +384,7 @@ describe("live retailer configuration", () => {
     expect(config?.extraction.tier).toBe("api");
     if (config === undefined || config.extraction.tier !== "api") return;
     expect(config.extraction.regionalContext).toMatchObject({
-      regionId: "v2.ED060FE4CF8359428D52ABC52B3F1E1E",
+      regionId: "v2.682B43B8BB2E50ABE226417A4A61990F",
       catalogSellerId: "1",
     });
     const [regional, plain, mutated] = await Promise.all([
