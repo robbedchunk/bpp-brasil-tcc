@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-11T13:45:31.507Z",
+  "generatedAt": "2026-07-11T15:07:19.148Z",
   "timezone": "America/Sao_Paulo",
-  "evaluatedCommit": "1d3e8ce0421079c511a136aa18414d5e36cb7508",
-  "databaseSha256": "2ec4b6c04a37e65e6dad77cbf1ea07304f279dae40da534acb489594b4b3dcfb",
+  "evaluatedCommit": "74c4932285fe4771893ff6dc1a4b7ea2fb39f0bb",
+  "databaseSha256": "26196e6e0a30ca3ca34c5bb4a1dde6a750bad347b915441bcdc4a81685c9bcdc",
   "overallStatus": "pending",
   "milestones": {
     "M0": {
@@ -180,8 +180,8 @@
   },
   "publication": {
     "schemaVersion": 1,
-    "generatedAt": "2026-07-11T13:45:58.013Z",
-    "commit": "1d3e8ce0421079c511a136aa18414d5e36cb7508",
+    "generatedAt": "2026-07-11T15:07:46.387Z",
+    "commit": "74c4932285fe4771893ff6dc1a4b7ea2fb39f0bb",
     "status": "pass",
     "trackedSecrets": [],
     "historicalSecrets": [],
@@ -274,7 +274,7 @@
       "criterionId": "m6-index-analysis",
       "kind": "time",
       "reasonCode": "TIME_WINDOW_NOT_ELAPSED",
-      "since": "2026-07-11T13:44:30.838Z",
+      "since": "2026-07-11T15:07:01.617Z",
       "nextAction": "Collect and classify enough consecutive observations to produce product relatives and at least one aggregate daily relative",
       "recheckCommand": "npm run research:snapshot && npm run acceptance -- --json",
       "evidenceIds": [
@@ -288,7 +288,7 @@
       "criterionId": "m7-publication-operations",
       "kind": "time",
       "reasonCode": "SCHEDULED_RUN_NOT_YET_DUE",
-      "since": "2026-07-11T13:42:34.356Z",
+      "since": "2026-07-11T15:04:09.827Z",
       "nextAction": "Let both installed São Paulo schedules reach their first real windows",
       "recheckCommand": "npm run acceptance -- --json",
       "evidenceIds": [
@@ -302,12 +302,12 @@
       "id": "command-m1-offline",
       "kind": "command",
       "source": "m1-offline",
-      "observedAt": "2026-07-11T13:45:34.705Z",
-      "sha256": "b0dfb049cacb5b03219ac5272fde06f2e8dcc8a0eca6bcab26f138455e435f3b",
+      "observedAt": "2026-07-11T15:07:22.443Z",
+      "sha256": "1e28fc945ac97d101d3b99d9eaec92f4e92c8926cdea6dc21b29a4b22a83a2f6",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-11T13:45:31.509Z",
-        "finishedAt": "2026-07-11T13:45:34.705Z",
+        "startedAt": "2026-07-11T15:07:19.151Z",
+        "finishedAt": "2026-07-11T15:07:22.443Z",
         "completed": true
       }
     },
@@ -315,12 +315,12 @@
       "id": "command-m5-healing",
       "kind": "command",
       "source": "m5-healing",
-      "observedAt": "2026-07-11T13:45:37.370Z",
-      "sha256": "6143415b85d2e3e4167806174db5afd0f8fb11bbf18d07e1ccc336c73c7b25d0",
+      "observedAt": "2026-07-11T15:07:25.043Z",
+      "sha256": "9a059a7bd9948e8b5d2b5de80020593be486c3096c5c293dea71579d05d809a8",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-11T13:45:34.705Z",
-        "finishedAt": "2026-07-11T13:45:37.370Z",
+        "startedAt": "2026-07-11T15:07:22.443Z",
+        "finishedAt": "2026-07-11T15:07:25.043Z",
         "completed": true
       }
     },
@@ -328,12 +328,12 @@
       "id": "command-m6-index-analysis",
       "kind": "command",
       "source": "m6-index-analysis",
-      "observedAt": "2026-07-11T13:45:47.538Z",
-      "sha256": "51f6e6921b7e098973a6b715eb919c35fc16b10e437086a1cf943ed7392a51e9",
+      "observedAt": "2026-07-11T15:07:34.874Z",
+      "sha256": "96c097b55f01dd106d64223501c8f01f24b004db1533762f385dcb1c7498a44c",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-11T13:45:37.370Z",
-        "finishedAt": "2026-07-11T13:45:47.538Z",
+        "startedAt": "2026-07-11T15:07:25.043Z",
+        "finishedAt": "2026-07-11T15:07:34.874Z",
         "completed": true
       }
     },
@@ -341,7 +341,7 @@
       "id": "db-m2-heartbeat-linked-collection-runs",
       "kind": "database-query",
       "source": "m2-heartbeat-linked-collection-runs",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "linkedRuns": 0,
         "ignoredManualLinkedRuns": 10,
@@ -350,15 +350,15 @@
         "qualifyingConsecutiveRetailers": 0,
         "qualifyingDayPair": null,
         "contradictoryHeartbeats": 0,
-        "scheduleActivatedAt": "2026-07-11T13:42:34.356Z",
-        "expectedReleaseId": "ba297a0828c8ca54842be1daee0fd29c"
+        "scheduleActivatedAt": "2026-07-11T15:04:09.827Z",
+        "expectedReleaseId": "a2e23452ec2f9b812efc578e64c854a1"
       }
     },
     {
       "id": "db-m3-latest-classification-coverage",
       "kind": "database-query",
       "source": "m3-latest-classification-coverage",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "activeRetailers": 4,
         "activeProducts": 10722,
@@ -370,7 +370,7 @@
       "id": "db-m3-live-panel",
       "kind": "database-query",
       "source": "m3-live-panel",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "activeRetailers": 4,
         "degradedRetailers": 0,
@@ -387,7 +387,7 @@
       "id": "db-m4-agent-activated-strategies",
       "kind": "database-query",
       "source": "m4-agent-activated-strategies",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "activeRetailers": 4,
         "requiredPurposePairs": 8,
@@ -402,11 +402,14 @@
       "id": "file-m1-fixture-inventory",
       "kind": "file",
       "source": "tests/fixtures",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "requiredOfflineTestFiles": 11,
         "requiredOfflineTestFilesPresent": 11,
+        "retailerConfigs": 5,
         "mutatedRetailerFixtures": 5,
+        "fixtureBindingsComplete": true,
+        "mutationRegressionPresent": true,
         "inventoryComplete": true
       }
     },
@@ -414,17 +417,17 @@
       "id": "file-m3-active-strategy-validation-receipts",
       "kind": "file",
       "source": "data/validation",
-      "observedAt": "2026-07-11T13:45:31.507Z",
-      "sha256": "01a1c81739711f5df0fe06f3a8661e4c2c8c718b516d64213ff97128547cfe2c",
+      "observedAt": "2026-07-11T15:07:19.148Z",
+      "sha256": "284cec8e9046d294e6c84ded889799a72d719fb3263ce8feaf3bcb703e114e59",
       "facts": {
         "activeStrategies": 8,
-        "receiptFiles": 16,
-        "validReceipts": 16,
+        "receiptFiles": 24,
+        "validReceipts": 24,
         "missingActiveReceipts": 0,
         "malformedReceipts": 0,
         "untrackedReceipts": 0,
         "configRegistryValid": true,
-        "preservedFailedAttempts": 3,
+        "preservedFailedAttempts": 6,
         "failedAttemptRegistryMissing": 0
       }
     },
@@ -432,7 +435,7 @@
       "id": "file-m3-classification-human-review",
       "kind": "file",
       "source": "data/acceptance/evidence/classification-review-vN.json",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "latestClassificationVersion": null,
         "activeClassificationRows": 0,
@@ -449,11 +452,11 @@
       "id": "file-m5-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-11T13:45:31.507Z",
-      "sha256": "32b5b03f2510c64c7112ae2efc5a119bf965ef9a160d6bd9f3553bd3dcf40e1d",
+      "observedAt": "2026-07-11T15:07:19.148Z",
+      "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
-        "scopedFindings": 2,
+        "scopedFindings": 4,
         "openCriticalOrImportant": 0
       }
     },
@@ -461,8 +464,8 @@
       "id": "file-m6-current-binding",
       "kind": "file",
       "source": "data/exports/latest.json+analysis/output/latest.json",
-      "observedAt": "2026-07-11T13:44:30.838Z",
-      "sha256": "2a0538d78a876e7956333b8ecb630de865d4279eda6d1d53f7abc79eea741d51",
+      "observedAt": "2026-07-11T15:07:01.617Z",
+      "sha256": "5c498737b14f53008bb079761efddb97aacae4a1f977b035f40ca1efd5218ecf",
       "facts": {
         "databaseCountsMatch": true,
         "databaseMaximaMatch": true,
@@ -489,11 +492,11 @@
       "id": "file-m6-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-11T13:45:31.507Z",
-      "sha256": "32b5b03f2510c64c7112ae2efc5a119bf965ef9a160d6bd9f3553bd3dcf40e1d",
+      "observedAt": "2026-07-11T15:07:19.148Z",
+      "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
-        "scopedFindings": 4,
+        "scopedFindings": 7,
         "openCriticalOrImportant": 0
       }
     },
@@ -501,11 +504,11 @@
       "id": "file-m7-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-11T13:45:31.507Z",
-      "sha256": "32b5b03f2510c64c7112ae2efc5a119bf965ef9a160d6bd9f3553bd3dcf40e1d",
+      "observedAt": "2026-07-11T15:07:19.148Z",
+      "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
-        "scopedFindings": 31,
+        "scopedFindings": 41,
         "openCriticalOrImportant": 0
       }
     },
@@ -513,8 +516,8 @@
       "id": "receipt-m0-fresh-clone",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-11T13:45:31.507Z",
-      "sha256": "0925db3c65efa80545996a9abfeaee3140ade8aadcaccd38692e511910e9c84b",
+      "observedAt": "2026-07-11T15:07:19.148Z",
+      "sha256": "51207454c606157a3695deb14dc27ff5a3a5dedc1d7a0338a161f35480b49ef2",
       "facts": {
         "receiptPresent": true,
         "receiptMatchesEvaluatedCommit": true,
@@ -523,7 +526,7 @@
         "nodeMajor24": true,
         "databaseQuickCheck": "ok",
         "foreignKeyViolations": 0,
-        "migrationCount": 15,
+        "migrationCount": 16,
         "migrationSetExact": true,
         "sourceWorktreeClean": true
       }
@@ -532,7 +535,7 @@
       "id": "receipt-m5-installed-release-healing-sabotage",
       "kind": "receipt",
       "source": "data/acceptance/evidence/healing-sabotage-drill.json",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "receiptPresent": false,
         "receiptValid": false,
@@ -557,8 +560,8 @@
       "id": "receipt-m6-analysis-regenerate",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-11T13:44:30.838Z",
-      "sha256": "0925db3c65efa80545996a9abfeaee3140ade8aadcaccd38692e511910e9c84b",
+      "observedAt": "2026-07-11T15:07:01.617Z",
+      "sha256": "51207454c606157a3695deb14dc27ff5a3a5dedc1d7a0338a161f35480b49ef2",
       "facts": {
         "freshCloneMatchesEvaluatedCommit": true,
         "analysisCommandSucceeded": true
@@ -568,7 +571,7 @@
       "id": "service-m3-classification-automation",
       "kind": "service",
       "source": "precos-classification.service",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "dailyRunObserved": false,
         "classificationUnitInstalled": true,
@@ -581,7 +584,7 @@
       "id": "service-m7-publication-operations",
       "kind": "service",
       "source": "m7-publication-and-six-timers",
-      "observedAt": "2026-07-11T13:45:31.507Z",
+      "observedAt": "2026-07-11T15:07:19.148Z",
       "facts": {
         "publicationStatus": "pass",
         "publicationFindings": 0,
@@ -591,16 +594,16 @@
         "systemdInstallReceiptValid": true,
         "installedReleaseMatchesEvaluatedCommit": true,
         "systemdInstalledAt": "2026-07-11T04:33:13.125Z",
-        "systemdDeployedAt": "2026-07-11T13:42:34.356Z",
-        "systemdReleaseId": "ba297a0828c8ca54842be1daee0fd29c",
-        "systemdUnitSetSha256": "1e2728d0127e4ad74e8e891e6c2170b760af0d2aad639ec273277ce92f9ea791",
+        "systemdDeployedAt": "2026-07-11T15:04:09.827Z",
+        "systemdReleaseId": "a2e23452ec2f9b812efc578e64c854a1",
+        "systemdUnitSetSha256": "63ced71b4e137fc7bc3d69d11596d6449e4b9e29f78308518939d4418409a636",
         "userLingerEnabled": true,
         "renderedUnitFiles": 13,
         "failedServiceUnits": 0,
         "alertDrillMatches": true,
         "backupDrillMatches": true,
         "backupIntegrityAndAgeValid": true,
-        "backupAgeHours": 0.044337541978624134,
+        "backupAgeHours": 0.032263382229275175,
         "latestCollectionHeartbeatFresh": false,
         "latestCollectionHeartbeatAgeHours": null,
         "firstDailyWindowElapsed": false,
