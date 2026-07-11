@@ -1,0 +1,12 @@
+collection_day,retailer_id,retailer_name,run_id,category,count
+2026-07-10,extra-mercado,Extra Mercado,8eeb3f25-48a2-4368-b7ac-768509221ba1,unknown,30
+2026-07-10,pao-de-acucar,Pão de Açúcar,4e9c423d-c4c2-4b4e-8dc0-2727fc49e8e0,unknown,30
+2026-07-11,carrefour,Carrefour Mercado,25626653-9d23-4c81-a1d1-ec283453bbab,invalid-price,2
+2026-07-11,carrefour,Carrefour Mercado,7bfe8dd6-5075-4bab-94cd-66dda55a5306,invalid-price,188
+2026-07-11,carrefour,Carrefour Mercado,96a17a75-bdb1-4095-b60f-4af7c669ada6,invalid-price,2
+2026-07-11,extra-mercado,Extra Mercado,a9694ba2-afce-44a0-b9b4-688c07d873a4,invalid-price,25
+2026-07-11,extra-mercado,Extra Mercado,a9694ba2-afce-44a0-b9b4-688c07d873a4,missing-fields,1
+2026-07-11,extra-mercado,Extra Mercado,b68cf072-658c-4822-bb22-b358b9c40701,invalid-price,2
+2026-07-11,pao-de-acucar,Pão de Açúcar,d72d59fa-c6a8-48bd-ac7d-4949a9363036,invalid-price,10
+2026-07-11,pao-de-acucar,Pão de Açúcar,d72d59fa-c6a8-48bd-ac7d-4949a9363036,missing-fields,1
+2026-07-11,st-marche,St Marché,8626ca8d-85cc-4172-85ec-b92b64fbed0a,network,1

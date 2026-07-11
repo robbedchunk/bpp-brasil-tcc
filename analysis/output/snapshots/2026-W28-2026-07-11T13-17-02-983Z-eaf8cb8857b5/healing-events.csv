@@ -1,0 +1,1 @@
+event_id,retailer_name,onset_run_id,drift_started_at,detected_at,recovered_at,status,healed_automatically,attempts,tier_transition,duration_hours
