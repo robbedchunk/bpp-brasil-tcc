@@ -38,6 +38,17 @@ if (status === "") {
   throw new Error("Build the trusted validator from a clean committed tree before validation");
 }
 
+for (const asset of [
+  runner,
+  resolve(root, "dist/scripts/schema.sql"),
+  resolve(root, "dist/scripts/migrations/014_strategy_validation_authorization.sql"),
+  resolve(root, "dist/scripts/migrations/015_runtime_safety_reconciliation.sql"),
+]) {
+  if (!existsSync(asset)) {
+    throw new Error(`Trusted validator runtime asset is absent: ${asset}`);
+  }
+}
+
 const executed = spawnSync(process.execPath, [runner, ...process.argv.slice(2)], {
   cwd: root,
   stdio: "inherit",

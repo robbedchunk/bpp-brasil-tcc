@@ -13,7 +13,7 @@
     "npm": ">=11 <12"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc && mkdir -p dist/db/migrations dist/explorer dist/scripts && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && cp -R src/explorer/sandbox dist/explorer/ && esbuild scripts/validate-strategies.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/scripts/validate-strategies.js && chmod 0755 dist/cli.js dist/scripts/validate-strategies.js && node scripts/write-build-manifest.mjs",
+    "build": "rm -rf dist && tsc && mkdir -p dist/db/migrations dist/explorer dist/scripts/migrations && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && cp src/db/schema.sql dist/scripts/schema.sql && cp src/db/migrations/*.sql dist/scripts/migrations/ && cp -R src/explorer/sandbox dist/explorer/ && esbuild scripts/validate-strategies.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/scripts/validate-strategies.js && chmod 0755 dist/cli.js dist/scripts/validate-strategies.js && node scripts/write-build-manifest.mjs",
     "cli": "tsx src/cli.ts",
     "precos": "tsx src/cli.ts",
     "ipca:load": "tsx scripts/load-ipca-items.ts",
