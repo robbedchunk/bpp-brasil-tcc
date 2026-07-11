@@ -7,10 +7,18 @@ import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { writeReplayPayload } from "../../src/collection/replay.js";
+import { openDatabase } from "../../src/db/database.js";
+import { createRun, insertObservation } from "../../src/db/repositories.js";
 import {
   auditPublication,
   validateFreshCloneReceipt,
 } from "../../src/publication/audit.js";
+import {
+  extractionStrategy,
+  seedRetailer,
+  seedStrategy,
+} from "../pipeline/helpers.js";
 
 const roots: string[] = [];
 
@@ -92,6 +100,60 @@ describe("publication audit", () => {
       "docs/sources.md",
     ]);
     expect(report.status).toBe("fail");
+  });
+
+  it("requires final acceptance JSON and Markdown only at the publication cut", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+
+    const duringImplementation = await auditPublication(options(root));
+    expect(duringImplementation.requiredDocsMissing).not.toContain("data/acceptance/acceptance.json");
+    expect(duringImplementation.requiredDocsMissing).not.toContain("docs/acceptance-report.md");
+
+    const finalCut = await auditPublication({
+      ...options(root),
+      requireAcceptanceEvidence: true,
+    });
+    expect(finalCut.requiredDocsMissing).toEqual(expect.arrayContaining([
+      "data/acceptance/acceptance.json",
+      "docs/acceptance-report.md",
+    ]));
+    expect(finalCut.status).toBe("fail");
+
+    await mkdir(join(root, "data", "acceptance"), { recursive: true });
+    await writeFile(join(root, "data", "acceptance", "acceptance.json"), "{}\n");
+    await writeFile(join(root, "docs", "acceptance-report.md"), "# Generated acceptance\n");
+    const malformed = await auditPublication({
+      ...options(root),
+      requireAcceptanceEvidence: true,
+    });
+    expect(malformed.requiredDocsMissing).toEqual([]);
+    expect(malformed.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "PUBLIC_ACCEPTANCE_SCHEMA" }),
+    ]));
+  });
+
+  it("rejects a malformed or filename-misbound public classification review result", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await mkdir(join(root, "data", "acceptance", "evidence"), { recursive: true });
+    await writeFile(join(root, "data", "acceptance", "evidence", "classification-review-v2.json"), JSON.stringify({
+      schemaVersion: 1,
+      status: "complete",
+      classificationVersion: 3,
+      sampleSize: 200,
+    }));
+
+    const report = await auditPublication({
+      ...options(root),
+      requireAcceptanceEvidence: true,
+    });
+    expect(report.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ruleId: "PUBLIC_ACCEPTANCE_SCHEMA",
+        location: "data/acceptance/evidence/classification-review-v2.json",
+      }),
+    ]));
   });
 
   it("finds a credential deleted from the current tree without returning its value", async () => {
@@ -232,6 +294,73 @@ describe("publication audit", () => {
     ]));
     expect(await readFile(databasePath)).toEqual(before);
     database.close();
+  });
+
+  it("accepts exact logical replay references but still rejects a tracked private artifact", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const databasePath = join(root, "data", "precos.sqlite");
+    const replayRoot = join(root, "data", "raw-html");
+    const database = openDatabase(databasePath);
+    seedRetailer(database);
+    const strategyId = seedStrategy(database, "extraction", extractionStrategy);
+    database.prepare(`
+      INSERT INTO products
+        (id, retailer_id, canonical_url, retailer_product_id, title, first_seen, last_seen)
+      VALUES ('product-1', 'retailer-1', 'https://shop.test/arroz', '123',
+              'Arroz tipo 1 pacote 5 kg', '2026-07-10T00:00:00.000Z',
+              '2026-07-10T00:00:00.000Z')
+    `).run();
+    createRun(database, {
+      id: "collection-1",
+      retailerId: "retailer-1",
+      stage: "collect",
+      collectionDay: "2026-07-10",
+      strategyId,
+      strategyVersion: 1,
+      startedAt: "2026-07-10T12:00:00.000Z",
+    });
+    const artifact = await writeReplayPayload({
+      body: JSON.stringify({ title: "Arroz tipo 1 pacote 5 kg", price: 12.99 }),
+      mediaType: "application/json",
+    }, replayRoot, "2026-07-10", "retailer-1");
+    insertObservation(database, {
+      product: {
+        id: "product-1",
+        canonicalUrl: "https://shop.test/arroz",
+        externalId: "123",
+        sourceCategory: "Mercearia",
+      },
+      runId: "collection-1",
+      result: {
+        ok: true,
+        fields: {
+          title: "Arroz tipo 1 pacote 5 kg",
+          brand: "Marca",
+          price: 12.99,
+          promoPrice: null,
+          unit: "5 kg",
+          available: true,
+        },
+      },
+      observedAt: "2026-07-10T12:00:01.000Z",
+      collectionDay: "2026-07-10",
+      strategyId,
+      strategyVersion: 1,
+      replay: { path: artifact.path, sha256: artifact.sha256 },
+    });
+    database.close();
+
+    const safe = await auditPublication(options(root, databasePath));
+    expect(safe.publicDataFindings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "PUBLIC_DATABASE_REPLAY_PATH" }),
+    ]));
+
+    git(root, "add", "-f", join("data", "raw-html", artifact.path));
+    const tracked = await auditPublication(options(root, databasePath));
+    expect(tracked.trackedRawHtml).toEqual(expect.arrayContaining([
+      expect.objectContaining({ location: `data/raw-html/${artifact.path}` }),
+    ]));
   });
 
   it("rejects unsafe public CSV columns and manifest traversal", async () => {
@@ -445,7 +574,7 @@ describe("publication audit", () => {
     const path = join(root, "data", "acceptance", "acceptance.json");
     const schemaFindings = async (value: unknown) => {
       await writeFile(path, `${JSON.stringify(value)}\n`);
-      const report = await auditPublication(options(root));
+      const report = await auditPublication({ ...options(root), requireAcceptanceEvidence: true });
       return report.publicDataFindings.filter((item) => item.ruleId === "PUBLIC_ACCEPTANCE_SCHEMA");
     };
     expect(await schemaFindings(valid)).toEqual([]);

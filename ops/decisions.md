@@ -206,6 +206,17 @@
 
 ## 2026-07-11 — Scheduled evidence and acceptance provenance
 
+- Broad-catalog activation exposed a scale-dependent timing constraint hidden
+  by the initial 30-product runs: serialized 750–1800 ms request starts would
+  consume several hours across four 2,000-page retailer caps and overlap the
+  backup window. Active public catalog APIs therefore use randomized 200–300 ms
+  retailer-local start spacing with the existing three-to-five request cap.
+  This remains throttled and off-peak while bounding the configured spacing
+  component across all four sequential retailers below 40 minutes. That is not
+  presented as a complete makespan proof: response/commit latency is measured
+  separately, and the first scheduled broad-catalog run remains the
+  authoritative end-to-end one-hour scale gate.
+
 - A collection heartbeat qualifies as scheduled evidence only when the
   installed daily service records `systemd-timer` provenance and the exact
   timer unit. Wall-clock proximity is not provenance: manual CLI runs are kept
@@ -245,6 +256,13 @@
   the external `>=0.9` activation gate without a proxy, browser bypass, paid
   service, or fabricated value, so Carrefour joins the daily panel as the third
   active retailer.
+- Checkout region seller `carrefourbrfood1935` and catalog offer seller `1`
+  are distinct VTEX identities: the regional segment changed 17/30 offer
+  price/quantity tuples while the catalog seller stayed `1` in all 30
+  responses. Extraction v4 therefore binds catalog seller `1` explicitly
+  instead of trusting seller-array order. Sanitized ordinary/regional fixtures
+  preserve the causal 53.99/104.99 offer difference for product `14751` while
+  omitting the derived regional header.
 
 ## 2026-07-11 — St Marché public store activation
 
@@ -263,3 +281,54 @@
   em Pó product was unavailable at Pavão and available at Mooca, while the
   aggregate variant field stayed available. This causal store difference is
   why extraction v3 does not use `selectedVariant.availableForSale`.
+
+## 2026-07-11 — Catalog integrity, bounded replay, and broad discovery
+
+- Discovery and collection now have independent daily allowances: up to 3,000
+  discovered references and 2,000 collection attempts per retailer. Collection
+  uses never-attempted then oldest-attempted rotation, and cannot mutate the
+  discovery-only `last_seen` fact.
+- Food-at-home scope is fail-closed and append-only audited. Source category has
+  precedence over product-name/URL words, so Carrefour coffee-filter products
+  under `/Utilidades Domésticas/Cozinha/Coador/` and dermocosmetics are excluded
+  even when their slugs contain food terms. Only a verified-complete discovery
+  snapshot may deactivate unseen products.
+- Carrefour discovery v4 allocates 3,000 references across Mercearia, Bebidas,
+  Congelados, Padaria e Matinais, Frios e Laticínios, Hortifruti, and Açougue e
+  Peixaria. GPA discovery v2 uses the official Alimentos/Bebidas category page
+  with a 2,400/600 allocation. St Marché discovery v4 traverses twelve declared
+  food collections with bounded pagination. Read-only live checks returned
+  30/30 categorized references for every API retailer and 30 St Marché
+  references across two collection paths.
+- Approximately 20 response bodies per retailer/day are selected before
+  persistence, gzipped privately, content-addressed, and immutably linked to
+  observations or failures. Reads verify relative path, bounded decompression,
+  and SHA-256 before healer or offline re-extraction use. Per-run JSONL logs are
+  redacted, rotated, directory mode `0700`, and file mode `0600`.
+
+## 2026-07-11 — Scheduled collection compatibility incident and catch-up
+
+- The first production timer activation at `03:02:32 -03` failed before opening
+  a collection run or making a retailer request. The installed executable was
+  intentionally frozen, but it still loaded the working-tree retailer JSON;
+  those configs had already advanced to schema fields supported only by the
+  unbuilt source (`segments`, validation receipts, explicit catalog seller, and
+  200–300 ms spacing). The full validator error and failed unit result remain in
+  the system journal.
+- The uncommitted configs were preserved outside the working tree, the last
+  committed compatible configs were restored, and `dist/cli.js status --json`
+  proved the compatibility boundary before retry. A temporary drop-in on the
+  canonical `precos-daily.timer` removed randomized delay and added a five-second
+  one-shot activation. This was a real timer activation of the existing
+  `precos-daily.service`, not a manual CLI run. It started at `03:04:56 -03` and
+  the drop-in was deleted immediately after completion; the normal installed
+  timer now targets the 2026-07-12 window again.
+- The catch-up completed at `03:07:09 -03`: Carrefour 28/30, Extra 28/30,
+  Pão de Açúcar 30/30, and St Marché 30/30, with no monitor failures. Heartbeat
+  `08269551-0121-4dcd-96a1-993606aa9ee2` binds the four run IDs and exact
+  `systemd-timer` / `precos-daily.timer` provenance. Classification handoff ran
+  afterward and truthfully returned `provider_unavailable` with 120 pending.
+- Future production freezes cover both executable artifacts and every runtime
+  input they parse. Source/config evolution is isolated until a compatible,
+  verified deployment can occur; a frozen binary alone is not a release
+  boundary.

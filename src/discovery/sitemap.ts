@@ -88,9 +88,13 @@ export async function* discoverSitemap(
   const queuedSitemaps = new Set<string>();
   const seenSitemaps = new Set<string>();
   const seenProducts = new Set<string>();
+  let truncatedBySitemapCap = false;
 
   const enqueue = (candidate: string, baseUrl: string): void => {
-    if (queuedSitemaps.size + seenSitemaps.size >= strategy.maxSitemaps) return;
+    if (queuedSitemaps.size + seenSitemaps.size >= strategy.maxSitemaps) {
+      truncatedBySitemapCap = true;
+      return;
+    }
     try {
       const canonical = canonicalizeRetailerUrl(
         candidate,
@@ -189,7 +193,16 @@ export async function* discoverSitemap(
       if (seenProducts.has(canonicalUrl)) continue;
       seenProducts.add(canonicalUrl);
       yield { canonicalUrl, externalId: null, sourceCategory: null };
-      if (seenProducts.size >= strategy.maxProducts) return;
+      if (seenProducts.size >= strategy.maxProducts) {
+        context.reportCompletion?.({ complete: false, reason: "product_cap_reached" });
+        return;
+      }
     }
   }
+  context.reportCompletion?.({
+    complete: queue.length === 0 && !truncatedBySitemapCap,
+    reason: queue.length === 0 && !truncatedBySitemapCap
+      ? "source_exhausted"
+      : "page_cap_reached",
+  });
 }

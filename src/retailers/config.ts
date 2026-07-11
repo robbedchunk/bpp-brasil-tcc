@@ -1,8 +1,9 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type Database from "better-sqlite3";
+import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 
 import { executeExtraction } from "../collection/executor.js";
@@ -12,6 +13,13 @@ import {
   type DiscoveryStrategy,
   type ExtractionStrategy,
 } from "../strategies/schema.js";
+import type { ProductRef } from "../strategies/types.js";
+import {
+  readValidationVerificationPublicKey,
+  validateStrategyEvidence,
+  validationReceiptSha256,
+  type StrategyValidationEvidence,
+} from "../strategies/validation-evidence.js";
 
 const FixtureProvenanceSchema = z.object({
   path: z.string().min(1),
@@ -28,6 +36,10 @@ const ValidationSchema = z.object({
   successes: z.number().int().min(0),
   score: z.number().min(0).max(1),
   evidence: z.string().min(1),
+  receiptPath: z.string().regex(
+    /^data\/validation\/[a-z0-9]+(?:-[a-z0-9]+)*-(?:discovery|extraction)-v\d+\.json$/u,
+  ).nullable(),
+  receiptSha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
 }).strict().superRefine((value, context) => {
   if (value.successes > value.sampleSize) {
     context.addIssue({ code: "custom", message: "successes cannot exceed sampleSize" });
@@ -67,8 +79,8 @@ export const RetailerConfigSchema = z.object({
   }).strict().nullable(),
   seedHints: z.array(z.string().min(1)).min(1),
   politeDelayMs: z.object({
-    min: z.number().int().min(500).max(30_000),
-    max: z.number().int().min(500).max(30_000),
+    min: z.number().int().min(200).max(30_000),
+    max: z.number().int().min(200).max(30_000),
   }).strict(),
   strategyVersions: z.object({
     discovery: z.number().int().positive(),
@@ -126,6 +138,29 @@ export const RetailerConfigSchema = z.object({
       code: "custom",
       path: ["active"],
       message: "Active retailers require an external 30-sample score of at least 0.9",
+    });
+  }
+  for (const purpose of ["discovery", "extraction"] as const) {
+    const expectedPath = `data/validation/${config.id}-${purpose}-v${config.strategyVersions[purpose]}.json`;
+    const receiptPath = config.validation[purpose].receiptPath;
+    if (config.active && receiptPath !== expectedPath) {
+      context.addIssue({
+        code: "custom",
+        path: ["validation", purpose, "receiptPath"],
+        message: `Active validation must bind canonical receipt ${expectedPath}`,
+      });
+    }
+  }
+  if (
+    config.active
+    && config.extraction.tier === "api"
+    && config.extraction.regionalContext !== undefined
+    && config.extraction.regionalContext.catalogSellerId === undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["extraction", "regionalContext", "catalogSellerId"],
+      message: "Active VTEX regional extraction must bind the validated catalog seller identity",
     });
   }
 }).transform((config) => config as typeof config & {
@@ -222,10 +257,115 @@ function strategyTier(strategy: DiscoveryStrategy | ExtractionStrategy): number 
   }
 }
 
+export interface RetailerRegistrationOptions {
+  projectRoot?: string;
+  readValidationReceipt?: (absolutePath: string) => unknown;
+  verificationPublicKey?: KeyObject;
+  verificationPublicKeyPath?: string;
+  mode?: "activate" | "bootstrap-inactive";
+}
+
+function authoritativeValidationRefs(
+  database: Database.Database,
+  retailerId: string,
+): ProductRef[] {
+  return (database.prepare(
+    `SELECT canonical_url, retailer_product_id, source_category
+     FROM products
+     WHERE retailer_id = ?
+     ORDER BY canonical_url`,
+  ).all(retailerId) as Array<{
+    canonical_url: string;
+    retailer_product_id: string | null;
+    source_category: string | null;
+  }>).map((row) => ({
+    canonicalUrl: row.canonical_url,
+    externalId: row.retailer_product_id,
+    sourceCategory: row.source_category,
+  }));
+}
+
+function validatedActivationEvidence(
+  database: Database.Database,
+  config: RetailerConfig,
+  purpose: "discovery" | "extraction",
+  options: RetailerRegistrationOptions,
+  verificationPublicKey: KeyObject,
+): StrategyValidationEvidence | null {
+  if (!config.active) return null;
+  const validation = config.validation[purpose];
+  const receiptPath = validation.receiptPath;
+  if (receiptPath === null) {
+    throw new Error(`Active ${config.id}/${purpose} has no validation receipt`);
+  }
+  const absolutePath = resolve(options.projectRoot ?? process.cwd(), receiptPath);
+  let input: unknown;
+  if (options.readValidationReceipt === undefined) {
+    let regularFile = false;
+    try {
+      regularFile = lstatSync(absolutePath).isFile();
+    } catch (error) {
+      throw new Error(`Validation receipt is unavailable: ${receiptPath}`, { cause: error });
+    }
+    if (!regularFile) {
+      throw new Error(`Validation receipt is not a regular file: ${receiptPath}`);
+    }
+    input = JSON.parse(readFileSync(absolutePath, "utf8"));
+  } else {
+    input = options.readValidationReceipt(absolutePath);
+  }
+  const authoritativeRefs = authoritativeValidationRefs(database, config.id);
+  const evidence = validateStrategyEvidence(input, {
+    retailerId: config.id,
+    purpose,
+    strategyVersion: config.strategyVersions[purpose],
+    strategy: config[purpose],
+    verificationPublicKey,
+    // A genuinely empty database is the receipt-backed bootstrap case. Once
+    // any catalog exists, every claimed sample must bind to that catalog.
+    ...(authoritativeRefs.length === 0 ? {} : { authoritativeRefs }),
+  });
+  if (
+    validation.receiptSha256 === null
+    || validation.receiptSha256 !== validationReceiptSha256(evidence)
+  ) {
+    throw new Error(
+      `Validation receipt digest does not match ${config.id}/${purpose}; `
+      + `set receiptSha256=${validationReceiptSha256(evidence)}`,
+    );
+  }
+  if (
+    evidence.validatedAt !== validation.validatedAt
+    || evidence.attempted !== validation.sampleSize
+    || evidence.valid !== validation.successes
+    || evidence.score !== validation.score
+    || evidence.activatable !== true
+  ) {
+    throw new Error(
+      `Validation receipt aggregate does not match ${config.id}/${purpose} activation metadata; `
+      + `set validatedAt=${evidence.validatedAt}, sampleSize=${evidence.attempted}, `
+      + `successes=${evidence.valid}, and score=${evidence.score}`,
+    );
+  }
+  return evidence;
+}
+
 export function registerRetailerConfigs(
   database: Database.Database,
   configs: readonly RetailerConfig[],
+  options: RetailerRegistrationOptions = {},
 ): void {
+  const activate = (options.mode ?? "activate") === "activate";
+  const requiresKey = activate && configs.some((config) => config.active);
+  const verificationPublicKey = requiresKey
+    ? options.verificationPublicKey ?? readValidationVerificationPublicKey(
+      options.verificationPublicKeyPath
+        ?? resolve(
+          options.projectRoot ?? process.cwd(),
+          "ops/validation-attestation-public.pem",
+        ),
+    )
+    : null;
   const register = database.transaction(() => {
     for (const config of configs) {
       database.prepare(
@@ -248,7 +388,7 @@ export function registerRetailerConfigs(
         config.cep,
         config.platformEvidence.platform,
         JSON.stringify(config.allowedDomains),
-        config.active ? 1 : 0,
+        config.active && activate ? 1 : 0,
       );
 
       for (const [purpose, strategy] of [
@@ -257,8 +397,24 @@ export function registerRetailerConfigs(
       ] as const) {
         const version = config.strategyVersions[purpose];
         const id = `${config.id}-${purpose}-v${version}`;
-        const strategyActive = config.active ? 1 : 0;
+        const strategyActive = config.active && activate ? 1 : 0;
         const validation = config.validation[purpose];
+        const activationEvidence = strategyActive === 1 && verificationPublicKey !== null
+          ? validatedActivationEvidence(
+            database,
+            config,
+            purpose,
+            options,
+            verificationPublicKey,
+          )
+          : null;
+        const bootstrap = !activate && config.active;
+        const sampleSize = bootstrap ? 0 : activationEvidence?.attempted ?? validation.sampleSize;
+        const successes = bootstrap ? 0 : activationEvidence?.valid ?? validation.successes;
+        const score = bootstrap ? 0 : activationEvidence?.score ?? validation.score;
+        const validatedAt = bootstrap
+          ? null
+          : activationEvidence?.validatedAt ?? validation.validatedAt;
         const lifecycleAt = validation.validatedAt ?? config.platformEvidence.observedAt;
         const tier = strategyTier(strategy);
         const strategyJson = JSON.stringify(strategy);
@@ -325,13 +481,53 @@ export function registerRetailerConfigs(
             version,
             strategyJson,
             provenance,
-            validation.sampleSize,
-            validation.successes,
-            validation.sampleSize === 0 ? null : validation.score,
-            strategyActive,
-            validation.validatedAt,
-            strategyActive === 1 ? validation.validatedAt : null,
+            sampleSize,
+            successes,
+            sampleSize === 0 ? null : score,
+            0,
+            validatedAt,
+            null,
           );
+        }
+
+        if (strategyActive === 1 && activationEvidence !== null) {
+          const receiptPath = validation.receiptPath;
+          const receiptSha256 = validation.receiptSha256;
+          if (receiptPath === null || receiptSha256 === null) {
+            throw new Error(`Active strategy ${id} lacks bound receipt evidence`);
+          }
+          const immutableEvidence = {
+            strategy_id: id,
+            receipt_path: receiptPath,
+            receipt_sha256: receiptSha256,
+            sample_set_sha256: activationEvidence.sampleSetSha256,
+            executor_json: JSON.stringify(activationEvidence.executor),
+            attestation_key_id: activationEvidence.attestation.keyId,
+            attempted: activationEvidence.attempted,
+            valid: activationEvidence.valid,
+            score: activationEvidence.score,
+            validated_at: activationEvidence.validatedAt,
+          };
+          const existingEvidence = database.prepare(
+            `SELECT strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+                    executor_json, attestation_key_id, attempted, valid, score,
+                    validated_at
+             FROM strategy_validation_evidence WHERE strategy_id = ?`,
+          ).get(id) as typeof immutableEvidence | undefined;
+          if (existingEvidence === undefined) {
+            database.prepare(
+              `INSERT INTO strategy_validation_evidence
+                 (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+                  executor_json, attestation_key_id, attempted, valid, score,
+                  validated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(...Object.values(immutableEvidence));
+          } else if (JSON.stringify(existingEvidence) !== JSON.stringify(immutableEvidence)) {
+            throw new Error(
+              `Strategy ${id} already binds different immutable validation evidence; `
+              + "create a successor version",
+            );
+          }
         }
 
         database.prepare(
@@ -343,12 +539,12 @@ export function registerRetailerConfigs(
            WHERE id = ?`,
         ).run(
           strategyActive,
-          validation.sampleSize,
-          validation.successes,
-          validation.sampleSize === 0 ? null : validation.score,
-          validation.validatedAt,
+          sampleSize,
+          successes,
+          sampleSize === 0 ? null : score,
+          validatedAt,
           strategyActive,
-          validation.validatedAt,
+          validatedAt,
           id,
         );
       }

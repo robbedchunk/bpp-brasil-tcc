@@ -73,7 +73,9 @@
       "sampleSize": 1,
       "successes": 1,
       "score": 1,
-      "evidence": "The official sitemap exposed product URLs, but no 30-sample primary validation was run."
+      "evidence": "The official sitemap exposed product URLs, but no 30-sample primary validation was run.",
+      "receiptPath": null,
+      "receiptSha256": null
     },
     "extraction": {
       "externallyValidated": false,
@@ -81,7 +83,9 @@
       "sampleSize": 1,
       "successes": 0,
       "score": 0,
-      "evidence": "Public JSON-LD omitted availability/store selection, so the extraction contract is incomplete and remains inactive backup."
+      "evidence": "Public JSON-LD omitted availability/store selection, so the extraction contract is incomplete and remains inactive backup.",
+      "receiptPath": null,
+      "receiptSha256": null
     }
   }
 }

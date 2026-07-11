@@ -29,8 +29,8 @@ function seedDrift() {
        (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
         status, attempted, ok, failed, started_at, finished_at)
      VALUES ('drift-run', 'retailer-1', 'collect', '2026-07-10',
-             'retailer-1-extraction-v1', 1, 'failed', 1, 0, 1,
-             '2026-07-10T00:00:00.000Z', '2026-07-10T00:01:00.000Z')`,
+             'retailer-1-extraction-v1', 1, 'running', 0, 0, 0,
+             '2026-07-10T00:00:00.000Z', NULL)`,
   ).run();
   database.prepare(
     `INSERT INTO run_failures
@@ -40,6 +40,11 @@ function seedDrift() {
              'fixture drift', 'retailer-1-extraction-v1', 1,
              '2026-07-10T00:00:30.000Z')`,
   ).run();
+  database.prepare(`
+    UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
+                    finished_at = '2026-07-10T00:01:00.000Z'
+    WHERE id = 'drift-run'
+  `).run();
   return database;
 }
 

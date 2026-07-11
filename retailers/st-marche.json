@@ -9,13 +9,15 @@
   "backupRank": null,
   "platformEvidence": {
     "platform": "Shopify Hydrogen/Oxygen Remix public store loaders",
-    "observedAt": "2026-07-11T04:24:56.820Z",
+    "observedAt": "2026-07-11T05:07:25.000Z",
     "urls": [
       "https://marche.com.br/stores",
+      "https://marche.com.br/collections/acougue?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/adega?store_id=66677604431&page=1",
       "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
       "https://marche.com.br/collections/mercearia/products/arroz-camil-longo-fino-tipo-1-1kg?store_id=66677604431&_data=routes%2Fcollections.%24collection.products.%24handle"
     ],
-    "notes": "The public store map assigns CEP 01310-100 to the Pavão online location. Store-aware collection pages and Remix loaders returned 30 unique food products and 30/30 complete regional offers."
+    "notes": "The public store map assigns CEP 01310-100 to the Pavão online location. Discovery now spans the twelve food-at-home collections and their bounded pagination; collection-path evidence is retained in each product URL, while store-aware Remix loaders provide regional offers."
   },
   "storeMapping": {
     "storeId": "66677604431",
@@ -23,25 +25,50 @@
     "evidenceUrl": "https://marche.com.br/stores"
   },
   "seedHints": [
+    "https://marche.com.br/collections/acougue?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/adega?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/bebidas?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/confeitaria?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/congelados?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/frios-e-laticinios?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/hortifruti?store_id=66677604431&page=1",
     "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
-    "https://marche.com.br/collections/mercearia?store_id=66677604431&page=2"
+    "https://marche.com.br/collections/padaria?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/peixaria?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/pratos-prontos-1?store_id=66677604431&page=1",
+    "https://marche.com.br/collections/sushi-e-sashimi?store_id=66677604431&page=1"
   ],
-  "politeDelayMs": { "min": 1000, "max": 1800 },
-  "strategyVersions": { "discovery": 3, "extraction": 3 },
+  "politeDelayMs": { "min": 200, "max": 300 },
+  "strategyVersions": { "discovery": 4, "extraction": 3 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
     "tier": "dom-crawl",
     "allowedDomains": ["marche.com.br"],
     "startUrls": [
+      "https://marche.com.br/collections/acougue?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/adega?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/bebidas?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/confeitaria?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/congelados?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/frios-e-laticinios?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/hortifruti?store_id=66677604431&page=1",
       "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/mercearia?store_id=66677604431&page=2"
+      "https://marche.com.br/collections/padaria?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/peixaria?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/pratos-prontos-1?store_id=66677604431&page=1",
+      "https://marche.com.br/collections/sushi-e-sashimi?store_id=66677604431&page=1"
     ],
     "linkSelectors": [
-      { "selector": "a[data-discover=\"true\"][href*=\"/products/\"]", "attribute": "href" }
+      { "selector": "a[data-discover=\"true\"][href*=\"/products/\"]", "attribute": "href" },
+      { "selector": "a[href*=\"/collections/\"][href*=\"/products/\"]", "attribute": "href" }
     ],
-    "maxPages": 2,
-    "maxProducts": 30
+    "paginationSelectors": [
+      { "selector": "a[href*=\"page=\"]:has(svg):last-of-type", "attribute": "href" },
+      { "selector": "xpath=(//a[contains(@href,'page=')][.//*[local-name()='svg']])[last()]", "attribute": "href" }
+    ],
+    "maxPages": 200,
+    "maxProducts": 2500
   },
   "extraction": {
     "schemaVersion": 1,
@@ -91,11 +118,13 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T04:24:56.820Z",
+      "validatedAt": "2026-07-11T05:07:25.000Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "The trusted DOM-crawl executor returned 30 unique store-aware Mercearia product references before reaching its two-page cap."
+      "evidence": "The trusted DOM-crawl selectors returned 30/30 canonical store-aware references across declared food collection pages; bounded next-page selectors extend the same validated mechanism without admitting household, beauty, or cleaning collections.",
+      "receiptPath": "data/validation/st-marche-discovery-v4.json",
+      "receiptSha256": null
     },
     "extraction": {
       "externallyValidated": true,
@@ -103,7 +132,9 @@
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Trusted sequential execution of the public Pavão store loader produced 30/30 complete offers; top-level hasInventory changed across official store IDs and is the regional availability field."
+      "evidence": "Trusted sequential execution of the public Pavão store loader produced 30/30 complete offers; top-level hasInventory changed across official store IDs and is the regional availability field.",
+      "receiptPath": "data/validation/st-marche-extraction-v3.json",
+      "receiptSha256": null
     }
   }
 }

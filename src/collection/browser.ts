@@ -259,7 +259,15 @@ async function handleRequest(
       continue;
     }
 
-    if (isMainDocument) session.finalDocumentUrl = responseUrl;
+    if (isMainDocument) {
+      session.finalDocumentUrl = responseUrl;
+      executionContext.onMainDocumentResponse?.({
+        finalUrl: responseUrl,
+        statusCode: response.status,
+        contentType: response.headers.get("content-type") ?? "application/octet-stream",
+        body,
+      });
+    }
     await route.fulfill({
       status: response.status,
       headers: responseHeaders(response),

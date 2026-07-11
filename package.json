@@ -13,11 +13,13 @@
     "npm": ">=11 <12"
   },
   "scripts": {
-    "build": "tsc && mkdir -p dist/db/migrations dist/explorer && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && cp -R src/explorer/sandbox dist/explorer/ && chmod 0755 dist/cli.js dist/explorer/sandbox/validate-strategy",
+    "build": "tsc && mkdir -p dist/db/migrations dist/explorer dist/scripts && cp src/db/schema.sql dist/db/schema.sql && cp src/db/migrations/*.sql dist/db/migrations/ && cp -R src/explorer/sandbox dist/explorer/ && esbuild scripts/validate-strategies.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/scripts/validate-strategies.js && chmod 0755 dist/cli.js dist/scripts/validate-strategies.js",
     "cli": "tsx src/cli.ts",
     "precos": "tsx src/cli.ts",
     "ipca:load": "tsx scripts/load-ipca-items.ts",
     "retailers:register": "tsx scripts/register-retailers.ts",
+    "strategies:key:init": "tsx scripts/init-validation-attestation-key.ts",
+    "strategies:validate": "tsx scripts/validate-strategies.ts",
     "analysis:setup": "bash ops/setup-analysis.sh",
     "analysis:test": "vitest run tests/analysis",
     "analysis": "var/analysis-venv/bin/python analysis/generate.py --input data/exports --output analysis/output",
@@ -37,6 +39,7 @@
     "commander": "15.0.0",
     "csv-parse": "7.0.1",
     "decimal.js": "10.6.0",
+    "esbuild": "0.28.1",
     "fast-xml-parser": "5.9.3",
     "jsonpath-plus": "10.4.0",
     "openai": "6.46.0",

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import type Database from "better-sqlite3";
 
+import { MAX_FOOD_CATALOG_PRODUCTS } from "./catalog/scope.js";
 import {
   buildReviewSample,
   classifyNewProducts,
@@ -33,7 +34,16 @@ import {
   type StatusReport,
 } from "./db/repositories.js";
 import { runCollection } from "./pipeline/collect.js";
-import { runDaily } from "./pipeline/daily.js";
+import {
+  runReplayReextraction,
+  type ReplayReextractionSummary,
+  type RunReplayReextractionOptions,
+} from "./collection/reextract.js";
+import {
+  runDaily as runDailyPipeline,
+  type DailyPipelineDependencies,
+  type DailySummary,
+} from "./pipeline/daily.js";
 import {
   runDiscovery,
   type RunSummary,
@@ -123,10 +133,16 @@ export interface CliDependencies {
     retailerId: string,
     options: PipelineCliOptions,
   ) => Promise<RunSummary>;
+  runDaily?: (
+    dependencies: DailyPipelineDependencies,
+  ) => Promise<DailySummary>;
   runCollection?: (
     retailerId: string,
     options: PipelineCliOptions,
   ) => Promise<RunSummary>;
+  replayReextract?: (
+    options: RunReplayReextractionOptions,
+  ) => Promise<ReplayReextractionSummary>;
 }
 
 function formatHumanStatus(report: StatusReport): string {
@@ -221,8 +237,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     if (!Number.isSafeInteger(parsed) || parsed <= 0) {
       throw new Error("--limit must be a positive integer");
     }
-    return Math.min(parsed, 2_000);
+    return parsed;
   };
+  const positiveLimitAtTwoThousand = (value: string): number =>
+    Math.min(positiveLimit(value), 2_000);
   const pipelineCommand = (
     name: "discover" | "collect",
     description: string,
@@ -231,7 +249,13 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       .command(name)
       .description(description)
       .option("--retailer <id>", "run only one registered retailer")
-      .option("--limit <count>", "maximum products/pages, capped at 2000", positiveLimit)
+      .option(
+        "--limit <count>",
+        name === "discover"
+          ? "maximum discovered products, capped at 3000"
+          : "maximum product attempts, capped at 2000",
+        positiveLimit,
+      )
       .option("--dry-run", "report a persisted-data plan without network or writes")
       .option("--json", "emit only JSON summaries")
       .action(async (options: {
@@ -246,7 +270,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           const retailerIds = options.retailer === undefined
             ? activeRetailerIds(database)
             : [options.retailer];
-          const limit = Math.min(options.limit ?? config().dailyPageCap, 2_000);
+          const limit = name === "discover"
+            ? Math.min(options.limit ?? MAX_FOOD_CATALOG_PRODUCTS, MAX_FOOD_CATALOG_PRODUCTS)
+            : Math.min(options.limit ?? config().dailyPageCap, 2_000);
           const pipelineOptions = { limit, dryRun: options.dryRun === true };
           const results: RunSummary[] = [];
           for (const retailerId of retailerIds) {
@@ -256,6 +282,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
                   ? await runDiscovery(retailerId, {
                       database,
                       ...pipelineOptions,
+                      logDirectory: resolve(config().projectRoot, "var/log/runs"),
                       ...retailerOptions(retailerId),
                     })
                   : await dependencies.runDiscovery(retailerId, pipelineOptions),
@@ -268,6 +295,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
                       ...pipelineOptions,
                       concurrency: config().pageConcurrency,
                       rawHtmlRoot: resolve(config().projectRoot, "data/raw-html"),
+                      logDirectory: resolve(config().projectRoot, "var/log/runs"),
                       ...retailerOptions(retailerId),
                     })
                   : await dependencies.runCollection(retailerId, pipelineOptions),
@@ -414,6 +442,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               alertSink: sink,
               env: environment,
               now,
+              replayRoot: resolve(applicationConfig.projectRoot, "data/raw-html"),
             });
           }
           const retailerId = options.retailer!;
@@ -432,6 +461,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               alertSink: sink,
               env: environment,
               now,
+              replayRoot: resolve(applicationConfig.projectRoot, "data/raw-html"),
             },
           );
         }),
@@ -441,6 +471,28 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         : options.pending === true
           ? `heal pending: ${(outcome as HealingWorkerSummary).processed} event(s) processed\n`
           : `heal ${options.retailer}/extraction: ${(outcome as HealingOutcome).status}; ${(outcome as HealingOutcome).attempts} attempt(s)\n`);
+    });
+
+  command
+    .command("replay-reextract")
+    .description("Privately re-extract one verified replay and append an audit result")
+    .requiredOption("--observation <id>", "successful observation with replay evidence")
+    .option("--json", "emit only the structured non-public result")
+    .action(async (options: { observation: string; json?: boolean }) => {
+      const applicationConfig = config();
+      const result = await withProcessLock(
+        pipelineLockPath(),
+        () => withDatabase((database) =>
+          (dependencies.replayReextract ?? runReplayReextraction)({
+            database,
+            observationId: options.observation,
+            replayRoot: resolve(applicationConfig.projectRoot, "data/raw-html"),
+            now,
+          })),
+      );
+      stdout(options.json === true
+        ? `${JSON.stringify(result)}\n`
+        : `replay re-extraction ${result.id}: ${result.status}\n`);
     });
 
   const classificationVersion = (value: string): number => {
@@ -470,7 +522,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   command
     .command("classify")
     .description("Classify new products into São Paulo IPCA food-at-home subitems")
-    .option("--batch-size <count>", "classification batch size", positiveLimit, 50)
+    .option(
+      "--batch-size <count>",
+      "classification batch size",
+      positiveLimitAtTwoThousand,
+      50,
+    )
     .option("--version <number>", "append-only classification version", classificationVersion, 1)
     .option(
       "--confidence-threshold <number>",
@@ -759,7 +816,11 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   command
     .command("daily")
     .description("Run daily collection for every active retailer")
-    .option("--limit <count>", "maximum products per retailer, capped at 2000", positiveLimit)
+    .option(
+      "--limit <count>",
+      "maximum products per retailer, capped at 2000",
+      positiveLimitAtTwoThousand,
+    )
     .option("--dry-run", "report a persisted-data plan without network or writes")
     .option("--json", "emit only the JSON summary")
     .action(async (options: { limit?: number; dryRun?: boolean; json?: boolean }) => {
@@ -774,7 +835,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       });
       const result = await withProcessLock(
         pipelineLockPath(),
-        () => withDatabase((database) => runDaily({
+        () => withDatabase((database) => (dependencies.runDaily ?? runDailyPipeline)({
           database,
           trigger: environment.PRECOS_SCHEDULE_SOURCE === "systemd-timer"
             ? "systemd-timer"
@@ -783,6 +844,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           dryRun: options.dryRun === true,
           concurrency: applicationConfig.pageConcurrency,
           rawHtmlRoot: resolve(applicationConfig.projectRoot, "data/raw-html"),
+          logDirectory: resolve(applicationConfig.projectRoot, "var/log/runs"),
           retailerOptions,
           now,
           monitor: (runId) => monitorRun(runId, {
@@ -791,11 +853,28 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
             env: environment,
             now,
           }),
+          reportOperationalFailure: async (failure) => sink.send({
+            severity: "error",
+            title: failure.kind === "collection"
+              ? "Retailer collection orchestration failed"
+              : "Post-collection monitor failed",
+            message: failure.kind === "collection"
+              ? "Later retailers will still be attempted; the daily service will finish nonzero"
+              : "Collection completed, but drift monitoring did not durably complete",
+            details: failure,
+          }),
         })),
       );
       stdout(options.json === true
         ? `${JSON.stringify(result)}\n`
         : `daily: ${result.terminal}/${result.retailers} retailers terminal\n`);
+      if (options.dryRun !== true && result.status !== "completed") {
+        throw new Error(
+          `Daily pipeline finished ${result.status}: `
+          + `${result.retailerFailures.length} retailer failure(s), `
+          + `${result.monitorFailedRunIds.length} monitor failure(s)`,
+        );
+      }
     });
 
   command
@@ -805,7 +884,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option("--json", "emit only the JSON heartbeat check")
     .action(async (options: { json?: boolean }) => {
       const check = await withDatabase((database) =>
-        checkHeartbeat(now(), latestSuccessfulHeartbeat(database, "collect")));
+        checkHeartbeat(now(), latestSuccessfulHeartbeat(database, "collect", { scheduledOnly: true })));
       if (check.stale) {
         const topic = config().ntfyTopic;
         const sink = dependencies.alertSink ?? createAlertSink({

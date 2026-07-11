@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type KeyObject } from "node:crypto";
 
 import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
@@ -32,6 +32,7 @@ import {
 } from "../strategies/schema.js";
 import type { ExtractionResult, ProductRef } from "../strategies/types.js";
 import { validateExtractionStrategy } from "../strategies/validate.js";
+import type { StrategyValidationEvidence } from "../strategies/validation-evidence.js";
 import { explorerModelFromEnv } from "./codex-provider.js";
 import {
   createSandboxPackage,
@@ -48,6 +49,7 @@ import type {
   StrategyGenerator,
   StrategyPurpose,
 } from "./provider.js";
+import { createTrustedCandidateValidator } from "./trusted-validator.js";
 
 const TRUSTED_SAMPLE_SIZE = 30;
 const TRUSTED_ACTIVATION_SCORE = 0.9;
@@ -75,11 +77,25 @@ export interface CandidateValidationReport {
   valid: number;
   score: number;
   activatable?: boolean;
+  receipt?: {
+    path: string;
+    sha256: string;
+    evidence: StrategyValidationEvidence;
+    verificationPublicKey: KeyObject;
+    cleanup?: () => Promise<void>;
+  };
+}
+
+export interface CandidateValidationContext {
+  retailerId: string;
+  purpose: StrategyPurpose;
+  strategyVersion: number;
 }
 
 export type CandidateValidator = (
   strategy: Strategy,
   refs: readonly ProductRef[],
+  context: CandidateValidationContext,
 ) => Promise<CandidateValidationReport>;
 
 export interface ExploreRetailerDependencies {
@@ -95,6 +111,7 @@ export interface ExploreRetailerDependencies {
   ) => AsyncIterable<ProductRef> | Promise<readonly ProductRef[]>;
   sandboxSamples?: readonly SandboxSample[];
   failureSamples?: readonly SandboxFailureSample[];
+  failureSampleTotal?: number;
   trigger?: string;
   maxAttempts?: number;
   eventBudgetUsd?: number;
@@ -231,16 +248,43 @@ function reportIsTrusted(report: CandidateValidationReport): boolean {
     && report.valid <= TRUSTED_SAMPLE_SIZE
     && Number.isFinite(report.score)
     && report.score === report.valid / TRUSTED_SAMPLE_SIZE
-    && report.score >= TRUSTED_ACTIVATION_SCORE;
+    && report.score >= TRUSTED_ACTIVATION_SCORE
+    && report.receipt !== undefined
+    && report.receipt.evidence.activatable === true
+    && report.receipt.evidence.attempted === report.attempted
+    && report.receipt.evidence.valid === report.valid
+    && report.receipt.evidence.score === report.score;
 }
 
 function candidateForRetailer(
   value: unknown,
   purpose: StrategyPurpose,
   allowedDomains: readonly string[],
+  previousStrategy: Strategy | null,
 ): Strategy | null {
   const parsed = StrategySchema.safeParse(value);
   if (!parsed.success || parsed.data.purpose !== purpose) return null;
+  if (
+    parsed.data.purpose === "extraction"
+    && parsed.data.tier === "api"
+    && parsed.data.regionalContext !== undefined
+    && parsed.data.regionalContext.catalogSellerId === undefined
+  ) return null;
+  const previousRegional = previousStrategy?.purpose === "extraction"
+    && previousStrategy.tier === "api"
+    ? previousStrategy.regionalContext
+    : undefined;
+  if (previousRegional !== undefined) {
+    if (
+      parsed.data.purpose !== "extraction"
+      || parsed.data.tier !== "api"
+      || parsed.data.regionalContext === undefined
+      || parsed.data.regionalContext.kind !== previousRegional.kind
+      || parsed.data.regionalContext.regionId !== previousRegional.regionId
+      || parsed.data.regionalContext.salesChannel !== previousRegional.salesChannel
+      || parsed.data.regionalContext.catalogSellerId !== previousRegional.catalogSellerId
+    ) return null;
+  }
   if (containsSensitiveMaterial(parsed.data)) return null;
   const allowed = new Set(allowedDomains.map((domain) => domain.toLowerCase()));
   if (parsed.data.allowedDomains.some((domain) => !allowed.has(domain.toLowerCase()))) {
@@ -264,6 +308,9 @@ function defaultValidator(
   purpose: StrategyPurpose,
   dependencies: ExploreRetailerDependencies,
 ): CandidateValidator {
+  if (dependencies.execute === undefined && dependencies.discover === undefined) {
+    return createTrustedCandidateValidator({ database: dependencies.database });
+  }
   if (purpose === "extraction") {
     const execute = dependencies.execute ?? ((strategy, ref) =>
       executeExtraction(strategy, ref));
@@ -498,9 +545,10 @@ export async function exploreRetailer(
 
     const validateCandidate = dependencies.validateCandidate
       ?? defaultValidator(purpose, dependencies);
-    const packagedSamples = dependencies.sandboxSamples ?? refs.map((ref) => ({
-      canonicalUrl: ref.canonicalUrl,
-    }));
+    const packagedSamples = [
+      ...refs.map((ref) => ({ canonicalUrl: ref.canonicalUrl })),
+      ...(dependencies.sandboxSamples ?? []),
+    ];
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       attempts = attempt;
@@ -531,6 +579,9 @@ export async function exploreRetailer(
           ...(dependencies.failureSamples === undefined
             ? {}
             : { failureSamples: dependencies.failureSamples }),
+          ...(dependencies.failureSampleTotal === undefined
+            ? {}
+            : { failureSampleTotal: dependencies.failureSampleTotal }),
         });
         generatorInvoked = true;
         result = await dependencies.generator.generate({
@@ -664,6 +715,7 @@ export async function exploreRetailer(
         result.strategy,
         purpose,
         context.allowedDomains,
+        context.previousStrategy?.strategy ?? null,
       );
       if (strategy === null) {
         outcome = "invalid_candidate";
@@ -674,7 +726,11 @@ export async function exploreRetailer(
 
       let report: CandidateValidationReport;
       try {
-        report = await validateCandidate(strategy, refs);
+        report = await validateCandidate(strategy, refs, {
+          retailerId,
+          purpose,
+          strategyVersion: context.nextStrategyVersion,
+        });
       } catch (error) {
         outcome = "validation_failed";
         finalError = safeError(error);
@@ -686,6 +742,7 @@ export async function exploreRetailer(
       }
       externalScore = Number.isFinite(report.score) ? report.score : null;
       if (!reportIsTrusted(report)) {
+        await report.receipt?.cleanup?.().catch(() => undefined);
         outcome = "validation_failed";
         finalError = "Candidate did not pass the exact trusted 30-sample gate";
         record(attempt, prompt, result, outcome, {
@@ -718,6 +775,12 @@ export async function exploreRetailer(
             validationSampleSize: report.attempted,
             validationSuccesses: report.valid,
             validationScore: report.score,
+            validationEvidence: {
+              receiptPath: report.receipt!.path,
+              receiptSha256: report.receipt!.sha256,
+              evidence: report.receipt!.evidence,
+              verificationPublicKey: report.receipt!.verificationPublicKey,
+            },
             activatedAt: finishedAt,
           },
           exploration: {
@@ -741,6 +804,7 @@ export async function exploreRetailer(
         explorationFinished = true;
         reservationActive = false;
       } catch (error) {
+        await report.receipt?.cleanup?.().catch(() => undefined);
         outcome = "provider_failed";
         finalError = safeError(error);
         record(attempt, prompt, result, outcome, {

@@ -40,8 +40,9 @@ function seed(database: ReturnType<typeof openDatabase>, count = 1): string[] {
   `);
   const insert = database.prepare(`
     INSERT INTO products
-      (id, retailer_id, canonical_url, title, brand, source_category, first_seen, last_seen)
-    VALUES (?, 'retailer', ?, ?, 'Marca', 'Mercearia',
+      (id, retailer_id, canonical_url, title, brand, source_category,
+       descriptive_title, first_seen, last_seen)
+    VALUES (?, 'retailer', ?, ?, 'Marca', 'Mercearia', 1,
             '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')
   `);
   return Array.from({ length: count }, (_, index) => {

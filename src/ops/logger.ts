@@ -7,7 +7,13 @@ const SECRET_KEY =
 const SECRET_LABEL =
   String.raw`[\p{L}\p{N}_-]*(?:api[_-]?key|authorization|cookie|credential|ntfy[_-]?topic|password|private[_-]?key|secret|session[_-]?id|token)[\p{L}\p{N}_-]*`;
 const SECRET_ASSIGNMENT = new RegExp(
-  `(${SECRET_LABEL}\\s*(?:=|:)\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s,;&}\\]]+)`,
+  `(["']?${SECRET_LABEL}["']?\\s*(?:=|:)\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s,;&}\\]]+)`,
+  "giu",
+);
+const SENSITIVE_HTML_ELEMENT =
+  /<(?:meta|input)\b(?=[^>]*(?:api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|session[_-]?(?:id|token)|token))[^>]*>/giu;
+const SENSITIVE_HTML_ATTRIBUTE = new RegExp(
+  `(\\b(?:data-)?${SECRET_LABEL}\\s*=\\s*)(?:"[^"]*"|'[^']*'|[^\\s>]+)`,
   "giu",
 );
 const SECRET_HEADER =
@@ -28,6 +34,8 @@ function redactString(value: string): string {
   }
   return sanitized
     .replace(PRIVATE_KEY, "[REDACTED]")
+    .replace(SENSITIVE_HTML_ELEMENT, "<redacted-sensitive-element>")
+    .replace(SENSITIVE_HTML_ATTRIBUTE, "$1[REDACTED]")
     .replace(SECRET_HEADER, "$1: [REDACTED]")
     .replace(AUTHORIZATION_SCHEME, "$1 [REDACTED]")
     .replace(URL_CREDENTIALS, "$1[REDACTED]@")
@@ -90,6 +98,9 @@ export class JsonlLogger {
     this.#maxBytes = options.maxBytes ?? 10 * 1024 * 1024;
     this.#now = options.now ?? (() => new Date());
     this.#timeZone = options.timeZone ?? "America/Sao_Paulo";
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/u.test(this.#basename)) {
+      throw new Error("Logger basename must be a path-safe identifier");
+    }
     if (!Number.isSafeInteger(this.#maxBytes) || this.#maxBytes <= 0) {
       throw new RangeError("maxBytes must be a positive safe integer");
     }
@@ -126,6 +137,7 @@ export class JsonlLogger {
         fields: redact(fields),
       })}\n`;
       await mkdir(this.#directory, { recursive: true, mode: 0o700 });
+      await chmod(this.#directory, 0o700);
       let index = 0;
       let path: string;
       while (true) {

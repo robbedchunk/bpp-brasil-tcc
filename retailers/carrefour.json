@@ -9,21 +9,22 @@
   "backupRank": null,
   "platformEvidence": {
     "platform": "VTEX public catalog plus checkout region",
-    "observedAt": "2026-07-11T04:06:00.000Z",
+    "observedAt": "2026-07-11T05:07:25.000Z",
     "urls": [
-      "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=cafe&_from=0&_to=29&sc=2",
+      "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search/mercearia?_from=0&_to=49&sc=2",
+      "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/category/tree/3",
       "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
     ],
-    "notes": "The public CEP lookup yields a non-secret VTEX region identifier. A typed regional context derives the segment header only in memory; the cafe catalog returned 30 references and the trusted executor validated 28/30 regional offers."
+    "notes": "The public category tree identifies seven food-at-home departments. Discovery allocates a bounded 3,000-product sample across all seven with the source category retained per product; the public CEP lookup supplies the non-secret region used only by extraction."
   },
   "storeMapping": {
     "storeId": "carrefourbrfood1935",
     "erpCode": null,
     "evidenceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/checkout/pub/regions?country=BRA&postalCode=01310100&sc=2"
   },
-  "seedHints": ["cafe", "https://mercado.carrefour.com.br/sitemap.xml"],
-  "politeDelayMs": { "min": 900, "max": 1500 },
-  "strategyVersions": { "discovery": 3, "extraction": 3 },
+  "seedHints": ["mercearia", "bebidas", "congelados", "padaria-e-matinais", "frios-e-laticinios", "hortifruti", "acougue-e-peixaria"],
+  "politeDelayMs": { "min": 200, "max": 300 },
+  "strategyVersions": { "discovery": 4, "extraction": 4 },
   "discovery": {
     "schemaVersion": 1,
     "purpose": "discovery",
@@ -31,9 +32,9 @@
     "allowedDomains": ["carrefourbrfood.vtexcommercestable.com.br", "mercado.carrefour.com.br"],
     "request": {
       "method": "GET",
-      "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
+      "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search/{segment}",
       "headers": { "accept": "application/json" },
-      "query": { "ft": "cafe", "_from": "{from}", "_to": "{to}", "sc": 2 }
+      "query": { "_from": "{from}", "_to": "{to}", "sc": 2 }
     },
     "itemsPath": "$",
     "refFields": {
@@ -41,8 +42,17 @@
       "externalId": "$.productId",
       "sourceCategory": "$.categories[0]"
     },
-    "pagination": { "kind": "page", "start": 0, "step": 1, "pageSize": 30, "maxPages": 1 },
-    "maxProducts": 30
+    "pagination": { "kind": "page", "start": 0, "step": 1, "pageSize": 50, "maxPages": 18 },
+    "segments": [
+      { "value": "mercearia", "maxProducts": 900 },
+      { "value": "bebidas", "maxProducts": 450 },
+      { "value": "congelados", "maxProducts": 350 },
+      { "value": "padaria-e-matinais", "maxProducts": 350 },
+      { "value": "frios-e-laticinios", "maxProducts": 350 },
+      { "value": "hortifruti", "maxProducts": 300 },
+      { "value": "acougue-e-peixaria", "maxProducts": 300 }
+    ],
+    "maxProducts": 3000
   },
   "extraction": {
     "schemaVersion": 1,
@@ -58,7 +68,8 @@
     "regionalContext": {
       "kind": "vtex-segment",
       "regionId": "v2.ED060FE4CF8359428D52ABC52B3F1E1E",
-      "salesChannel": "2"
+      "salesChannel": "2",
+      "catalogSellerId": "1"
     },
     "fields": {
       "title": "$[0].productName",
@@ -70,22 +81,29 @@
     }
   },
   "fixtureRef": {
-    "canonicalUrl": "https://carrefourbrfood.vtexcommercestable.com.br/arroz-oriental-grao-longo-t1-momiji-1kg-9354581/p",
-    "externalId": "4244",
-    "sourceCategory": "/mercearia/"
+    "canonicalUrl": "https://carrefourbrfood.vtexcommercestable.com.br/cafe-em-graos-espresso-cafe-do-ponto-espresso-1-kg-5256666/p",
+    "externalId": "14751",
+    "sourceCategory": "/Mercearia/Cafés, Chás e Achocolatados/Cafés/"
   },
   "fixtureProvenance": [
     {
       "path": "tests/fixtures/carrefour/catalog-product.json",
-      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=arroz&_from=0&_to=29",
-      "capturedAt": "2026-07-10T15:36:00.000Z",
-      "redactions": ["response headers omitted", "price token removed", "payment metadata removed"],
+      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId%3A14751&sc=2",
+      "capturedAt": "2026-07-11T04:39:00.000Z",
+      "redactions": ["response headers and regional cookie omitted", "unrelated offer metadata removed", "payment metadata removed"],
+      "synthetic": false
+    },
+    {
+      "path": "tests/fixtures/carrefour/catalog-product-plain.json",
+      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId%3A14751&sc=2",
+      "capturedAt": "2026-07-11T04:39:00.000Z",
+      "redactions": ["response headers omitted", "unrelated offer metadata removed", "payment metadata removed"],
       "synthetic": false
     },
     {
       "path": "tests/fixtures/carrefour/mutated-product.json",
-      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?ft=arroz&_from=0&_to=29",
-      "capturedAt": "2026-07-10T15:36:00.000Z",
+      "sourceUrl": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId%3A14751&sc=2",
+      "capturedAt": "2026-07-11T04:39:00.000Z",
       "redactions": ["fully synthetic mutation", "no request metadata retained"],
       "synthetic": true
     }
@@ -93,19 +111,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T04:06:00.000Z",
+      "validatedAt": "2026-07-11T05:07:25.000Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Official account-host VTEX cafe discovery returned 30/30 canonical product records for sales channel 2."
+      "evidence": "Trusted execution of the official account-host category endpoint returned 30/30 canonical records with explicit Mercearia category paths; the same declarative request is bounded across seven food-at-home segments.",
+      "receiptPath": "data/validation/carrefour-discovery-v4.json",
+      "receiptSha256": null
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T04:06:00.000Z",
+      "validatedAt": "2026-07-11T04:49:04.000Z",
       "sampleSize": 30,
       "successes": 28,
       "score": 0.9333333333333333,
-      "evidence": "Trusted sequential validation with the public CEP-derived regional context produced 28/30 complete offers; two unavailable products had no positive price. No cookie is stored in the strategy or evidence."
+      "evidence": "Trusted sequential validation with the public CEP-derived regional context produced 28/30 complete offers; all 30 responses contained validated catalog seller 1, while two unavailable products had no positive price. No cookie is stored in the strategy or evidence.",
+      "receiptPath": "data/validation/carrefour-extraction-v4.json",
+      "receiptSha256": null
     }
   }
 }

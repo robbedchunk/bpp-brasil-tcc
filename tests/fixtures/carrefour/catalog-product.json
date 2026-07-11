@@ -1,27 +1,34 @@
 [
   {
     "_fixture": {
-      "provenance": "Official VTEX public catalog response, captured 2026-07-10",
-      "sanitized": true,
-      "regionalSellerObservedSeparately": "carrefourbrfood1935",
-      "catalogSeller": "1"
+      "provenance": "Official VTEX regional catalog response captured 2026-07-11; sanitized",
+      "regionId": "v2.ED060FE4CF8359428D52ABC52B3F1E1E",
+      "checkoutSellerId": "carrefourbrfood1935",
+      "catalogSellerId": "1",
+      "regionalSelectorOmitted": true
     },
-    "productId": "4244",
-    "productName": "Arroz Oriental Grão Longo T1 Momiji 1kg",
-    "brand": "Momiji",
-    "link": "https://carrefourbrfood.vtexcommercestable.com.br/arroz-oriental-grao-longo-t1-momiji-1kg-9354581/p",
-    "categories": ["/mercearia/"],
+    "productId": "14751",
+    "productName": "Café em Grãos Espresso Café Do Ponto 1 Kg",
+    "brand": "Café do Ponto",
+    "link": "https://carrefourbrfood.vtexcommercestable.com.br/cafe-em-graos-espresso-cafe-do-ponto-espresso-1-kg-5256666/p",
+    "categories": [
+      "/Mercearia/Cafés, Chás e Achocolatados/Cafés/",
+      "/Mercearia/Cafés, Chás e Achocolatados/",
+      "/Mercearia/"
+    ],
     "items": [
       {
+        "itemId": "14751",
         "measurementUnit": "un",
         "unitMultiplier": 1,
         "sellers": [
           {
             "sellerId": "1",
+            "sellerName": "Carrefour",
             "commertialOffer": {
-              "Price": 12.99,
-              "ListPrice": 12.99,
-              "AvailableQuantity": 100,
+              "Price": 104.99,
+              "ListPrice": 104.99,
+              "AvailableQuantity": 10,
               "IsAvailable": true
             }
           }

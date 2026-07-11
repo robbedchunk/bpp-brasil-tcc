@@ -34,4 +34,56 @@ describe("heartbeat", () => {
       new Date("2026-07-10T06:05:00.000Z"),
     );
   });
+
+  it("can select only timer-provenanced daily heartbeats", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    recordHeartbeat(database, {
+      pipeline: "collect",
+      scheduledFor: "2026-07-09T06:00:00.000Z",
+      completedAt: "2026-07-09T06:05:00.000Z",
+      details: { trigger: "systemd-timer", timerUnit: "precos-daily.timer" },
+    });
+    recordHeartbeat(database, {
+      pipeline: "collect",
+      scheduledFor: "2026-07-10T06:00:00.000Z",
+      completedAt: "2026-07-10T06:05:00.000Z",
+      details: { trigger: "manual" },
+    });
+
+    expect(latestSuccessfulHeartbeat(database, "collect", { scheduledOnly: true })).toEqual(
+      new Date("2026-07-09T06:05:00.000Z"),
+    );
+  });
+
+  it("never lets operational-failure details masquerade as a successful heartbeat", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    recordHeartbeat(database, {
+      pipeline: "collect",
+      scheduledFor: "2026-07-09T06:00:00.000Z",
+      completedAt: "2026-07-09T06:05:00.000Z",
+      details: {
+        trigger: "systemd-timer",
+        timerUnit: "precos-daily.timer",
+        monitorFailedRunIds: [],
+        retailerFailures: [],
+      },
+    });
+    recordHeartbeat(database, {
+      pipeline: "collect",
+      scheduledFor: "2026-07-10T06:00:00.000Z",
+      completedAt: "2026-07-10T06:05:00.000Z",
+      details: {
+        trigger: "systemd-timer",
+        timerUnit: "precos-daily.timer",
+        monitorFailedRunIds: ["run-failed-monitor"],
+        retailerFailures: [],
+      },
+    });
+
+    expect(latestSuccessfulHeartbeat(database, "collect", { scheduledOnly: true })).toEqual(
+      new Date("2026-07-09T06:05:00.000Z"),
+    );
+  });
 });

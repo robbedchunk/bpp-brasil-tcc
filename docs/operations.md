@@ -54,6 +54,11 @@ second, with an eight-second cap. The serialized admission gate rechecks both an
 extended deadline and blocking state after every wait. Requests already executing
 finish; work only queued for polite spacing is not attempted after a stop.
 Unstarted products are reported as skipped, not inserted as synthetic failures.
+Every network start is charged through an append-only SQLite admission before
+the request: discovery and collection each have an independent 2,000-request
+retailer/day cap. Discovery references have a separate 3,000/day admission and
+private replay writes a 20/day admission. Charges survive crashes by design and
+remain atomic across concurrent processes; a terminal run cannot consume more.
 
 ## Logs, alerts, and health
 
@@ -72,6 +77,10 @@ hidden by the success-rate shortcut.
 
 The hourly checker alerts when no successful collection heartbeat exists or the
 latest is older than 24 hours. Missing collection days remain gaps.
+Retailer-level orchestration errors do not prevent later retailers from being
+attempted. They and post-collection monitor errors produce a durable partial
+heartbeat, a fallback-capable alert, and a nonzero daily service result; partial
+heartbeats never satisfy schedule freshness or acceptance.
 
 Task 16's missed-run drill does not kill a service or insert an old row. It calls
 the pure heartbeat classifier with an injected 25-hour age, sends a `[DRILL]`
@@ -86,12 +95,24 @@ npm run acceptance:drill -- alert --confirm-safe-drill --json
 
 `ops/backup.sh` uses SQLite's online `.backup`, requires `integrity_check=ok`,
 sets mode `0600`, and rotates files older than 14 days under ignored
-`var/backups/`.
+`var/backups/`. When present, the mode-0600 Ed25519 validation private key is
+copied into the same private rotation; the tracked public verifier is not a
+secret.
 
 ```bash
 bash ops/backup.sh --self-test
 npm run acceptance:drill -- backup --confirm-safe-drill --json
 ```
+
+Verified private replay can be re-extracted after a normalization bug without
+republishing the response body:
+
+```bash
+npm run precos -- replay-reextract --observation <observation-id> --json
+```
+
+The command shares the global mutation lock with scheduled collection and
+persists only an immutable structured audit row in `replay_reextractions`.
 
 The acceptance drill creates an online copy, checks integrity/foreign keys,
 opens a second temporary restore-read copy, and compares migrations and critical

@@ -17,6 +17,11 @@ export interface ExtractionFailure {
   statusCode?: number;
 }
 
+export interface ReplayPayload {
+  body: string;
+  mediaType: "application/json" | "text/html" | "text/plain";
+}
+
 export interface ProductRef {
   canonicalUrl: string;
   externalId: string | null;
@@ -34,6 +39,9 @@ export interface ExtractionResult {
     available: boolean;
   };
   failure?: ExtractionFailure;
+  /** Private bounded response material offered to the daily replay sampler. */
+  replay?: ReplayPayload;
+  /** @deprecated Compatibility alias for older HTML-returning test executors. */
   html?: string;
 }
 

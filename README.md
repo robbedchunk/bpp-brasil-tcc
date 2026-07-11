@@ -18,9 +18,12 @@ strategies outside the collection hot path, and publishes reproducible CSV and
 analysis snapshots. Strategy tiers progress from HTTP APIs and embedded JSON to
 declarative DOM extraction and a restricted operation interpreter.
 
-Every activation requires trusted validation on exactly 30 references with a
-score of at least 0.9. Runs, failures, strategy versions, classifications,
-exploration attempts, costs, healing events, and heartbeats remain evidence.
+Every activation requires trusted validation on a preselected set of exactly 30
+authoritative references with a score of at least 0.9. The host signs the
+body-free receipt with Ed25519; configured, generated, and healed strategies all
+pass the same immutable database activation gate. Runs, failures, strategy
+versions, classifications, exploration attempts, costs, healing events, and
+heartbeats remain evidence.
 
 ## Current evidence
 
@@ -70,6 +73,7 @@ npm run precos -- status --json
 npm run precos -- discover --json
 npm run precos -- collect --json
 npm run precos -- daily --json
+npm run precos -- replay-reextract --observation <observation-id> --json
 npm run precos -- classify --dry-run --json
 npm run precos -- index --export --json
 npm run research:snapshot
@@ -78,6 +82,11 @@ npm run audit:publication -- --json
 npm run acceptance -- --json
 npm run acceptance -- --json --require-complete
 ```
+
+Strategy receipt/key operations are documented in
+[trusted strategy validation](docs/strategy-validation.md). A fresh clone can
+verify receipts with the tracked public key; only the production host retains
+the private signer.
 
 Routine acceptance exits successfully for an honest `pending` report, while
 `--require-complete` exits `3` until every external gate matures. Neither mode

@@ -4,11 +4,17 @@ import type Database from "better-sqlite3";
 
 import { loadIpcaItems } from "../../scripts/load-ipca-items.js";
 import { openDatabase } from "../../src/db/database.js";
+import { buildDailyIndex as buildProductionDailyIndex } from "../../src/index/aggregate.js";
 
 const authoritativeWeights = readFileSync(new URL(
   "../../data/reference/ipca_pof2017_2018_sp_food_at_home_weights.csv",
   import.meta.url,
 ), "utf8");
+
+const terminalRuns = new WeakMap<Database.Database, Map<string, {
+  status: "completed" | "partial" | "failed";
+  finishedAt: string;
+}>>();
 
 export function indexDatabase(): Database.Database {
   return openDatabase(":memory:");
@@ -27,8 +33,23 @@ export function seedRetailer(database: Database.Database, id: string): void {
     INSERT INTO strategies
       (id, retailer_id, purpose, tier, version, strategy_json, provenance,
        validation_sample_size, validation_successes, validation_rate, active)
-    VALUES (?, ?, 'extraction', 1, 1, '{}', 'index-test', 30, 30, 1, 1)
+    VALUES (?, ?, 'extraction', 1, 1, '{}', 'index-test', 30, 30, 1, 0)
   `).run(`${id}-strategy`, id);
+  database.prepare(`
+    INSERT INTO strategy_validation_evidence
+      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+       executor_json, attestation_key_id, attempted, valid, score, validated_at)
+    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, '2026-01-01T00:00:00.000Z')
+  `).run(
+    `${id}-strategy`,
+    `data/validation/${id}-strategy.json`,
+    "a".repeat(64),
+    "b".repeat(64),
+    "c".repeat(64),
+  );
+  database.prepare(
+    "UPDATE strategies SET active = 1 WHERE id = ?",
+  ).run(`${id}-strategy`);
 }
 
 export function seedItem(
@@ -114,13 +135,44 @@ export function seedRun(
     input.retailerId,
     input.day,
     `${input.retailerId}-strategy`,
-    status,
+    "running",
     attempted,
     ok,
     attempted - ok,
     startedAt,
-    status === "running" ? null : startedAt.replace("06:00", "06:10"),
+    null,
   );
+  if (status !== "running") {
+    const pending = terminalRuns.get(database) ?? new Map();
+    pending.set(input.id, {
+      status,
+      finishedAt: startedAt.replace("06:00", "06:10"),
+    });
+    terminalRuns.set(database, pending);
+  }
+}
+
+export function finalizeSeedRuns(database: Database.Database): void {
+  const pending = terminalRuns.get(database);
+  if (pending === undefined || pending.size === 0) return;
+  const finish = database.prepare(`
+    UPDATE runs SET status = ?, finished_at = ?
+    WHERE id = ? AND status = 'running' AND finished_at IS NULL
+  `);
+  database.transaction(() => {
+    for (const [runId, target] of pending) {
+      finish.run(target.status, target.finishedAt, runId);
+    }
+  }).immediate();
+  pending.clear();
+}
+
+export function buildSeededDailyIndex(
+  database: Database.Database,
+  options?: Parameters<typeof buildProductionDailyIndex>[1],
+): ReturnType<typeof buildProductionDailyIndex> {
+  finalizeSeedRuns(database);
+  return buildProductionDailyIndex(database, options);
 }
 
 export function seedObservation(

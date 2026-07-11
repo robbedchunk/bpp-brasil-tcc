@@ -25,6 +25,24 @@ import {
 
 const D = Decimal.clone({ precision: 40, rounding: Decimal.ROUND_HALF_EVEN });
 
+export interface ExperimentalDailySeriesFacts {
+  aggregatePointCount: number;
+  movementPointCount: number;
+  hasExperimentalDailySeries: boolean;
+}
+
+export function experimentalDailySeriesFacts(
+  series: IndexSeries,
+): ExperimentalDailySeriesFacts {
+  const movementPointCount = series.aggregate.filter((point) =>
+    point.dailyRelative !== null && point.indexLevel !== null).length;
+  return {
+    aggregatePointCount: series.aggregate.length,
+    movementPointCount,
+    hasExperimentalDailySeries: movementPointCount > 0,
+  };
+}
+
 function blankExclusions(unclassifiedCount = 0): DayExclusions {
   return {
     unclassifiedCount,

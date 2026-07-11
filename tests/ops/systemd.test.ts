@@ -113,6 +113,13 @@ describe("production schedules", () => {
       "After=network-online.target precos-daily.service precos-weekly-discovery.service",
     );
     expect(weeklyIndexService).toContain("UMask=0077");
+    const weeklyDiscoveryService = await readFile(
+      join(destination, "precos-weekly-discovery.service"),
+      "utf8",
+    );
+    expect(weeklyDiscoveryService).toContain(
+      `ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" discover --limit 3000 --json`,
+    );
     const weeklyIndexTimer = await readFile(
       join(destination, "precos-weekly-index.timer"),
       "utf8",

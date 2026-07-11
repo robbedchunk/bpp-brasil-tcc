@@ -126,6 +126,97 @@
       "severity": "critical",
       "status": "resolved",
       "fixCommit": "e1966e038c99bcbec367378469b430073cf0350c"
+    },
+    {
+      "id": "m3-catalog-scope-scale-and-rotation",
+      "milestone": "M3",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m5-private-replay-and-run-observability",
+      "milestone": "M5",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m6-temporal-degraded-retailer-exclusion",
+      "milestone": "M6",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m7-acceptance-evidence-cut-self-reference",
+      "milestone": "M7",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m2-scheduled-strategy-provenance-binding",
+      "milestone": "M2",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m3-panel-classification-automation-separation",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m6-nonempty-experimental-daily-series",
+      "milestone": "M6",
+      "severity": "critical",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m7-carrefour-regional-seller-fixture",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m4-sandbox-self-validator-depth",
+      "milestone": "M4",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m3-classification-human-review-workflow",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m7-manual-heartbeat-masks-scheduled-miss",
+      "milestone": "M7",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m3-numeric-id-classification-title",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
+    },
+    {
+      "id": "m3-strategy-validation-sample-receipts",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "open",
+      "fixCommit": null
     }
   ]
 }

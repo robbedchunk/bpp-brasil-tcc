@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { exportResearchData } from "../../src/index/export.js";
 import type { SidraClient } from "../../src/index/types.js";
 import {
+  finalizeSeedRuns,
   indexDatabase,
   seedAuthoritativeWeights,
   seedObservation,
@@ -146,6 +147,7 @@ describe("research snapshot export", () => {
     seedRun(database, { id: "d2", retailerId: "r1", day: "2026-06-02" });
     seedObservation(database, { id: "o1", productId: "p1", runId: "d1", day: "2026-06-01", price: 1_000 });
     seedObservation(database, { id: "o2", productId: "p1", runId: "d2", day: "2026-06-02", price: 1_100 });
+    finalizeSeedRuns(database);
     const outputRoot = await mkdtemp(join(tmpdir(), "precos-export-name-"));
     directories.push(outputRoot);
     const manifest = await exportResearchData(database, {

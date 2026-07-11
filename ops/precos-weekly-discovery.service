@@ -10,4 +10,4 @@ Environment=@RUNTIME_PATH@
 Environment=TZ=America/Sao_Paulo
 EnvironmentFile=@ENV_FILE@
 UMask=0077
-ExecStart=@NODE_PATH@ @CLI_PATH@ discover --limit 2000 --json
+ExecStart=@NODE_PATH@ @CLI_PATH@ discover --limit 3000 --json

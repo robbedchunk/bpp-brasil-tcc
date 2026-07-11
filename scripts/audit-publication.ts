@@ -9,6 +9,7 @@ interface CliOptions {
   projectRoot: string;
   databasePath: string;
   requireClean: boolean;
+  implementationCut: boolean;
 }
 
 function parseArguments(arguments_: string[]): CliOptions {
@@ -16,10 +17,12 @@ function parseArguments(arguments_: string[]): CliOptions {
   let projectRoot = resolve(".");
   let databasePath: string | undefined;
   let requireClean = false;
+  let implementationCut = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (argument === "--json") json = true;
     else if (argument === "--require-clean") requireClean = true;
+    else if (argument === "--implementation-cut") implementationCut = true;
     else if (argument === "--project-root" || argument === "--database") {
       const value = arguments_[index + 1];
       if (value === undefined || value.startsWith("--")) {
@@ -37,6 +40,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     projectRoot,
     databasePath: databasePath ?? resolve(projectRoot, "data/precos.sqlite"),
     requireClean,
+    implementationCut,
   };
 }
 
@@ -56,6 +60,7 @@ async function main(): Promise<void> {
       databasePath: options.databasePath,
       now: () => new Date(),
       requireClean: options.requireClean,
+      requireAcceptanceEvidence: !options.implementationCut,
     });
     if (options.json) {
       process.stdout.write(`${JSON.stringify(report)}\n`);

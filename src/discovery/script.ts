@@ -30,6 +30,7 @@ const EMPTY_PAGINATION = {
   from: "0",
   to: "0",
   cursor: "",
+  segment: "",
 };
 
 type DomExtract = Extract<DiscoveryScriptOperation, { op: "extract"; source: "dom" }>;
@@ -180,7 +181,7 @@ async function withTotalDeadline<T>(
 
 function renderDiscoveryString(template: string): string {
   return template.replace(
-    /\{(page|pageSize|offset|from|to|cursor)\}/gu,
+    /\{(page|pageSize|offset|from|to|cursor|segment)\}/gu,
     (_match, name: keyof typeof EMPTY_PAGINATION) => EMPTY_PAGINATION[name],
   );
 }
@@ -411,7 +412,10 @@ async function runDiscoveryProgram(
                 ),
                 externalId: null,
                 sourceCategory: null,
-              })) return refs;
+              })) {
+                context.reportCompletion?.({ complete: false, reason: "product_cap_reached" });
+                return refs;
+              }
             } catch {
               // Ignore malformed or cross-domain discovered URLs.
             }
@@ -430,7 +434,10 @@ async function runDiscoveryProgram(
             timeout,
           );
           for (const ref of discovered) {
-            if (appendRef(ref)) return refs;
+            if (appendRef(ref)) {
+              context.reportCompletion?.({ complete: false, reason: "product_cap_reached" });
+              return refs;
+            }
           }
         }
         continue;
@@ -455,6 +462,7 @@ async function runDiscoveryProgram(
       responded: true,
     });
   }
+  context.reportCompletion?.({ complete: false, reason: "page_cap_reached" });
   return refs.slice(0, strategy.maxProducts);
 }
 

@@ -12,6 +12,18 @@ export interface DiscoveryExecutionContext extends ExtractionExecutionContext {
   robots?: RobotsPolicy;
   robotsByOrigin?: ReadonlyMap<string, RobotsPolicy>;
   beforeRequest?: () => Promise<void>;
+  reportCompletion?: (evidence: DiscoveryCompletionEvidence) => void;
+  reportRefDocument?: (ref: ProductRef, documentUrl: string) => void;
+}
+
+export interface DiscoveryCompletionEvidence {
+  complete: boolean;
+  reason:
+    | "source_exhausted"
+    | "product_cap_reached"
+    | "page_cap_reached"
+    | "request_cap_reached"
+    | "loop_guard_triggered";
 }
 
 async function* rawDiscovery(

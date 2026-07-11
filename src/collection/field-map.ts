@@ -1,4 +1,5 @@
 import { parseBrl } from "../normalize/brl.js";
+import { isDescriptiveProductTitle } from "../normalize/title.js";
 import { normalizeUnit } from "../normalize/unit.js";
 import { safeJsonPathValue } from "../strategies/json-path.js";
 import type { FieldMap } from "../strategies/schema.js";
@@ -89,8 +90,8 @@ export function mapExtractionFields(
   raw: RawExtractionFields,
 ): ExtractionResult {
   const title = normalizedText(raw.title);
-  if (title === null) {
-    return failed("missing-fields", "A non-empty product title is required");
+  if (!isDescriptiveProductTitle(title)) {
+    return failed("missing-fields", "A descriptive product title is required");
   }
 
   if (isEmptyValue(raw.price)) {

@@ -1,0 +1,37 @@
+[
+  {
+    "_fixture": {
+      "provenance": "Official VTEX ordinary catalog response captured 2026-07-11; sanitized comparison",
+      "regionalSelectorApplied": false,
+      "catalogSellerId": "1"
+    },
+    "productId": "14751",
+    "productName": "Café em Grãos Espresso Café Do Ponto 1 Kg",
+    "brand": "Café do Ponto",
+    "link": "https://carrefourbrfood.vtexcommercestable.com.br/cafe-em-graos-espresso-cafe-do-ponto-espresso-1-kg-5256666/p",
+    "categories": [
+      "/Mercearia/Cafés, Chás e Achocolatados/Cafés/",
+      "/Mercearia/Cafés, Chás e Achocolatados/",
+      "/Mercearia/"
+    ],
+    "items": [
+      {
+        "itemId": "14751",
+        "measurementUnit": "un",
+        "unitMultiplier": 1,
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Carrefour",
+            "commertialOffer": {
+              "Price": 53.99,
+              "ListPrice": 53.99,
+              "AvailableQuantity": 100,
+              "IsAvailable": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -39,6 +39,10 @@ describe("API discovery", () => {
         category: "parse",
       },
       {
+        fetch: async () => new Response(JSON.stringify({ items: [] })),
+        category: "parse",
+      },
+      {
         fetch: async () => new Response(JSON.stringify({ items: [{ id: "missing-url" }] })),
         category: "parse",
       },
@@ -203,7 +207,10 @@ describe("API discovery", () => {
     await collect(executeDiscovery(strategy, {
       fetch: async (input) => {
         requestedUrl = String(input);
-        return new Response(JSON.stringify({ items: [] }));
+        return new Response(JSON.stringify({
+          items: [{ url: "/produto/encoded-cursor" }],
+          nextCursor: null,
+        }));
       },
     }));
 
@@ -314,5 +321,56 @@ describe("API discovery", () => {
 
     expect(constantCalls).toBe(1);
     expect(changingCalls).toBe(2);
+  });
+
+  it("walks bounded catalog segments with explicit category provenance", async () => {
+    const strategy = ApiDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: {
+        method: "POST",
+        url: "https://shop.test/api/category",
+        headers: {},
+        body: { category: "{segment}", page: "{page}" },
+      },
+      itemsPath: "$.items[*]",
+      refFields: { url: "$.url", externalId: "$.id" },
+      pagination: { kind: "page", start: 1, pageSize: 2, maxPages: 3 },
+      segments: [
+        { value: "food", sourceCategory: "Alimentos", maxProducts: 3 },
+        { value: "drinks", sourceCategory: "Bebidas", maxProducts: 2 },
+      ],
+      maxProducts: 6,
+    });
+    const requests: Array<{ category: string; page: string }> = [];
+    const completion: Array<{ complete: boolean; reason: string }> = [];
+
+    const refs = await collect(executeDiscovery(strategy, {
+      reportCompletion: (evidence) => { completion.push(evidence); },
+      fetch: async (_input, init) => {
+        const body = JSON.parse(String(init?.body)) as { category: string; page: string };
+        requests.push(body);
+        const base = body.category === "food" ? 0 : 100;
+        const page = Number(body.page);
+        return new Response(JSON.stringify({
+          items: Array.from({ length: 2 }, (_, index) => ({
+            id: String(base + (page - 1) * 2 + index),
+            url: `/produto/${base + (page - 1) * 2 + index}`,
+          })),
+        }));
+      },
+    }));
+
+    expect(requests).toEqual([
+      { category: "food", page: "1" },
+      { category: "food", page: "2" },
+      { category: "drinks", page: "1" },
+    ]);
+    expect(refs.map(({ sourceCategory }) => sourceCategory)).toEqual([
+      "Alimentos", "Alimentos", "Alimentos", "Bebidas", "Bebidas",
+    ]);
+    expect(completion).toEqual([{ complete: false, reason: "product_cap_reached" }]);
   });
 });

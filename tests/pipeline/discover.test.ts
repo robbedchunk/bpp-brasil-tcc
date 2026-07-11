@@ -9,6 +9,44 @@ import { discoveryStrategy, seedRetailer, seedStrategy } from "./helpers.js";
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 afterEach(() => databases.splice(0).forEach((database) => database.close()));
 
+function fillRequestAdmissions(
+  database: ReturnType<typeof openDatabase>,
+  runId: string,
+  count: number,
+): void {
+  database.prepare(`
+    WITH RECURSIVE ordinals(ordinal) AS (
+      VALUES (1)
+      UNION ALL SELECT ordinal + 1 FROM ordinals WHERE ordinal < ?
+    )
+    INSERT INTO request_admissions
+      (id, run_id, retailer_id, collection_day, stage, stage_ordinal, admitted_at)
+    SELECT printf('%s-request-%04d', ?, ordinal), ?, 'retailer-1',
+           '2026-07-10', 'discover', ordinal, '2026-07-10T03:00:00.000Z'
+    FROM ordinals
+  `).run(count, runId, runId);
+}
+
+function fillDiscoveryReferenceAdmissions(
+  database: ReturnType<typeof openDatabase>,
+  runId: string,
+  count: number,
+): void {
+  database.prepare(`
+    WITH RECURSIVE ordinals(ordinal) AS (
+      VALUES (1)
+      UNION ALL SELECT ordinal + 1 FROM ordinals WHERE ordinal < ?
+    )
+    INSERT INTO discovery_reference_admissions
+      (id, run_id, retailer_id, collection_day, day_ordinal,
+       canonical_url, admitted_at)
+    SELECT printf('%s-reference-%04d', ?, ordinal), ?, 'retailer-1',
+           '2026-07-10', ordinal, printf('https://shop.test/prior/%d', ordinal),
+           '2026-07-10T03:00:00.000Z'
+    FROM ordinals
+  `).run(count, runId, runId);
+}
+
 describe("discovery pipeline", () => {
   it("creates the run first and preserves a rejected page as unknown evidence", async () => {
     const database = openDatabase(":memory:");
@@ -32,7 +70,7 @@ describe("discovery pipeline", () => {
     });
 
     expect(runExistedDuringExecution).toBe(true);
-    expect(summary).toMatchObject({ attempted: 3, ok: 2, failed: 1, successRate: 2 / 3 });
+    expect(summary).toMatchObject({ attempted: 2, ok: 2, failed: 0, successRate: 1 });
     expect(summary.attempted).toBe(summary.ok + summary.failed);
     expect(database.prepare("SELECT COUNT(*) AS n FROM products").get()).toEqual({ n: 2 });
     expect(database.prepare("SELECT category, message FROM run_failures").get()).toEqual({
@@ -68,7 +106,7 @@ describe("discovery pipeline", () => {
     expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 0 });
   });
 
-  it("applies the 2,000 cap cumulatively across same-day discovery runs", async () => {
+  it("applies the durable 3,000-reference cap across same-day discovery runs", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
@@ -76,12 +114,12 @@ describe("discovery pipeline", () => {
     database.prepare(
       `INSERT INTO runs
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
-          status, attempted, ok, failed, started_at, finished_at)
+          status, attempted, ok, failed, started_at)
        VALUES
-         ('prior', 'retailer-1', 'collect', '2026-07-10', ?, 1,
-          'failed', 1999, 0, 1999, '2026-07-10T03:00:00.000Z',
-          '2026-07-10T03:10:00.000Z')`,
+         ('prior', 'retailer-1', 'discover', '2026-07-10', ?, 1,
+          'running', 0, 0, 0, '2026-07-10T03:00:00.000Z')`,
     ).run(strategyId);
+    fillDiscoveryReferenceAdmissions(database, "prior", 2_999);
     let yielded = 0;
 
     const summary = await runDiscovery("retailer-1", {
@@ -102,6 +140,83 @@ describe("discovery pipeline", () => {
 
     expect(yielded).toBe(1);
     expect(summary.attempted).toBe(1);
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM discovery_reference_admissions",
+    ).get()).toEqual({ count: 3_000 });
+  });
+
+  it("aggregates concurrent discovery runs under the durable 3,000-reference cap", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+    const discover = (label: string) => runDiscovery("retailer-1", {
+      database,
+      id: () => `concurrent-discovery-${label}`,
+      limit: 3_000,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      execute: async function* () {
+        for (let index = 0; index < 3_000; index += 1) {
+          yield {
+            canonicalUrl: `https://shop.test/${label}/${index}`,
+            externalId: `${label}-${index}`,
+            sourceCategory: "Mercearia",
+          };
+        }
+      },
+    });
+
+    const summaries = await Promise.all([discover("a"), discover("b")]);
+
+    expect(summaries.reduce((sum, summary) => sum + summary.attempted, 0)).toBe(3_000);
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count, COUNT(DISTINCT day_ordinal) AS ordinals
+      FROM discovery_reference_admissions
+    `).get()).toEqual({ count: 3_000, ordinals: 3_000 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM products").get())
+      .toEqual({ count: 3_000 });
+  }, 30_000);
+
+  it("stops cleanly when the durable request budget is reached mid-source", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const strategyId = seedStrategy(database, "discovery", discoveryStrategy);
+    database.prepare(`
+      INSERT INTO runs
+        (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+         status, attempted, ok, failed, started_at)
+      VALUES ('prior-requests', 'retailer-1', 'discover', '2026-07-10', ?, 1,
+              'running', 0, 0, 0, '2026-07-10T03:00:00.000Z')
+    `).run(strategyId);
+    fillRequestAdmissions(database, "prior-requests", 1_999);
+    let yielded = 0;
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      limit: 10,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      execute: async function* (_strategy, context) {
+        for (let index = 0; index < 10; index += 1) {
+          await context.beforeRequest?.();
+          yielded += 1;
+          yield {
+            canonicalUrl: `https://shop.test/request-${index}`,
+            externalId: String(index),
+            sourceCategory: null,
+          };
+        }
+      },
+    });
+
+    expect(yielded).toBe(1);
+    expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
+    expect(database.prepare(
+      "SELECT completion_reason AS reason FROM catalog_snapshots WHERE run_id = ?",
+    ).get(summary.id)).toEqual({ reason: "request_cap_reached" });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM request_admissions WHERE stage = 'discover'",
+    ).get()).toEqual({ count: 2_000 });
   });
 
   it("does not exceed the cap when closing a limited iterator throws", async () => {
@@ -126,7 +241,7 @@ describe("discovery pipeline", () => {
     expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
   });
 
-  it("performs no executor or robots traffic after the combined cap is exhausted", async () => {
+  it("performs no executor or robots traffic after the discovery cap is exhausted", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
@@ -134,12 +249,12 @@ describe("discovery pipeline", () => {
     database.prepare(
       `INSERT INTO runs
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
-          status, attempted, ok, failed, started_at, finished_at)
+          status, attempted, ok, failed, started_at)
        VALUES
-         ('prior-cap', 'retailer-1', 'collect', '2026-07-10', ?, 1,
-          'failed', 2000, 0, 2000, '2026-07-10T03:00:00.000Z',
-          '2026-07-10T03:10:00.000Z')`,
+         ('prior-cap', 'retailer-1', 'discover', '2026-07-10', ?, 1,
+          'running', 0, 0, 0, '2026-07-10T03:00:00.000Z')`,
     ).run(strategyId);
+    fillDiscoveryReferenceAdmissions(database, "prior-cap", 3_000);
     let executions = 0;
 
     const summary = await runDiscovery("retailer-1", {
@@ -153,6 +268,9 @@ describe("discovery pipeline", () => {
 
     expect(executions).toBe(0);
     expect(summary).toMatchObject({ attempted: 0, ok: 0, failed: 0, status: "completed" });
+    expect(database.prepare(
+      "SELECT completion_reason AS reason FROM catalog_snapshots WHERE run_id = ?",
+    ).get(summary.id)).toEqual({ reason: "product_cap_reached" });
   });
 
   it("does not double-count a product when failure-evidence persistence also fails", async () => {
@@ -204,7 +322,7 @@ describe("discovery pipeline", () => {
       },
     });
 
-    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1, status: "failed" });
+    expect(summary).toMatchObject({ attempted: 0, ok: 0, failed: 0, status: "failed" });
     expect(database.prepare(
       "SELECT category, http_status FROM run_failures",
     ).get()).toEqual({ category: "http-429", http_status: 429 });
@@ -262,7 +380,7 @@ describe("discovery pipeline", () => {
       },
     });
 
-    expect(summary).toMatchObject({ attempted: 1, ok: 0, failed: 1, status: "failed" });
+    expect(summary).toMatchObject({ attempted: 0, ok: 0, failed: 0, status: "failed" });
     expect(database.prepare("SELECT category, http_status FROM run_failures").get())
       .toEqual({ category: "unknown", http_status: 503 });
   });

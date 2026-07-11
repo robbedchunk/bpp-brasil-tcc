@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildDailyIndex } from "../../src/index/aggregate.js";
 import {
+  experimentalDailySeriesFacts,
+} from "../../src/index/aggregate.js";
+import {
+  buildSeededDailyIndex as buildDailyIndex,
   indexDatabase,
   seedItem,
   seedObservation,
@@ -67,6 +70,11 @@ describe("hand-computed experimental index", () => {
       ?.retailerCount).toBe(2);
     expect(series.productRelatives.find((point) => point.productId === "a1"))
       .toMatchObject({ numeratorCents: 1_100, denominatorCents: 1_000 });
+    expect(experimentalDailySeriesFacts(series)).toEqual({
+      aggregatePointCount: 2,
+      movementPointCount: 1,
+      hasExperimentalDailySeries: true,
+    });
   });
 
   it("preserves Decimal precision until the published output boundary", () => {
@@ -88,5 +96,23 @@ describe("hand-computed experimental index", () => {
     expect(series.retailerSubitems[0]?.relative).toBe("0.905939600135");
     expect(series.subitems[0]?.relative).toBe("0.905939600135");
     expect(series.aggregate[1]?.dailyRelative).toBe("0.905939600135");
+  });
+
+  it("distinguishes a baseline-only index from a nonempty daily series", () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedRetailer(database, "r1");
+    seedItem(database, "item-a", "1101002", "Item A", "12.1181");
+    seedProduct(database, { id: "p1", retailerId: "r1", itemId: "item-a" });
+    seedRun(database, { id: "d1", retailerId: "r1", day: "2026-06-01" });
+    seedObservation(database, {
+      id: "p1-d1", productId: "p1", runId: "d1", day: "2026-06-01", price: 997,
+    });
+
+    expect(experimentalDailySeriesFacts(buildDailyIndex(database))).toEqual({
+      aggregatePointCount: 1,
+      movementPointCount: 0,
+      hasExperimentalDailySeries: false,
+    });
   });
 });

@@ -15,6 +15,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import Database from "better-sqlite3";
 import { parse } from "csv-parse/sync";
 
+import {
+  ClassificationReviewResultSchema,
+  validateClassificationReviewResult,
+} from "../classify/review.js";
 import { validatePublicDrillReceipt } from "../ops/acceptance-drills.js";
 
 export type PublicationAuditStatus = "pass" | "fail";
@@ -68,6 +72,14 @@ export interface PublicationAuditOptions {
   databasePath: string;
   now: () => Date;
   requireClean: boolean;
+  /**
+   * Final publication cuts must contain the generated acceptance JSON and its
+   * Markdown rendering. Report generation deliberately disables this check so
+   * those two files can be created without a circular prerequisite.
+   */
+  requireAcceptanceEvidence?: boolean;
+  /** Implementation cut represented by an embedded acceptance audit. */
+  evaluatedCommit?: string;
 }
 
 export interface FreshCloneReceipt {
@@ -90,9 +102,18 @@ const REQUIRED_DOCS = [
   "docs/operations.md",
   "docs/sources.md",
 ] as const;
+const REQUIRED_ACCEPTANCE_EVIDENCE = [
+  "data/acceptance/acceptance.json",
+  "docs/acceptance-report.md",
+] as const;
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
+const LOGICAL_REPLAY_PATH = new RegExp(
+  String.raw`^(\d{4}-\d{2}-\d{2})\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([a-f0-9]{64})\.(?:html|json|txt)\.gz$`,
+  "u",
+);
+const PRIVATE_REPLAY_ROOT = "data/raw-html";
 const PRIVATE_PATH_PATTERNS = [
   /(^|\/)\.env(?:\.|$)/u,
   /(^|\/)var\//u,
@@ -332,9 +353,15 @@ function auditDatabase(
         if (RAW_HTML_COLUMN.test(column.name)) {
           results.push(finding("PUBLIC_DATABASE_RAW_HTML", "public-database", columnLocation, "Raw response body columns are not publishable"));
         }
+        const hasReplayHash = column.name === "response_path"
+          && columns.some(({ name }) => name === "response_sha256");
         const rows = database.prepare(
-          `SELECT ${quoteIdentifier(column.name)} AS value FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(column.name)} IS NOT NULL`,
-        ).iterate() as Iterable<{ value: unknown }>;
+          `SELECT ${quoteIdentifier(column.name)} AS value${hasReplayHash
+            ? `, ${quoteIdentifier("response_sha256")} AS replaySha`
+            : ""}
+           FROM ${quoteIdentifier(table)}
+           WHERE ${quoteIdentifier(column.name)} IS NOT NULL`,
+        ).iterate() as Iterable<{ value: unknown; replaySha?: unknown }>;
         for (const row of rows) {
           const value = typeof row.value === "string"
             ? Buffer.from(row.value)
@@ -354,10 +381,14 @@ function auditDatabase(
           results.push(...secretFindings(value, columnLocation, "public-database"));
           if (column.name === "response_path") {
             const normalized = normalizePath(text);
+            const match = LOGICAL_REPLAY_PATH.exec(text);
+            const privatePath = `${PRIVATE_REPLAY_ROOT}/${normalized}`;
             const safeReplay = !isAbsolute(text)
+              && normalized === text
               && !normalized.split("/").includes("..")
-              && (normalized.startsWith("data/raw-html/") || normalized.startsWith("var/replay/"));
-            if (!safeReplay || safeGit(root, ["ls-files", "--error-unmatch", normalized]) !== "") {
+              && match !== null
+              && (row.replaySha === undefined || match[3] === row.replaySha);
+            if (!safeReplay || safeGit(root, ["ls-files", "--error-unmatch", privatePath]) !== "") {
               results.push(finding("PUBLIC_DATABASE_REPLAY_PATH", "public-database", columnLocation, "Replay metadata must point only to an ignored untracked runtime path"));
             }
           }
@@ -569,6 +600,15 @@ function auditAcceptanceArtifact(content: Uint8Array, path: string): Publication
     if (path.endsWith("fresh-clone.json")) validateFreshCloneReceipt(parsed);
     else if (path.endsWith("alert-drill.json")) validatePublicDrillReceipt(parsed, "alert");
     else if (path.endsWith("backup-drill.json")) validatePublicDrillReceipt(parsed, "backup");
+    else if (/classification-review-v[1-9]\d*\.json$/u.test(path)) {
+      const result = ClassificationReviewResultSchema.parse(parsed);
+      const version = /classification-review-v([1-9]\d*)\.json$/u.exec(path)?.[1];
+      if (version === undefined || Number(version) !== result.classificationVersion
+        || result.sampleSize !== 200 || result.reviews.length !== 200
+        || result.overall.reviewed !== 200 || result.overall.precision === null) {
+        throw new Error("classification review");
+      }
+    }
     else if (path.endsWith("acceptance.json")) {
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("shape");
       const report = parsed as Record<string, unknown>;
@@ -609,7 +649,7 @@ function auditAcceptanceArtifact(content: Uint8Array, path: string): Publication
       if (!hasExactKeys(publication, publicationKeys)
         || publication.schemaVersion !== 1 || publication.status !== "pass"
         || publication.commit !== report.evaluatedCommit || !isTimestamp(publication.generatedAt)
-        || publication.workingTreeClean !== true
+        || typeof publication.workingTreeClean !== "boolean"
         || publicationArrays.some((key) => !Array.isArray(publication[key]) || (publication[key] as unknown[]).length !== 0)
         || typeof publication.readmeClaims !== "object" || publication.readmeClaims === null
         || Object.values(publication.readmeClaims as Record<string, unknown>).some((claim) => claim !== true)) {
@@ -797,6 +837,9 @@ export async function auditPublication(
   options: PublicationAuditOptions,
 ): Promise<PublicationAuditReport> {
   const root = realpathSync(options.projectRoot);
+  if (options.evaluatedCommit !== undefined && !COMMIT_PATTERN.test(options.evaluatedCommit)) {
+    throw new TypeError("Publication evaluated commit must be a full Git object ID");
+  }
   const paths = currentPaths(root);
   const modes = currentModes(root);
   const trackedSecrets: PublicationFinding[] = [];
@@ -864,7 +907,8 @@ export async function auditPublication(
     if (path === "data/exports/latest.json" || path === "analysis/output/latest.json") {
       publicDataFindings.push(...auditLatest(content, path, root, prospectiveFiles));
     }
-    if (/^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill)\.json)$/u.test(path)) {
+    if (options.requireAcceptanceEvidence === true
+      && /^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill|classification-review-v[1-9]\d*)\.json)$/u.test(path)) {
       publicDataFindings.push(...auditAcceptanceArtifact(content, path));
     }
   }
@@ -876,7 +920,8 @@ export async function auditPublication(
     if (path === "data/exports/latest.json" || path === "analysis/output/latest.json") {
       publicDataFindings.push(...auditLatest(content, path, root, worktreeFiles));
     }
-    if (/^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill)\.json)$/u.test(path)) {
+    if (options.requireAcceptanceEvidence === true
+      && /^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill|classification-review-v[1-9]\d*)\.json)$/u.test(path)) {
       publicDataFindings.push(...auditAcceptanceArtifact(content, path));
     }
   }
@@ -926,12 +971,39 @@ export async function auditPublication(
     const configuredDatabase = resolve(options.databasePath);
     if (existsSync(configuredDatabase)) {
       publicDataFindings.push(...auditDatabase(configuredDatabase, root));
+      if (options.requireAcceptanceEvidence === true) {
+        const database = new Database(configuredDatabase, { readonly: true, fileMustExist: true });
+        try {
+          for (const [path, content] of prospectiveFiles) {
+            if (!/^data\/acceptance\/evidence\/classification-review-v[1-9]\d*\.json$/u.test(path)) continue;
+            try {
+              validateClassificationReviewResult(
+                database,
+                JSON.parse(decodeUtf8(content) ?? ""),
+                { now: options.now(), requiredSize: 200 },
+              );
+            } catch {
+              publicDataFindings.push(finding(
+                "PUBLIC_CLASSIFICATION_REVIEW_BINDING",
+                "public-export",
+                path,
+                "Classification review result does not bind the published classification snapshot",
+              ));
+            }
+          }
+        } finally {
+          database.close();
+        }
+      }
     }
   } finally {
     rmSync(temporaryDatabases, { recursive: true, force: true });
   }
 
-  const requiredDocsMissing = REQUIRED_DOCS.filter((path) => (prospectiveFiles.get(path)?.length ?? 0) === 0);
+  const requiredPaths = options.requireAcceptanceEvidence === true
+    ? [...REQUIRED_DOCS, ...REQUIRED_ACCEPTANCE_EVIDENCE]
+    : [...REQUIRED_DOCS];
+  const requiredDocsMissing = requiredPaths.filter((path) => (prospectiveFiles.get(path)?.length ?? 0) === 0);
   const claims = readmeClaimsFromText(decodeUtf8(prospectiveFiles.get("README.md") ?? Buffer.alloc(0)) ?? "");
   const requiredClaims = [
     claims.researchPilot,
@@ -988,7 +1060,7 @@ export async function auditPublication(
   return {
     schemaVersion: 1,
     generatedAt: options.now().toISOString(),
-    commit: safeGit(root, ["rev-parse", "HEAD"]),
+    commit: options.evaluatedCommit ?? safeGit(root, ["rev-parse", "HEAD"]),
     status: findings.length === 0 ? "pass" : "fail",
     ...sections,
     requiredDocsMissing: [...requiredDocsMissing],

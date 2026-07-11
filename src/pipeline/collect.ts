@@ -5,19 +5,27 @@ import type Database from "better-sqlite3";
 
 import { executeExtraction } from "../collection/executor.js";
 import {
-  openDailyReplayReservoir,
-  type ReplayEvidenceRef,
+  reservoirSample,
+  writeReplayPayload,
+  type ReplayPayload,
 } from "../collection/replay.js";
 import {
+  admitReplaySlot,
+  admitRequest,
   createRun,
-  attemptedForDay,
+  DAILY_REPLAY_ADMISSION_BUDGET,
   finalizeRun,
   findActiveExtractionStrategy,
   insertObservation,
   insertRunFailure,
   listCollectionProducts,
+  remainingRequestAdmissions,
+  remainingReplaySlotAdmissions,
+  REQUEST_BUDGET_BY_STAGE,
+  type ReplayReference,
   type StoredProductRef,
 } from "../db/repositories.js";
+import { JsonlLogger } from "../ops/logger.js";
 import type { ExtractionStrategy } from "../strategies/schema.js";
 import type {
   ExtractionResult,
@@ -39,6 +47,7 @@ export interface CollectionPipelineDependencies {
   id?: () => string;
   random?: () => number;
   rawHtmlRoot?: string;
+  logDirectory?: string;
   politeDelayMs?: { min: number; max: number };
   sleep?: (milliseconds: number) => Promise<void>;
   clock?: () => number;
@@ -59,8 +68,7 @@ export interface CollectionRunSummary extends RunSummary {
   stoppedForBlocking: boolean;
 }
 
-const MAX_DAILY_PAGES = 2_000;
-const DAILY_REPLAY_SAMPLE = 20;
+const MAX_DAILY_PAGES = REQUEST_BUDGET_BY_STAGE.collect;
 const DEFAULT_BLOCKING_POLICY: BlockingBackoffPolicy = {
   hardFailureLimit: 3,
   transportFailureLimit: 3,
@@ -125,6 +133,7 @@ function createPoliteGate(
 interface BlockingController {
   beforeAttempt(): Promise<boolean>;
   completeAttempt(result: ExtractionResult): void;
+  cancelAttempt(): void;
   readonly stopped: boolean;
   readonly stopCategory: FailureCategory | null;
 }
@@ -255,6 +264,14 @@ function createBlockingController(
       if (provisionalStop && inFlight === 0) stopped = true;
       notifyStateChange();
     },
+    cancelAttempt(): void {
+      if (inFlight <= 0) {
+        throw new Error("Blocking controller cancelled an unstarted attempt");
+      }
+      inFlight -= 1;
+      if (provisionalStop && inFlight === 0) stopped = true;
+      notifyStateChange();
+    },
     get stopped(): boolean {
       return stopped;
     },
@@ -273,9 +290,11 @@ export async function runCollection(
   const startedAt = now().toISOString();
   const day = collectionDay(new Date(startedAt));
   const active = findActiveExtractionStrategy(dependencies.database, retailerId);
-  const remainingDaily = Math.max(
-    0,
-    MAX_DAILY_PAGES - attemptedForDay(dependencies.database, retailerId, day),
+  const remainingDaily = remainingRequestAdmissions(
+    dependencies.database,
+    retailerId,
+    day,
+    "collect",
   );
   const limit = Math.min(
     remainingDaily,
@@ -312,6 +331,35 @@ export async function runCollection(
     strategyVersion: active.version,
     startedAt,
   });
+  const logger = dependencies.logDirectory === undefined
+    ? null
+    : new JsonlLogger({
+        directory: dependencies.logDirectory,
+        basename: `collect-${runId}`,
+        now,
+      });
+  const loggingErrors: string[] = [];
+  const log = async (
+    level: "info" | "warning" | "error",
+    event: string,
+    fields: unknown,
+  ): Promise<void> => {
+    if (logger === null) return;
+    try {
+      await logger.log(level, event, fields);
+    } catch (error) {
+      loggingErrors.push(error instanceof Error ? error.message : "Run logging failed");
+    }
+  };
+  await log("info", "run.started", {
+    runId,
+    retailerId,
+    stage: "collect",
+    strategyId: active.id,
+    strategyVersion: active.version,
+    planned: products.length,
+    dailyRemainingBeforeRun: remainingDaily,
+  });
 
   let finishedAt = startedAt;
   let status = terminalStatus(0, 0);
@@ -319,15 +367,27 @@ export async function runCollection(
   let pipelineFailed = false;
   let stopped = false;
   try {
+    if (loggingErrors.length > 0) {
+      throw new Error(loggingErrors[0] ?? "Collection run logging initialization failed");
+    }
     const execute = dependencies.execute ?? executeExtraction;
     const random = dependencies.random ?? Math.random;
     const replayRoot = resolve(dependencies.rawHtmlRoot ?? "data/raw-html");
     const persistenceErrors: string[] = [];
-    const replayReservoir = await openDailyReplayReservoir(
-      replayRoot,
-      day,
+    const replayCapacity = remainingReplaySlotAdmissions(
+      dependencies.database,
       retailerId,
-      { size: DAILY_REPLAY_SAMPLE, random },
+      day,
+    );
+    const replayProductIds = new Set(
+      (replayCapacity === 0
+        ? []
+        : reservoirSample(
+            products,
+            Math.min(replayCapacity, DAILY_REPLAY_ADMISSION_BUDGET),
+            random,
+          ))
+        .map(({ id }) => id),
     );
     const sleep = dependencies.sleep ?? ((milliseconds: number) =>
       new Promise<void>((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
@@ -344,15 +404,17 @@ export async function runCollection(
       clock,
       politeGate,
     );
+    let requestBudgetExhausted = false;
 
     const persistAttempt = async (
       pending: PendingHtmlAttempt,
-    ): Promise<ReplayEvidenceRef | undefined> => {
+      replay?: ReplayReference,
+    ): Promise<ExtractionResult> => {
       let { result } = pending;
 
       if (result.ok === true && result.fields !== undefined) {
         try {
-          const id = insertObservation(dependencies.database, {
+          insertObservation(dependencies.database, {
             product: pending.product,
             runId,
             result,
@@ -360,17 +422,27 @@ export async function runCollection(
             collectionDay: day,
             strategyId: active.id,
             strategyVersion: active.version,
+            ...(replay === undefined ? {} : { replay }),
           });
           counters.ok += 1;
-          return { kind: "observation", id };
+          return result;
         } catch (error) {
           result = rejected(error);
         }
+      } else if (result.failure === undefined) {
+        result = {
+          ok: false,
+          failure: {
+            category: "unknown",
+            message: "Extraction returned neither fields nor failure",
+            responded: false,
+          },
+        };
       }
 
       counters.failed += 1;
       try {
-        const id = insertRunFailure(dependencies.database, {
+        insertRunFailure(dependencies.database, {
           runId,
           retailerId,
           product: pending.product,
@@ -382,21 +454,40 @@ export async function runCollection(
           occurredAt: now().toISOString(),
           strategyId: active.id,
           strategyVersion: active.version,
+          ...(replay === undefined ? {} : { replay }),
         });
-        return { kind: "failure", id };
       } catch (error) {
         persistenceErrors.push(
           error instanceof Error ? error.message : "Failure evidence persistence failed",
         );
-        return undefined;
       }
+      return result;
     };
 
     await (dependencies.concurrentMap ?? mapConcurrent)(
       products,
       productionConcurrency(dependencies.concurrency),
       async (product): Promise<void> => {
+        if (requestBudgetExhausted) return;
         if (!await blockingController.beforeAttempt()) return;
+        let admitted = false;
+        try {
+          admitted = admitRequest(dependencies.database, {
+            runId,
+            retailerId,
+            collectionDay: day,
+            stage: "collect",
+            admittedAt: now().toISOString(),
+          }).admitted;
+        } catch (error) {
+          blockingController.cancelAttempt();
+          throw error;
+        }
+        if (!admitted) {
+          requestBudgetExhausted = true;
+          blockingController.cancelAttempt();
+          return;
+        }
         counters.attempted += 1;
         let result: ExtractionResult;
         try {
@@ -405,20 +496,48 @@ export async function runCollection(
           result = rejected(error);
         }
         const pending = { product, result };
-        const html = result.html;
-        let evidence: ReplayEvidenceRef | undefined;
-        try {
-          evidence = await persistAttempt(pending);
-        } finally {
-          blockingController.completeAttempt(result);
+        const payload: ReplayPayload | undefined = result.replay
+          ?? (result.html === undefined
+            ? undefined
+            : { body: result.html, mediaType: "text/html" });
+        let replay: ReplayReference | undefined;
+        if (payload !== undefined && replayProductIds.has(product.id)) {
+          try {
+            const replayAdmitted = admitReplaySlot(dependencies.database, {
+              runId,
+              retailerId,
+              productId: product.id,
+              collectionDay: day,
+              admittedAt: now().toISOString(),
+            }).admitted;
+            if (replayAdmitted) {
+              const artifact = await writeReplayPayload(
+                payload,
+                replayRoot,
+                day,
+                retailerId,
+              );
+              replay = { path: artifact.path, sha256: artifact.sha256 };
+            }
+          } catch (error) {
+            persistenceErrors.push(
+              error instanceof Error ? error.message : "Replay sampling failed",
+            );
+          }
         }
-        if (html === undefined || evidence === undefined) return;
+        let effectiveResult = result;
         try {
-          await replayReservoir.consider(html, evidence);
-        } catch (error) {
-          persistenceErrors.push(
-            error instanceof Error ? error.message : "Replay sampling failed",
-          );
+          effectiveResult = await persistAttempt(pending, replay);
+          await log(effectiveResult.ok ? "info" : "warning", "attempt.finished", {
+            runId,
+            retailerId,
+            productId: product.id,
+            ok: effectiveResult.ok,
+            category: effectiveResult.failure?.category ?? null,
+            replayed: replay !== undefined,
+          });
+        } finally {
+          blockingController.completeAttempt(effectiveResult);
         }
       },
     );
@@ -430,6 +549,7 @@ export async function runCollection(
       };
     }
     if (persistenceErrors.length > 0) {
+      pipelineFailed = true;
       finalError = { category: "unknown", message: persistenceErrors[0] ?? "Persistence failed" };
     }
   } catch (error) {
@@ -460,6 +580,32 @@ export async function runCollection(
       ? counters.ok > 0 ? "partial" : "failed"
       : terminalStatus(counters.ok, counters.failed);
     const skipped = Math.max(0, products.length - counters.attempted);
+    if (loggingErrors.length > 0) {
+      pipelineFailed = true;
+      finalError ??= {
+        category: "unknown",
+        message: loggingErrors[0] ?? "Run logging failed",
+      };
+      status = counters.ok > 0 ? "partial" : "failed";
+    }
+    await log(status === "completed" ? "info" : "warning", "run.finished", {
+      runId,
+      retailerId,
+      stage: "collect",
+      status,
+      ...counters,
+      planned: products.length,
+      skipped,
+      stoppedForBlocking: stopped,
+    });
+    if (loggingErrors.length > 0) {
+      pipelineFailed = true;
+      finalError ??= {
+        category: "unknown",
+        message: loggingErrors[0] ?? "Run logging failed",
+      };
+      status = counters.ok > 0 ? "partial" : "failed";
+    }
     finalizeRun(
       dependencies.database,
       runId,

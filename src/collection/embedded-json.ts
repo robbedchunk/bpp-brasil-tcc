@@ -11,6 +11,7 @@ import {
   renderRequestTemplate,
   type ExtractionExecutionContext,
 } from "./http.js";
+import { attachPrivateReplay } from "./private-replay.js";
 
 const MAX_JSON_LD_DEPTH = 64;
 const MAX_JSON_LD_NODES = 10_000;
@@ -21,13 +22,15 @@ function failure(
   statusCode?: number,
   html?: string,
 ): ExtractionResult {
-  return {
+  const result: ExtractionResult = {
     ok: false,
     failure: statusCode === undefined
       ? { category: "parse", message, responded }
       : { category: "parse", message, responded, statusCode },
-    ...(html === undefined ? {} : { html }),
   };
+  return html === undefined
+    ? result
+    : attachPrivateReplay(result, { body: html, mediaType: "text/html" });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -218,20 +221,22 @@ export async function executeEmbeddedJson(
   for (const candidate of candidates) {
     const mapped = mapJsonExtractionFields(candidate, strategy.fields);
     if (mapped.ok) {
-      return { ...mapped, html: fetched.response.body };
+      return attachPrivateReplay(
+        { ...mapped },
+        { body: fetched.response.body, mediaType: "text/html" },
+      );
     }
     firstMappingFailure ??= mapped;
   }
 
   if (firstMappingFailure?.failure !== undefined) {
-    return {
+    return attachPrivateReplay({
       ok: false,
       failure: {
         ...firstMappingFailure.failure,
         statusCode: fetched.response.status,
       },
-      html: fetched.response.body,
-    };
+    }, { body: fetched.response.body, mediaType: "text/html" });
   }
   return failure(
     "Embedded JSON fields could not be mapped",

@@ -98,8 +98,10 @@ function seedProducts(database: ReturnType<typeof openDatabase>, count: number):
   seedRetailer(database);
   const insert = database.prepare(
     `INSERT INTO products
-       (id, retailer_id, canonical_url, title, brand, source_category, first_seen, last_seen)
-     VALUES (?, 'retailer', ?, ?, ?, ?, '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')`,
+       (id, retailer_id, canonical_url, title, brand, source_category,
+        descriptive_title, first_seen, last_seen)
+     VALUES (?, 'retailer', ?, ?, ?, ?, 1,
+             '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')`,
   );
   return Array.from({ length: count }, (_, index) => {
     const id = `product-${String(index + 1).padStart(3, "0")}`;

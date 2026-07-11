@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildDailyIndex } from "../../src/index/aggregate.js";
 import {
+  buildSeededDailyIndex as buildDailyIndex,
   indexDatabase,
   seedItem,
   seedObservation,

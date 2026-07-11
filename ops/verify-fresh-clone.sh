@@ -33,7 +33,41 @@ source "$PROJECT_ROOT/ops/fresh-clone-environment.sh"
 sanitize_fresh_clone_environment "$home_root"
 git clone --no-local --quiet "$PROJECT_ROOT" "$clone_root"
 
-source_commit="$(git -C "$clone_root" rev-parse HEAD)"
+resolve_evaluated_commit() {
+  local repository="$1"
+  local candidate
+  candidate="$(git -C "$repository" rev-parse HEAD)"
+  while true; do
+    local ancestry=()
+    local paths=()
+    local evidence_only=1
+    read -r -a ancestry <<<"$(git -C "$repository" rev-list --parents -n 1 "$candidate")"
+    mapfile -t paths < <(git -C "$repository" diff-tree --root --no-commit-id --name-only -r "$candidate")
+    if [[ "${#ancestry[@]}" -ne 2 || "${#paths[@]}" -eq 0 ]]; then
+      break
+    fi
+    for path in "${paths[@]}"; do
+      if [[ "$path" =~ ^data/acceptance/evidence/classification-review-v[1-9][0-9]*\.json$ ]]; then
+        continue
+      fi
+      case "$path" in
+        data/acceptance/acceptance.json|\
+        data/acceptance/evidence/alert-drill.json|\
+        data/acceptance/evidence/backup-drill.json|\
+        data/acceptance/evidence/fresh-clone.json|\
+        docs/acceptance-report.md) ;;
+        *) evidence_only=0 ;;
+      esac
+    done
+    if [[ "$evidence_only" -ne 1 ]]; then
+      break
+    fi
+    candidate="${ancestry[1]}"
+  done
+  printf '%s\n' "$candidate"
+}
+
+source_commit="$(resolve_evaluated_commit "$clone_root")"
 export PROJECT_ROOT="$clone_root"
 export DATABASE_PATH=var/acceptance/precos.sqlite
 export TZ=America/Sao_Paulo
@@ -54,7 +88,7 @@ run_check() {
 
 run_check setup bash ops/setup.sh
 run_check smoke bash ops/smoke.sh
-run_check publication npm run audit:publication -- --json
+run_check publication npm run audit:publication -- --json --implementation-cut
 run_check analysis npm run analysis
 
 while IFS= read -r -d '' database_absolute; do

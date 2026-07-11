@@ -19,6 +19,7 @@ import Database from "better-sqlite3";
 
 import { sendAlertWithReceipt, type AlertSinkOptions } from "./alerts.js";
 import { checkHeartbeat } from "./heartbeat.js";
+import { resolveAcceptanceEvaluatedCommit } from "./evidence-cut.js";
 
 export type DrillStatus = "pass" | "pending" | "fail";
 
@@ -166,6 +167,7 @@ const CRITICAL_TABLES = [
   "exploration_runs",
   "exploration_attempts",
   "healing_events",
+  "retailer_state_events",
   "heartbeats",
   "cost_ledger",
 ] as const;
@@ -180,11 +182,7 @@ function implementationSha256(): string {
 
 function commit(root: string): string {
   try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    return resolveAcceptanceEvaluatedCommit(root);
   } catch {
     return "0".repeat(40);
   }

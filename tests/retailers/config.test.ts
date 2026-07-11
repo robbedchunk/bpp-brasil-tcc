@@ -1,18 +1,186 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { decideFoodAtHomeScope } from "../../src/catalog/scope.js";
 import { executeExtraction } from "../../src/collection/executor.js";
 import { openDatabase } from "../../src/db/database.js";
+import { upsertDiscoveredProduct } from "../../src/db/repositories.js";
 import {
   loadRetailerConfigs,
-  registerRetailerConfigs,
+  registerRetailerConfigs as registerRetailerConfigsWithEvidence,
+  type RetailerConfig,
   validateFixtureStrategy,
 } from "../../src/retailers/config.js";
+import {
+  attestStrategyValidationEvidence,
+  evidenceValueSha256,
+  strategyEvidenceSha256,
+  validationRefSha256,
+  validationReceiptSha256,
+  validationSampleSetSha256,
+} from "../../src/strategies/validation-evidence.js";
 
+const {
+  privateKey: TEST_SIGNING_PRIVATE_KEY,
+  publicKey: TEST_VERIFICATION_PUBLIC_KEY,
+} = generateKeyPairSync("ed25519");
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 afterEach(() => databases.splice(0).forEach((database) => database.close()));
+
+function testReceipt(config: RetailerConfig, purpose: "discovery" | "extraction") {
+  const strategy = config[purpose];
+  const validation = config.validation[purpose];
+  const sellerId = purpose === "extraction" && strategy.tier === "api"
+    ? strategy.regionalContext?.catalogSellerId ?? null
+    : null;
+  const samples = Array.from({ length: 30 }, (_value, index) => {
+    const externalId = `validation-${index}`;
+    const ref = {
+      canonicalUrl: `https://${strategy.allowedDomains[0]}/validation/${index}`,
+      externalId,
+      sourceCategory: "Mercearia",
+    };
+    const request = {
+      method: "GET" as const,
+      url: ref.canonicalUrl,
+      bodySha256: null,
+    };
+    const valid = index < validation.successes;
+    const outcome = valid
+      ? purpose === "extraction"
+        ? {
+            status: "valid" as const,
+            fields: {
+              title: `Product ${index}`,
+              brand: "Brand",
+              price: 10,
+              promoPrice: 9,
+              unit: "1 kg",
+              available: true,
+            },
+          }
+        : { status: "valid" as const, fields: null }
+      : {
+          status: "invalid" as const,
+          failure: {
+            category: "invalid-price" as const,
+            message: "No positive price",
+            responded: true,
+            statusCode: 200,
+          },
+        };
+    return {
+      ordinal: index + 1,
+      startedOffsetMs: index * 500,
+      durationMs: 100 + index,
+      ref,
+      refSha256: validationRefSha256(ref),
+      request,
+      requestSha256: evidenceValueSha256(request),
+      response: {
+        finalUrl: request.url,
+        statusCode: 200,
+        contentType: "application/json",
+        bodyBytes: 100 + index,
+        bodySha256: evidenceValueSha256({ response: purpose, index }),
+      },
+      outcome,
+      outcomeSha256: evidenceValueSha256(outcome),
+      validatedFacts: {
+        returnedProductId: externalId,
+        catalogSellerId: sellerId,
+        catalogSellerMatchCount: sellerId === null ? null : 1,
+      },
+    };
+  });
+  const elapsedMs = 29 * 500 + 129;
+  const finishedAt = validation.validatedAt ?? "2026-07-11T06:00:00.000Z";
+  const startedAt = new Date(Date.parse(finishedAt) - elapsedMs).toISOString();
+  return attestStrategyValidationEvidence({
+    schemaVersion: 2,
+    retailerId: config.id,
+    purpose,
+    strategyVersion: config.strategyVersions[purpose],
+    strategySha256: strategyEvidenceSha256(strategy),
+    validatedAt: validation.validatedAt,
+    executor: {
+      program: "scripts/validate-strategies.ts",
+      version: 1,
+      mode: "trusted-live-host",
+      runtime: "node-v24.18.0",
+      sourceCommit: "a".repeat(40),
+      playwrightVersion: "1.61.1",
+      chromiumVersion: "Chromium 141.0.0.0",
+      sequentialPacingMs: 500,
+      timeoutMs: 15_000,
+      maxBodyBytes: 2_000_000,
+      startedAt,
+      finishedAt,
+      elapsedMs,
+      requestHeadersStored: false,
+      responseBodiesStored: false,
+    },
+    attempted: 30,
+    valid: validation.successes,
+    score: validation.score,
+    activatable: true,
+    sampleSetSha256: validationSampleSetSha256(samples),
+    samples,
+  }, TEST_SIGNING_PRIVATE_KEY);
+}
+
+function registerRetailerConfigs(
+  database: ReturnType<typeof openDatabase>,
+  configs: readonly RetailerConfig[],
+): void {
+  const bundle = testActivationBundle(configs);
+  registerRetailerConfigsWithEvidence(database, bundle.configs, {
+    verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+    readValidationReceipt: (absolutePath) => {
+      for (const [path, receipt] of bundle.receipts) {
+        if (absolutePath.endsWith(path)) return receipt;
+      }
+      throw new Error(`Unexpected validation receipt ${absolutePath}`);
+    },
+  });
+}
+
+function testActivationBundle(configs: readonly RetailerConfig[]): {
+  configs: RetailerConfig[];
+  receipts: Map<string, ReturnType<typeof testReceipt>>;
+} {
+  const receipts = new Map<string, ReturnType<typeof testReceipt>>();
+  const boundConfigs = configs.map((config) => {
+    if (!config.active) return config;
+    const validation = { ...config.validation };
+    for (const purpose of ["discovery", "extraction"] as const) {
+      const receipt = testReceipt(config, purpose);
+      const path = config.validation[purpose].receiptPath;
+      if (path === null) throw new Error("Active test config lacks a receipt path");
+      receipts.set(path, receipt);
+      validation[purpose] = {
+        ...validation[purpose],
+        receiptSha256: validationReceiptSha256(receipt),
+      };
+    }
+    return { ...config, validation };
+  });
+  return { configs: boundConfigs, receipts };
+}
+
+function receiptReader(receipts: Map<string, ReturnType<typeof testReceipt>>) {
+  return (absolutePath: string): unknown => {
+    for (const [path, receipt] of receipts) {
+      if (absolutePath.endsWith(path)) return receipt;
+    }
+    throw new Error(`Unexpected validation receipt ${absolutePath}`);
+  };
+}
 
 describe("live retailer configuration", () => {
   it("loads the five named retailers with closed strategies and CEP evidence", () => {
@@ -30,7 +198,7 @@ describe("live retailer configuration", () => {
       expect(config.cep).toMatch(/^\d{5}-\d{3}$/u);
       expect(config.discovery.purpose).toBe("discovery");
       expect(config.extraction.purpose).toBe("extraction");
-      expect(config.politeDelayMs.min).toBeGreaterThanOrEqual(500);
+      expect(config.politeDelayMs.min).toBeGreaterThanOrEqual(200);
       expect(config.politeDelayMs.max).toBeGreaterThanOrEqual(config.politeDelayMs.min);
       expect(config.fixtureProvenance.length).toBeGreaterThanOrEqual(2);
       expect(config.strategyVersions.discovery).toBeGreaterThan(0);
@@ -59,6 +227,56 @@ describe("live retailer configuration", () => {
       active: false,
       backupRank: 1,
     });
+  });
+
+  it("declares broad food-at-home discovery instead of narrow search defaults", () => {
+    const active = loadRetailerConfigs("retailers").filter(({ active }) => active);
+    for (const config of active) {
+      expect(config.discovery.maxProducts).toBeGreaterThanOrEqual(1_500);
+      expect(config.discovery.maxProducts).toBeLessThanOrEqual(3_000);
+      const serialized = JSON.stringify(config.discovery);
+      expect(serialized).not.toMatch(/"ft":"cafe"|"terms":"arroz"/iu);
+      if (config.discovery.tier === "api") {
+        expect(config.discovery.segments?.length).toBeGreaterThan(0);
+        const allocation = config.discovery.segments?.reduce(
+          (sum, segment) => sum + segment.maxProducts,
+          0,
+        ) ?? 0;
+        expect(allocation).toBe(config.discovery.maxProducts);
+        expect(
+          config.discovery.refFields.sourceCategory !== undefined
+          || config.discovery.segments?.every(({ sourceCategory }) =>
+            sourceCategory !== undefined),
+        ).toBe(true);
+      } else if (config.discovery.tier === "dom-crawl") {
+        expect(config.discovery.startUrls.length).toBeGreaterThanOrEqual(10);
+        expect(config.discovery.paginationSelectors).toBeDefined();
+      }
+    }
+  });
+
+  it("keeps the four-retailer worst-case daily start-spacing budget under one hour", () => {
+    const active = loadRetailerConfigs("retailers").filter(({ active }) => active);
+    const dailyPageCap = 2_000;
+    const worstCaseSpacingMs = active.reduce(
+      (total, config) => total + ((dailyPageCap - 1) * config.politeDelayMs.max),
+      0,
+    );
+    expect(worstCaseSpacingMs).toBeLessThan(60 * 60 * 1_000);
+  });
+
+  it("keeps every configured St Marche collection inside food-at-home scope", () => {
+    const config = loadRetailerConfigs("retailers").find(({ id }) => id === "st-marche");
+    expect(config?.discovery.tier).toBe("dom-crawl");
+    if (config?.discovery.tier !== "dom-crawl") return;
+    for (const startUrl of config.discovery.startUrls) {
+      const slug = new URL(startUrl).pathname.split("/").filter(Boolean).at(-1)!;
+      expect(decideFoodAtHomeScope({
+        canonicalUrl: `https://marche.com.br/collections/${slug}/products/fixture`,
+        externalId: null,
+        sourceCategory: slug.replaceAll("-", " "),
+      })).toMatchObject({ inScope: true });
+    }
   });
 
   it("validates sanitized saved fixtures without network access", async () => {
@@ -115,6 +333,44 @@ describe("live retailer configuration", () => {
     });
   });
 
+  it("binds Carrefour's regional offer to the validated catalog seller", async () => {
+    const config = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "carrefour");
+    expect(config?.extraction.tier).toBe("api");
+    if (config === undefined || config.extraction.tier !== "api") return;
+    expect(config.extraction.regionalContext).toMatchObject({
+      regionId: "v2.ED060FE4CF8359428D52ABC52B3F1E1E",
+      catalogSellerId: "1",
+    });
+    const [regional, plain, mutated] = await Promise.all([
+      readFile(resolve("tests/fixtures/carrefour/catalog-product.json"), "utf8"),
+      readFile(resolve("tests/fixtures/carrefour/catalog-product-plain.json"), "utf8"),
+      readFile(resolve("tests/fixtures/carrefour/mutated-product.json"), "utf8"),
+    ]);
+    const extract = (body: string) => executeExtraction(
+      config.extraction,
+      config.fixtureRef,
+      { fetch: async () => new Response(body) },
+    );
+
+    const [regionalResult, plainResult, mutatedResult] = await Promise.all([
+      extract(regional),
+      extract(plain),
+      extract(mutated),
+    ]);
+
+    expect(regionalResult).toMatchObject({ ok: true, fields: { price: 104.99 } });
+    expect(plainResult).toMatchObject({ ok: true, fields: { price: 53.99 } });
+    expect(mutatedResult).toMatchObject({
+      ok: false,
+      failure: {
+        category: "missing-fields",
+        message: expect.stringMatching(/seller|exactly once/iu),
+        responded: true,
+      },
+    });
+  });
+
   it("registers retailers and immutable versioned strategies idempotently", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
@@ -137,9 +393,139 @@ describe("live retailer configuration", () => {
        WHERE retailer_id = 'pao-de-acucar' ORDER BY purpose`,
     ).all() as Array<{ purpose: string; provenance: string }>;
     expect(provenance.find(({ purpose }) => purpose === "discovery")?.provenance)
-      .toMatch(/official store-61 response/i);
+      .toMatch(/official store-61 alimentos category page/i);
     expect(provenance.find(({ purpose }) => purpose === "extraction")?.provenance)
       .toMatch(/bestPrices/i);
+  });
+
+  it("rejects activation when the receipt aggregate differs from config metadata", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "extra-mercado");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    const discoveryReceipt = testReceipt(current, "discovery");
+    const extractionReceipt = testReceipt(current, "extraction");
+    const changed = {
+      ...current,
+      validation: {
+        ...current.validation,
+        extraction: {
+          ...current.validation.extraction,
+          successes: 29,
+          score: 29 / 30,
+          receiptSha256: validationReceiptSha256(extractionReceipt),
+        },
+        discovery: {
+          ...current.validation.discovery,
+          receiptSha256: validationReceiptSha256(discoveryReceipt),
+        },
+      },
+    };
+
+    expect(() => registerRetailerConfigsWithEvidence(database, [changed], {
+      verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+      readValidationReceipt: (path) => path.includes("-extraction-")
+        ? extractionReceipt
+        : discoveryReceipt,
+    })).toThrow(/aggregate/iu);
+    expect(database.prepare("SELECT COUNT(*) AS n FROM retailers").get())
+      .toEqual({ n: 0 });
+  });
+
+  it("fails activation for a missing or wrong verification public key", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "extra-mercado");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    const bundle = testActivationBundle([current]);
+    const readValidationReceipt = receiptReader(bundle.receipts);
+    const temporary = mkdtempSync(join(tmpdir(), "validation-key-test-"));
+    try {
+      expect(() => registerRetailerConfigsWithEvidence(database, bundle.configs, {
+        verificationPublicKeyPath: join(temporary, "missing.pem"),
+        readValidationReceipt,
+      })).toThrow();
+      expect(() => registerRetailerConfigsWithEvidence(database, bundle.configs, {
+        verificationPublicKey: generateKeyPairSync("ed25519").publicKey,
+        readValidationReceipt,
+      })).toThrow(/attestation/iu);
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+    expect(database.prepare("SELECT COUNT(*) AS n FROM retailers").get())
+      .toEqual({ n: 0 });
+  });
+
+  it("rejects replacement of immutable receipt evidence for an activated version", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "extra-mercado");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    const bundle = testActivationBundle([current]);
+    registerRetailerConfigsWithEvidence(database, bundle.configs, {
+      verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+      readValidationReceipt: receiptReader(bundle.receipts),
+    });
+    const path = current.validation.extraction.receiptPath;
+    if (path === null) throw new Error("Missing extraction receipt path");
+    const original = bundle.receipts.get(path);
+    if (original === undefined) throw new Error("Missing extraction receipt");
+    const first = original.samples[0]!;
+    const samples = [{ ...first, durationMs: first.durationMs + 1 }, ...original.samples.slice(1)];
+    const { attestation: _attestation, ...payload } = original;
+    const replacement = attestStrategyValidationEvidence({
+      ...payload,
+      samples,
+      sampleSetSha256: validationSampleSetSha256(samples),
+    }, TEST_SIGNING_PRIVATE_KEY);
+    const replacementConfig: RetailerConfig = {
+      ...bundle.configs[0]!,
+      validation: {
+        ...bundle.configs[0]!.validation,
+        extraction: {
+          ...bundle.configs[0]!.validation.extraction,
+          receiptSha256: validationReceiptSha256(replacement),
+        },
+      },
+    };
+    const replacements = new Map(bundle.receipts);
+    replacements.set(path, replacement);
+
+    expect(() => registerRetailerConfigsWithEvidence(database, [replacementConfig], {
+      verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+      readValidationReceipt: receiptReader(replacements),
+    })).toThrow(/immutable validation evidence|successor version/iu);
+  });
+
+  it("keeps a receipt re-registerable after a sampled product becomes inactive and out of scope", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    const current = loadRetailerConfigs("retailers")
+      .find(({ id }) => id === "extra-mercado");
+    expect(current).toBeDefined();
+    if (current === undefined) return;
+    registerRetailerConfigs(database, [current]);
+    const receipt = testReceipt(current, "discovery");
+    for (const sample of receipt.samples) {
+      upsertDiscoveredProduct(
+        database,
+        current.id,
+        sample.ref,
+        "2026-07-11T06:00:00.000Z",
+      );
+    }
+    database.prepare(
+      `UPDATE products SET active = 0, in_scope = 0
+       WHERE retailer_id = ? AND canonical_url = ?`,
+    ).run(current.id, receipt.samples[0]?.ref.canonicalUrl);
+
+    expect(() => registerRetailerConfigs(database, [current])).not.toThrow();
   });
 
   it("retires a previous active strategy when a validated append-only version is registered", () => {

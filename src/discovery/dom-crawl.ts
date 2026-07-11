@@ -35,6 +35,19 @@ function pageFailure(status: number): DiscoveryFailureError {
   });
 }
 
+function collectionSourceCategory(url: string): string | null {
+  try {
+    const segments = new URL(url).pathname.split("/").filter(Boolean);
+    const collections = segments.findIndex((segment) => segment === "collections");
+    const slug = collections < 0 ? undefined : segments[collections + 1];
+    return slug === undefined || slug.trim() === ""
+      ? null
+      : decodeURIComponent(slug).replace(/[-_]+/gu, " ").trim();
+  } catch {
+    return null;
+  }
+}
+
 function browserFailure(error: unknown): DiscoveryFailureError {
   if (error instanceof DiscoveryFailureError) return error;
   const message = error instanceof Error ? error.message : String(error) || "Browser request failed";
@@ -118,6 +131,7 @@ export async function discoverDomCrawl(
       seenPages.add(pageUrl);
       session.deniedUrl = null;
       session.policyDenied = false;
+      let sourceCategory: string | null = null;
 
       try {
         await context.beforeRequest?.();
@@ -157,6 +171,7 @@ export async function discoverDomCrawl(
         if (!response.ok()) throw pageFailure(response.status());
         assertNavigationAllowed(session.page.url(), pageUrl, strategy.allowedDomains);
         const finalUrl = session.finalDocumentUrl ?? session.page.url();
+        sourceCategory = collectionSourceCategory(finalUrl);
         if (!hasRobotsPolicy(context, finalUrl) || !robotsCanFetch(context, finalUrl)) {
           throw new DiscoveryFailureError({
             category: "domain-denied",
@@ -196,8 +211,16 @@ export async function discoverDomCrawl(
         if (!robotsCanFetch(context, canonicalUrl)) continue;
         if (seenProducts.has(canonicalUrl)) continue;
         seenProducts.add(canonicalUrl);
-        refs.push({ canonicalUrl, externalId: null, sourceCategory: null });
-        if (refs.length >= strategy.maxProducts) return refs;
+        const ref = { canonicalUrl, externalId: null, sourceCategory };
+        refs.push(ref);
+        context.reportRefDocument?.(
+          ref,
+          session.finalDocumentUrl ?? session.page.url(),
+        );
+        if (refs.length >= strategy.maxProducts) {
+          context.reportCompletion?.({ complete: false, reason: "product_cap_reached" });
+          return refs;
+        }
       }
 
       if (strategy.paginationSelectors !== undefined) {
@@ -224,6 +247,18 @@ export async function discoverDomCrawl(
       }
     }
 
+    if (refs.length === 0) {
+      throw new DiscoveryFailureError({
+        category: "parse",
+        message: "DOM discovery completed without any valid product references",
+        responded: true,
+      });
+    }
+    const complete = strategy.paginationSelectors !== undefined && queued.length === 0;
+    context.reportCompletion?.({
+      complete,
+      reason: complete ? "source_exhausted" : "page_cap_reached",
+    });
     return refs;
     });
   } catch (error) {

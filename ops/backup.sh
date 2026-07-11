@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATABASE_PATH="${DATABASE_PATH:-$PROJECT_ROOT/data/precos.sqlite}"
 BACKUP_DIRECTORY="${BACKUP_DIRECTORY:-$PROJECT_ROOT/var/backups}"
+ATTESTATION_KEY_PATH="${ATTESTATION_KEY_PATH:-$PROJECT_ROOT/var/operations/validation-attestation-private.pem}"
 SELF_TEST=0
 RETENTION_SELF_TEST=0
 
@@ -35,6 +36,8 @@ rotate_backups() {
   local now_epoch="${2:-$(date +%s)}"
   local retention_cutoff=$((now_epoch - 14 * 24 * 60 * 60))
   find "$directory" -type f -name 'precos-*.sqlite' \
+    ! -newermt "@${retention_cutoff}" -delete
+  find "$directory" -type f -name 'validation-attestation-private-*.pem' \
     ! -newermt "@${retention_cutoff}" -delete
 }
 
@@ -73,5 +76,14 @@ install -d -m 0700 "$BACKUP_DIRECTORY"
 timestamp="$(TZ=America/Sao_Paulo date +%Y%m%dT%H%M%S)"
 destination="$BACKUP_DIRECTORY/precos-$timestamp-$$.sqlite"
 backup_database "$DATABASE_PATH" "$destination"
+if [[ -f "$ATTESTATION_KEY_PATH" ]]; then
+  if [[ "$(stat -c '%a' "$ATTESTATION_KEY_PATH")" != "600" ]] \
+    || ! grep -q -- 'BEGIN PRIVATE KEY' "$ATTESTATION_KEY_PATH"; then
+    printf 'backup: validation signing key must be a mode-0600 private PEM file\n' >&2
+    exit 1
+  fi
+  install -m 0600 "$ATTESTATION_KEY_PATH" \
+    "$BACKUP_DIRECTORY/validation-attestation-private-$timestamp-$$.pem"
+fi
 rotate_backups "$BACKUP_DIRECTORY"
 printf 'backup: %s\n' "$destination"

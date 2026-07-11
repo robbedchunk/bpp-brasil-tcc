@@ -1,9 +1,11 @@
 import type Database from "better-sqlite3";
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, type KeyObject } from "node:crypto";
 import { Decimal } from "decimal.js";
 
+import type { CatalogScopeDecision } from "../catalog/scope.js";
 import { normalizeUnit } from "../normalize/unit.js";
+import { isDescriptiveProductTitle } from "../normalize/title.js";
 import {
   DiscoveryStrategySchema,
   ExtractionStrategySchema,
@@ -18,6 +20,12 @@ import type {
   FailureCategory,
   ProductRef,
 } from "../strategies/types.js";
+import {
+  strategyEvidenceSha256,
+  validateStrategyEvidence,
+  validationReceiptSha256,
+  type StrategyValidationEvidence,
+} from "../strategies/validation-evidence.js";
 
 export interface ActiveStrategy<T> {
   id: string;
@@ -73,6 +81,7 @@ export interface RetailerExplorationContext {
   baseUrl: string;
   allowedDomains: string[];
   previousStrategy: ActiveStrategy<Strategy> | null;
+  nextStrategyVersion: number;
 }
 
 export interface ExplorationAttemptEvidence {
@@ -114,6 +123,12 @@ export interface GeneratedStrategyActivationInput {
   validationSampleSize: number;
   validationSuccesses: number;
   validationScore: number;
+  validationEvidence: {
+    receiptPath: string;
+    receiptSha256: string;
+    evidence: StrategyValidationEvidence;
+    verificationPublicKey: KeyObject;
+  };
   activatedAt: string;
 }
 
@@ -121,6 +136,7 @@ export interface StoredRunHealth {
   id: string;
   retailerId: string;
   strategyId: string | null;
+  collectionDay: string;
   status: string;
   attempted: number;
   ok: number;
@@ -137,6 +153,13 @@ export interface StoredRunFailureEvidence {
   responded: boolean;
   canonicalUrl: string | null;
   message: string | null;
+  replay: ReplayReference | null;
+}
+
+export interface SuccessfulReplayEvidence {
+  canonicalUrl: string;
+  collectionDay: string;
+  replay: ReplayReference;
 }
 
 export interface HealingEventRecord {
@@ -218,6 +241,319 @@ export function createRun(database: Database.Database, run: NewRun): void {
   );
 }
 
+export function attemptedForStageOnDay(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+  stage: "discover" | "collect",
+): number {
+  const row = database.prepare(
+    `SELECT COALESCE(SUM(attempted), 0) AS attempted
+     FROM runs
+     WHERE retailer_id = ? AND collection_day = ? AND stage = ?`,
+  ).get(retailerId, collectionDay, stage) as { attempted: number };
+  return row.attempted;
+}
+
+export type RequestAdmissionStage = "discover" | "collect";
+
+export const REQUEST_BUDGET_BY_STAGE: Readonly<Record<RequestAdmissionStage, number>> = {
+  discover: 2_000,
+  collect: 2_000,
+};
+
+export interface RequestAdmissionResult {
+  admitted: boolean;
+  used: number;
+  remaining: number;
+  admissionId: string | null;
+}
+
+export function requestAdmissionsForStageOnDay(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+  stage: RequestAdmissionStage,
+): number {
+  const row = database.prepare(`
+    SELECT COUNT(*) AS admitted
+    FROM request_admissions
+    WHERE retailer_id = ? AND collection_day = ? AND stage = ?
+  `).get(retailerId, collectionDay, stage) as { admitted: number };
+  return row.admitted;
+}
+
+export function remainingRequestAdmissions(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+  stage: RequestAdmissionStage,
+): number {
+  return Math.max(
+    0,
+    REQUEST_BUDGET_BY_STAGE[stage]
+      - requestAdmissionsForStageOnDay(database, retailerId, collectionDay, stage),
+  );
+}
+
+/**
+ * Durably charges one request before network execution. BEGIN IMMEDIATE makes
+ * the count-and-insert gate atomic across processes; the append-only row is not
+ * rolled back with later run work, so a crash still consumes the admission.
+ */
+export function admitRequest(
+  database: Database.Database,
+  input: {
+    runId: string;
+    retailerId: string;
+    collectionDay: string;
+    stage: RequestAdmissionStage;
+    admittedAt: string;
+    id?: string;
+  },
+): RequestAdmissionResult {
+  const admit = database.transaction((): RequestAdmissionResult => {
+    const run = database.prepare(`
+      SELECT retailer_id AS retailerId, collection_day AS collectionDay, stage,
+             status, finished_at AS finishedAt
+      FROM runs WHERE id = ?
+    `).get(input.runId) as {
+      retailerId: string;
+      collectionDay: string;
+      stage: RequestAdmissionStage;
+      status: string;
+      finishedAt: string | null;
+    } | undefined;
+    if (
+      run === undefined
+      || run.retailerId !== input.retailerId
+      || run.collectionDay !== input.collectionDay
+      || run.stage !== input.stage
+      || run.status !== "running"
+      || run.finishedAt !== null
+    ) {
+      throw new Error("Request admission identity must match an existing run");
+    }
+    const used = requestAdmissionsForStageOnDay(
+      database,
+      input.retailerId,
+      input.collectionDay,
+      input.stage,
+    );
+    const maximum = REQUEST_BUDGET_BY_STAGE[input.stage];
+    if (used >= maximum) {
+      return { admitted: false, used, remaining: 0, admissionId: null };
+    }
+    const admissionId = input.id ?? randomUUID();
+    database.prepare(`
+      INSERT INTO request_admissions
+        (id, run_id, retailer_id, collection_day, stage, stage_ordinal, admitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      admissionId,
+      input.runId,
+      input.retailerId,
+      input.collectionDay,
+      input.stage,
+      used + 1,
+      input.admittedAt,
+    );
+    return {
+      admitted: true,
+      used: used + 1,
+      remaining: maximum - used - 1,
+      admissionId,
+    };
+  });
+  return admit.immediate();
+}
+
+export const DISCOVERY_REFERENCE_BUDGET = 3_000;
+
+export function discoveryReferenceAdmissionsForDay(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+): number {
+  return (database.prepare(`
+    SELECT COUNT(*) AS admitted
+    FROM discovery_reference_admissions
+    WHERE retailer_id = ? AND collection_day = ?
+  `).get(retailerId, collectionDay) as { admitted: number }).admitted;
+}
+
+export function remainingDiscoveryReferenceAdmissions(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+): number {
+  return Math.max(
+    0,
+    DISCOVERY_REFERENCE_BUDGET
+      - discoveryReferenceAdmissionsForDay(database, retailerId, collectionDay),
+  );
+}
+
+/** Durably charges one yielded discovery reference before product persistence. */
+export function admitDiscoveryReference(
+  database: Database.Database,
+  input: {
+    runId: string;
+    retailerId: string;
+    collectionDay: string;
+    canonicalUrl: string | null;
+    admittedAt: string;
+    id?: string;
+  },
+): RequestAdmissionResult {
+  return database.transaction((): RequestAdmissionResult => {
+    const run = database.prepare(`
+      SELECT retailer_id AS retailerId, collection_day AS collectionDay, stage,
+             status, finished_at AS finishedAt
+      FROM runs WHERE id = ?
+    `).get(input.runId) as {
+      retailerId: string;
+      collectionDay: string;
+      stage: string;
+      status: string;
+      finishedAt: string | null;
+    } | undefined;
+    if (
+      run === undefined
+      || run.retailerId !== input.retailerId
+      || run.collectionDay !== input.collectionDay
+      || run.stage !== "discover"
+      || run.status !== "running"
+      || run.finishedAt !== null
+    ) {
+      throw new Error("Discovery reference admission must match an existing run");
+    }
+    const used = discoveryReferenceAdmissionsForDay(
+      database,
+      input.retailerId,
+      input.collectionDay,
+    );
+    if (used >= DISCOVERY_REFERENCE_BUDGET) {
+      return { admitted: false, used, remaining: 0, admissionId: null };
+    }
+    const admissionId = input.id ?? randomUUID();
+    database.prepare(`
+      INSERT INTO discovery_reference_admissions
+        (id, run_id, retailer_id, collection_day, day_ordinal,
+         canonical_url, admitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      admissionId,
+      input.runId,
+      input.retailerId,
+      input.collectionDay,
+      used + 1,
+      input.canonicalUrl,
+      input.admittedAt,
+    );
+    return {
+      admitted: true,
+      used: used + 1,
+      remaining: DISCOVERY_REFERENCE_BUDGET - used - 1,
+      admissionId,
+    };
+  }).immediate();
+}
+
+export const DAILY_REPLAY_ADMISSION_BUDGET = 20;
+
+export function replaySlotAdmissionsForDay(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+): number {
+  return (database.prepare(`
+    SELECT COUNT(*) AS admitted
+    FROM replay_slot_admissions
+    WHERE retailer_id = ? AND collection_day = ?
+  `).get(retailerId, collectionDay) as { admitted: number }).admitted;
+}
+
+export function remainingReplaySlotAdmissions(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+): number {
+  return Math.max(
+    0,
+    DAILY_REPLAY_ADMISSION_BUDGET
+      - replaySlotAdmissionsForDay(database, retailerId, collectionDay),
+  );
+}
+
+/** Durably charges one replay sample immediately before payload file I/O. */
+export function admitReplaySlot(
+  database: Database.Database,
+  input: {
+    runId: string;
+    retailerId: string;
+    productId: string;
+    collectionDay: string;
+    admittedAt: string;
+    id?: string;
+  },
+): RequestAdmissionResult {
+  return database.transaction((): RequestAdmissionResult => {
+    const identity = database.prepare(`
+      SELECT 1
+      FROM runs
+      JOIN products ON products.id = ?
+      WHERE runs.id = ?
+        AND runs.retailer_id = ?
+        AND runs.collection_day = ?
+        AND runs.stage = 'collect'
+        AND runs.status = 'running'
+        AND runs.finished_at IS NULL
+        AND products.retailer_id = runs.retailer_id
+    `).get(
+      input.productId,
+      input.runId,
+      input.retailerId,
+      input.collectionDay,
+    );
+    if (identity === undefined) {
+      throw new Error("Replay slot admission must match an existing run and product");
+    }
+    const used = replaySlotAdmissionsForDay(
+      database,
+      input.retailerId,
+      input.collectionDay,
+    );
+    if (used >= DAILY_REPLAY_ADMISSION_BUDGET) {
+      return { admitted: false, used, remaining: 0, admissionId: null };
+    }
+    const admissionId = input.id ?? randomUUID();
+    database.prepare(`
+      INSERT INTO replay_slot_admissions
+        (id, run_id, retailer_id, product_id, collection_day,
+         day_ordinal, admitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      admissionId,
+      input.runId,
+      input.retailerId,
+      input.productId,
+      input.collectionDay,
+      used + 1,
+      input.admittedAt,
+    );
+    return {
+      admitted: true,
+      used: used + 1,
+      remaining: DAILY_REPLAY_ADMISSION_BUDGET - used - 1,
+      admissionId,
+    };
+  }).immediate();
+}
+
+/** Aggregate compatibility helper for status/reporting callers. Network safety
+ * caps use the durable request_admissions ledger above, not mutable/finalized
+ * run counters. */
 export function attemptedForDay(
   database: Database.Database,
   retailerId: string,
@@ -304,14 +640,22 @@ export function finalizeRun(
 }
 
 function productTitle(ref: ProductRef): string {
-  if (ref.externalId !== null && ref.externalId.trim().length > 0) return ref.externalId;
   try {
-    const segment = new URL(ref.canonicalUrl).pathname.split("/").filter(Boolean).at(-1);
-    if (segment !== undefined && segment.length > 0) return decodeURIComponent(segment);
+    const technicalSegments = new Set(["item", "p", "pd", "product", "produto"]);
+    const segments = new URL(ref.canonicalUrl).pathname.split("/").filter(Boolean);
+    for (const segment of segments.reverse()) {
+      const decoded = decodeURIComponent(segment).trim();
+      if (technicalSegments.has(decoded.toLocaleLowerCase("pt-BR"))) continue;
+      const humanized = decoded
+        .replace(/[-_]+/gu, " ")
+        .replace(/\s+/gu, " ")
+        .trim();
+      if (humanized.length > 0 && !/^\d+$/u.test(humanized)) return humanized;
+    }
   } catch {
     // The strategy layer normally canonicalizes URLs; retain a safe fallback for evidence.
   }
-  return ref.canonicalUrl;
+  return "Produto aguardando observação descritiva";
 }
 
 export function upsertDiscoveredProduct(
@@ -319,37 +663,75 @@ export function upsertDiscoveredProduct(
   retailerId: string,
   ref: ProductRef,
   seenAt: string,
+  evidence?: {
+    runId: string;
+    scope: CatalogScopeDecision;
+  },
 ): StoredProductRef {
-  database.prepare(
-    `INSERT INTO products
-       (id, retailer_id, canonical_url, retailer_product_id, title,
-        source_category, first_seen, last_seen)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (retailer_id, canonical_url) DO UPDATE SET
-       retailer_product_id = COALESCE(excluded.retailer_product_id, products.retailer_product_id),
-       source_category = COALESCE(excluded.source_category, products.source_category),
-       last_seen = excluded.last_seen,
-       active = 1,
-       updated_at = excluded.last_seen`,
-  ).run(
-    randomUUID(),
-    retailerId,
-    ref.canonicalUrl,
-    ref.externalId,
-    productTitle(ref),
-    ref.sourceCategory,
-    seenAt,
-    seenAt,
-  );
-  const row = database.prepare(
-    `SELECT id, canonical_url, retailer_product_id, source_category
-     FROM products WHERE retailer_id = ? AND canonical_url = ?`,
-  ).get(retailerId, ref.canonicalUrl) as {
+  let row!: {
     id: string;
     canonical_url: string;
     retailer_product_id: string | null;
     source_category: string | null;
   };
+  const upsert = database.transaction(() => {
+    if (evidence !== undefined) {
+      const run = database.prepare(`
+        SELECT 1 FROM runs
+        WHERE id = ? AND retailer_id = ? AND stage = 'discover'
+          AND status = 'running' AND finished_at IS NULL
+      `).get(evidence.runId, retailerId);
+      if (run === undefined) {
+        throw new Error("Product scope evidence must match a running discovery run");
+      }
+    }
+    database.prepare(
+      `INSERT INTO products
+         (id, retailer_id, canonical_url, retailer_product_id, title,
+          source_category, in_scope, first_seen, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (retailer_id, canonical_url) DO UPDATE SET
+         retailer_product_id = COALESCE(excluded.retailer_product_id, products.retailer_product_id),
+         source_category = COALESCE(excluded.source_category, products.source_category),
+         in_scope = excluded.in_scope,
+         last_seen = excluded.last_seen,
+         active = 1,
+         updated_at = excluded.last_seen`,
+    ).run(
+      randomUUID(),
+      retailerId,
+      ref.canonicalUrl,
+      ref.externalId,
+      productTitle(ref),
+      ref.sourceCategory,
+      evidence?.scope.inScope === false ? 0 : 1,
+      seenAt,
+      seenAt,
+    );
+    row = database.prepare(
+      `SELECT id, canonical_url, retailer_product_id, source_category
+       FROM products WHERE retailer_id = ? AND canonical_url = ?`,
+    ).get(retailerId, ref.canonicalUrl) as typeof row;
+    if (evidence !== undefined) {
+      database.prepare(
+        `INSERT INTO product_scope_decisions
+           (id, product_id, run_id, in_scope, source_category, reason,
+            evidence_json, rule_version, decided_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        randomUUID(),
+        row.id,
+        evidence.runId,
+        evidence.scope.inScope ? 1 : 0,
+        ref.sourceCategory,
+        evidence.scope.reason,
+        JSON.stringify(evidence.scope.evidence),
+        evidence.scope.ruleVersion,
+        seenAt,
+      );
+    }
+  });
+  upsert.immediate();
   return {
     id: row.id,
     canonicalUrl: row.canonical_url,
@@ -367,7 +749,11 @@ export function listCollectionProducts(
     `SELECT id, canonical_url, retailer_product_id, source_category
      FROM products
      WHERE retailer_id = ? AND active = 1 AND in_scope = 1
-     ORDER BY last_seen DESC, id
+     ORDER BY
+       CASE WHEN last_collection_attempt_at IS NULL THEN 0 ELSE 1 END,
+       last_collection_attempt_at,
+       COALESCE(last_observed_at, first_seen),
+       id
      LIMIT ?`,
   ).all(retailerId, limit) as Array<{
     id: string;
@@ -380,6 +766,139 @@ export function listCollectionProducts(
     externalId: row.retailer_product_id,
     sourceCategory: row.source_category,
   }));
+}
+
+export interface CatalogSnapshotEvidence {
+  runId: string;
+  retailerId: string;
+  complete: boolean;
+  completionReason: string;
+  discovered: number;
+  inScope: number;
+  outOfScope: number;
+  completedAt: string;
+}
+
+export function activeCatalogProductCount(
+  database: Database.Database,
+  retailerId: string,
+): number {
+  return (database.prepare(
+    "SELECT COUNT(*) AS count FROM products WHERE retailer_id = ? AND active = 1",
+  ).get(retailerId) as { count: number }).count;
+}
+
+export function catalogDisappearanceCandidateCount(
+  database: Database.Database,
+  retailerId: string,
+  runId: string,
+): number {
+  return (database.prepare(`
+    SELECT COUNT(*) AS count
+    FROM products
+    WHERE retailer_id = ? AND active = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM product_scope_decisions
+        WHERE product_scope_decisions.run_id = ?
+          AND product_scope_decisions.product_id = products.id
+      )
+  `).get(retailerId, runId) as { count: number }).count;
+}
+
+function persistCatalogSnapshot(
+  database: Database.Database,
+  input: CatalogSnapshotEvidence,
+): number {
+  if (input.discovered !== input.inScope + input.outOfScope) {
+    throw new Error("Catalog snapshot scope counts do not match discovered count");
+  }
+  const runIdentity = database.prepare(`
+    SELECT 1 FROM runs
+    WHERE id = ? AND retailer_id = ? AND stage = 'discover'
+      AND status = 'running' AND finished_at IS NULL
+  `).get(input.runId, input.retailerId);
+  if (runIdentity === undefined) {
+    throw new Error("Catalog snapshot must match a running discovery run");
+  }
+  if (input.complete) {
+    if (input.discovered === 0) {
+      throw new Error("A complete catalog snapshot cannot be empty");
+    }
+    const active = activeCatalogProductCount(database, input.retailerId);
+    const candidates = catalogDisappearanceCandidateCount(
+      database,
+      input.retailerId,
+      input.runId,
+    );
+    const safeLimit = Math.max(1, Math.floor(active * 0.2));
+    if (active > 0 && candidates > safeLimit) {
+      throw new Error("A complete catalog snapshot cannot apply a catastrophic shrink");
+    }
+  }
+  let disappeared = 0;
+  if (input.complete) {
+    const result = database.prepare(
+      `UPDATE products
+       SET active = 0, updated_at = ?
+       WHERE retailer_id = ? AND active = 1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM product_scope_decisions
+           WHERE product_scope_decisions.run_id = ?
+             AND product_scope_decisions.product_id = products.id
+         )`,
+    ).run(input.completedAt, input.retailerId, input.runId);
+    disappeared = result.changes;
+  }
+  database.prepare(
+    `INSERT INTO catalog_snapshots
+       (run_id, retailer_id, complete, completion_reason, discovered,
+        in_scope, out_of_scope, disappeared, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.runId,
+    input.retailerId,
+    input.complete ? 1 : 0,
+    input.completionReason,
+    input.discovered,
+    input.inScope,
+    input.outOfScope,
+    disappeared,
+    input.completedAt,
+  );
+  return disappeared;
+}
+
+export function recordCatalogSnapshot(
+  database: Database.Database,
+  input: CatalogSnapshotEvidence,
+): number {
+  return database.transaction(() => persistCatalogSnapshot(database, input)).immediate();
+}
+
+export function finalizeDiscoveryRun(
+  database: Database.Database,
+  input: {
+    snapshot: CatalogSnapshotEvidence;
+    counters: RunCounters;
+    status: "completed" | "partial" | "failed";
+    finishedAt: string;
+    error?: { category: string; message: string };
+  },
+): number {
+  return database.transaction(() => {
+    const disappeared = persistCatalogSnapshot(database, input.snapshot);
+    finalizeRun(
+      database,
+      input.snapshot.runId,
+      input.counters,
+      input.status,
+      input.finishedAt,
+      input.error,
+    );
+    return disappeared;
+  }).immediate();
 }
 
 export function strategyTierNumber(strategy: Strategy): number {
@@ -436,6 +955,10 @@ export function findRetailerExplorationContext(
     baseUrl: retailer.base_url,
     allowedDomains: domains,
     previousStrategy,
+    nextStrategyVersion: (database.prepare(
+      `SELECT COALESCE(MAX(version), 0) + 1 AS version
+       FROM strategies WHERE retailer_id = ? AND purpose = ?`,
+    ).get(retailerId, purpose) as { version: number }).version,
   };
 }
 
@@ -625,6 +1148,47 @@ export function activateGeneratedStrategy(
       `SELECT COALESCE(MAX(version), 0) + 1 AS version
        FROM strategies WHERE retailer_id = ? AND purpose = ?`,
     ).get(input.retailerId, input.purpose) as { version: number };
+    const authoritativeRefs = (database.prepare(`
+      SELECT canonical_url, retailer_product_id, source_category
+      FROM products
+      WHERE retailer_id = ?
+      ORDER BY canonical_url
+    `).all(input.retailerId) as Array<{
+      canonical_url: string;
+      retailer_product_id: string | null;
+      source_category: string | null;
+    }>).map((row) => ({
+      canonicalUrl: row.canonical_url,
+      externalId: row.retailer_product_id,
+      sourceCategory: row.source_category,
+    }));
+    const evidence = validateStrategyEvidence(
+      input.validationEvidence.evidence,
+      {
+        retailerId: input.retailerId,
+        purpose: input.purpose,
+        strategyVersion: versionRow.version,
+        strategy: input.strategy,
+        verificationPublicKey: input.validationEvidence.verificationPublicKey,
+        authoritativeRefs,
+      },
+    );
+    const expectedReceiptPath = `data/validation/${input.retailerId}-${input.purpose}-v${versionRow.version}.json`;
+    const receiptSha256 = validationReceiptSha256(evidence);
+    if (
+      evidence.activatable !== true
+      || evidence.executor.mode !== "trusted-live-host"
+      || evidence.attempted !== 30
+      || evidence.valid < 27
+      || evidence.valid !== input.validationSuccesses
+      || evidence.attempted !== input.validationSampleSize
+      || evidence.score !== input.validationScore
+      || evidence.strategySha256 !== strategyEvidenceSha256(input.strategy)
+      || input.validationEvidence.receiptPath !== expectedReceiptPath
+      || input.validationEvidence.receiptSha256 !== receiptSha256
+    ) {
+      throw new Error("Generated strategy activation requires exact trusted receipt evidence");
+    }
     const id = randomUUID();
     database.prepare(
       `INSERT INTO strategies
@@ -647,7 +1211,25 @@ export function activateGeneratedStrategy(
       input.validationSuccesses,
       input.validationScore,
       input.activatedAt,
-      input.activatedAt,
+      evidence.validatedAt,
+    );
+    database.prepare(`
+      INSERT INTO strategy_validation_evidence
+        (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+         executor_json, attestation_key_id, attempted, valid, score,
+         validated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      expectedReceiptPath,
+      receiptSha256,
+      evidence.sampleSetSha256,
+      JSON.stringify(evidence.executor),
+      evidence.attestation.keyId,
+      evidence.attempted,
+      evidence.valid,
+      evidence.score,
+      evidence.validatedAt,
     );
     if (current !== undefined) {
       const retired = database.prepare(
@@ -730,13 +1312,15 @@ export function findRunHealthEvidence(
   runId: string,
 ): { run: StoredRunHealth; failures: StoredRunFailureEvidence[] } {
   const row = database.prepare(
-    `SELECT id, retailer_id, strategy_id, status, attempted, ok, failed, started_at,
+    `SELECT id, retailer_id, strategy_id, collection_day, status,
+            attempted, ok, failed, started_at,
             finished_at, metadata_json
      FROM runs WHERE id = ? AND stage = 'collect'`,
   ).get(runId) as {
     id: string;
     retailer_id: string | null;
     strategy_id: string | null;
+    collection_day: string;
     status: string;
     attempted: number;
     ok: number;
@@ -786,7 +1370,8 @@ export function findRunHealthEvidence(
     // Immutable failure categories remain sufficient when old metadata has no hints.
   }
   const failureRows = database.prepare(
-    `SELECT category, responded, canonical_url, message
+    `SELECT category, responded, canonical_url, message,
+            response_path, response_sha256
      FROM run_failures WHERE run_id = ?
      ORDER BY occurred_at, id`,
   ).all(runId) as Array<{
@@ -794,12 +1379,15 @@ export function findRunHealthEvidence(
     responded: number | null;
     canonical_url: string | null;
     message: string | null;
+    response_path: string | null;
+    response_sha256: string | null;
   }>;
   return {
     run: {
       id: row.id,
       retailerId: row.retailer_id,
       strategyId: row.strategy_id,
+      collectionDay: row.collection_day,
       status: row.status,
       attempted: row.attempted,
       ok: row.ok,
@@ -819,9 +1407,73 @@ export function findRunHealthEvidence(
           : failure.responded === 1,
         canonicalUrl: failure.canonical_url,
         message: failure.message,
+        replay: failure.response_path === null || failure.response_sha256 === null
+          ? null
+          : { path: failure.response_path, sha256: failure.response_sha256 },
       };
     }),
   };
+}
+
+export function listPriorSuccessfulReplayEvidence(
+  database: Database.Database,
+  input: {
+    retailerId: string;
+    beforeCollectionDay: string;
+    canonicalUrls: readonly string[];
+    limit?: number;
+  },
+): SuccessfulReplayEvidence[] {
+  const limit = Math.min(input.limit ?? 5, 20);
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new RangeError("Prior replay limit must be a positive safe integer");
+  }
+  const canonicalUrls = [...new Set(input.canonicalUrls.filter((url) => url.length > 0))];
+  if (canonicalUrls.length === 0) return [];
+  const placeholders = canonicalUrls.map(() => "?").join(", ");
+  const rows = database.prepare(`
+    WITH ranked AS (
+      SELECT products.canonical_url AS canonicalUrl,
+             observations.collection_day AS collectionDay,
+             observations.response_path AS path,
+             observations.response_sha256 AS sha256,
+             observations.observed_at AS observedAt,
+             observations.id AS observationId,
+             ROW_NUMBER() OVER (
+               PARTITION BY products.canonical_url
+               ORDER BY observations.collection_day DESC,
+                        observations.observed_at DESC,
+                        observations.id DESC
+             ) AS recency
+      FROM observations
+      JOIN products ON products.id = observations.product_id
+      WHERE products.retailer_id = ?
+        AND observations.collection_day < ?
+        AND products.canonical_url IN (${placeholders})
+        AND observations.response_path IS NOT NULL
+        AND observations.response_sha256 IS NOT NULL
+    )
+    SELECT canonicalUrl, collectionDay, path, sha256
+    FROM ranked
+    WHERE recency = 1
+    ORDER BY collectionDay DESC, observedAt DESC, observationId DESC
+    LIMIT ?
+  `).all(
+    input.retailerId,
+    input.beforeCollectionDay,
+    ...canonicalUrls,
+    limit,
+  ) as Array<{
+    canonicalUrl: string;
+    collectionDay: string;
+    path: string;
+    sha256: string;
+  }>;
+  return rows.map((row) => ({
+    canonicalUrl: row.canonicalUrl,
+    collectionDay: row.collectionDay,
+    replay: { path: row.path, sha256: row.sha256 },
+  }));
 }
 
 export function latestTerminalCollectionRunId(
@@ -1593,6 +2245,7 @@ export function commitExplorationSuccess(
         false,
         undefined,
         input.exploration.finishedAt,
+        input.healingEventId,
       );
     }
     const reservation = database.prepare(
@@ -1689,24 +2342,172 @@ export function consecutiveFailedHealingEvents(
   return count;
 }
 
+function hasUnresolvedHealingDegradation(
+  database: Database.Database,
+  retailerId: string,
+  purpose: StrategyPurpose,
+): boolean {
+  const events = database.prepare(`
+    SELECT status
+    FROM healing_events
+    WHERE retailer_id = ? AND purpose = ?
+    ORDER BY rowid
+  `).all(retailerId, purpose) as Array<{ status: string }>;
+  let consecutiveFailures = 0;
+  let unresolved = false;
+  for (const event of events) {
+    if (event.status === "recovered") {
+      consecutiveFailures = 0;
+      unresolved = false;
+    } else if (event.status === "failed") {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= 3) unresolved = true;
+    } else if (!unresolved) {
+      consecutiveFailures = 0;
+    }
+  }
+  return unresolved;
+}
+
 export function setRetailerDegraded(
   database: Database.Database,
   retailerId: string,
   degraded: boolean,
   reason?: string,
   updatedAt = new Date().toISOString(),
+  healingEventId?: string,
+): boolean {
+  const transition = database.transaction(() => {
+    const current = database.prepare(
+      "SELECT degraded FROM retailers WHERE id = ?",
+    ).get(retailerId) as { degraded: number } | undefined;
+    if (current === undefined) throw new Error(`Retailer ${retailerId} was not found`);
+    const healingEvent = healingEventId === undefined
+      ? null
+      : findHealingEvent(database, "id = ?", healingEventId);
+    if (healingEventId !== undefined && healingEvent === null) {
+      throw new Error(`Healing event ${healingEventId} was not found`);
+    }
+    if (healingEvent !== null && healingEvent.retailerId !== retailerId) {
+      throw new Error("Retailer state transition healing identity does not match the retailer");
+    }
+    if (
+      healingEvent !== null
+      && healingEvent.status !== (degraded ? "failed" : "recovered")
+    ) {
+      throw new Error("Retailer state transition does not match the healing event status");
+    }
+    const healingPurpose = healingEvent?.purpose ?? null;
+    if (!degraded && current.degraded === 1 && healingEventId !== undefined) {
+      const unresolvedPurpose = (["discovery", "extraction"] as const).find((purpose) =>
+        hasUnresolvedHealingDegradation(database, retailerId, purpose));
+      if (unresolvedPurpose !== undefined) {
+        return true;
+      }
+    }
+    const nextReason = degraded ? reason ?? "strategy regeneration failed" : null;
+    if ((current.degraded === 1) !== degraded) {
+      database.prepare(`
+        INSERT INTO retailer_state_events
+          (retailer_id, healing_event_id, purpose, state, reason, source, effective_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        retailerId,
+        healingEventId ?? null,
+        healingPurpose ?? null,
+        degraded ? "degraded" : "recovered",
+        nextReason,
+        healingEventId === undefined ? "retailer_transition" : "healing_transition",
+        updatedAt,
+      );
+    }
+    const result = database.prepare(
+      `UPDATE retailers
+       SET degraded = ?, degraded_reason = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(degraded ? 1 : 0, nextReason, updatedAt, retailerId);
+    if (result.changes !== 1) throw new Error(`Retailer ${retailerId} was not found`);
+    return degraded;
+  });
+  return transition.immediate();
+}
+
+const REPLAY_REFERENCE_PATH = new RegExp(
+  String.raw`^(\d{4}-\d{2}-\d{2})\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([a-f0-9]{64})\.(?:html|json|txt)\.gz$`,
+  "u",
+);
+
+function validateReplayReference(
+  reference: ReplayReference | undefined,
+  expected?: { collectionDay: string; retailerId: string },
 ): void {
-  const result = database.prepare(
-    `UPDATE retailers
-     SET degraded = ?, degraded_reason = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(
-    degraded ? 1 : 0,
-    degraded ? reason ?? "strategy regeneration failed" : null,
-    updatedAt,
-    retailerId,
-  );
-  if (result.changes !== 1) throw new Error(`Retailer ${retailerId} was not found`);
+  if (reference === undefined) return;
+  const match = REPLAY_REFERENCE_PATH.exec(reference.path);
+  if (match === null || match[3] !== reference.sha256) {
+    throw new Error("Replay reference must be a relative content-addressed private path");
+  }
+  if (
+    expected !== undefined
+    && (match[1] !== expected.collectionDay || match[2] !== expected.retailerId)
+  ) {
+    throw new Error("Replay reference day and retailer must match its evidence row");
+  }
+}
+
+function replayContextForRun(
+  database: Database.Database,
+  runId: string,
+): {
+  collectionDay: string;
+  retailerId: string;
+  stage: "discover" | "collect";
+  strategyId: string | null;
+  strategyVersion: number | null;
+  status: string;
+  finishedAt: string | null;
+} {
+  const row = database.prepare(`
+    SELECT collection_day AS collectionDay, retailer_id AS retailerId,
+           stage, strategy_id AS strategyId, strategy_version AS strategyVersion,
+           status, finished_at AS finishedAt
+    FROM runs WHERE id = ?
+  `).get(runId) as {
+    collectionDay: string;
+    retailerId: string;
+    stage: "discover" | "collect";
+    strategyId: string | null;
+    strategyVersion: number | null;
+    status: string;
+    finishedAt: string | null;
+  } | undefined;
+  if (row === undefined) throw new Error(`Run ${runId} was not found`);
+  return row;
+}
+
+export function countReplayEvidenceForDay(
+  database: Database.Database,
+  retailerId: string,
+  day: string,
+): number {
+  const row = database.prepare(
+    `SELECT COUNT(*) AS count
+     FROM (
+       SELECT observations.id
+       FROM observations
+       JOIN products ON products.id = observations.product_id
+       WHERE products.retailer_id = ?
+         AND observations.collection_day = ?
+         AND observations.response_path IS NOT NULL
+       UNION ALL
+       SELECT run_failures.id
+       FROM run_failures
+       JOIN runs ON runs.id = run_failures.run_id
+       WHERE run_failures.retailer_id = ?
+         AND runs.collection_day = ?
+         AND run_failures.response_path IS NOT NULL
+     )`,
+  ).get(retailerId, day, retailerId, day) as { count: number };
+  return row.count;
 }
 
 export function insertRunFailure(
@@ -1721,31 +2522,64 @@ export function insertRunFailure(
     strategyId: string;
     strategyVersion: number;
     replay?: ReplayReference;
+    id?: string;
   },
 ): string {
-  const id = randomUUID();
-  database.prepare(
-    `INSERT INTO run_failures
-       (id, run_id, retailer_id, product_id, canonical_url, category, message,
-        http_status, strategy_id, strategy_version, response_path,
-        response_sha256, occurred_at, responded)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.runId,
-    input.retailerId,
-    input.product?.id ?? null,
-    input.canonicalUrl ?? input.product?.canonicalUrl ?? null,
-    input.failure.category,
-    input.failure.message,
-    input.failure.statusCode ?? null,
-    input.strategyId,
-    input.strategyVersion,
-    input.replay?.path ?? null,
-    input.replay?.sha256 ?? null,
-    input.occurredAt,
-    input.failure.responded ? 1 : 0,
-  );
+  const context = replayContextForRun(database, input.runId);
+  if (
+    context.retailerId !== input.retailerId
+    || context.status !== "running"
+    || context.finishedAt !== null
+    || context.strategyId !== input.strategyId
+    || context.strategyVersion !== input.strategyVersion
+  ) {
+    throw new Error("Failure evidence must match its running run and strategy");
+  }
+  if (input.product !== undefined) {
+    const product = database.prepare(
+      "SELECT retailer_id AS retailerId FROM products WHERE id = ?",
+    ).get(input.product.id) as { retailerId: string } | undefined;
+    if (
+      product?.retailerId !== context.retailerId
+      || context.stage !== "collect"
+    ) {
+      throw new Error("Failure product must match its running collection run");
+    }
+  }
+  validateReplayReference(input.replay, context);
+  const id = input.id ?? randomUUID();
+  const insert = database.transaction(() => {
+    database.prepare(
+      `INSERT INTO run_failures
+         (id, run_id, retailer_id, product_id, canonical_url, category, message,
+          http_status, strategy_id, strategy_version, response_path,
+          response_sha256, occurred_at, responded)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      input.runId,
+      input.retailerId,
+      input.product?.id ?? null,
+      input.canonicalUrl ?? input.product?.canonicalUrl ?? null,
+      input.failure.category,
+      input.failure.message,
+      input.failure.statusCode ?? null,
+      input.strategyId,
+      input.strategyVersion,
+      input.replay?.path ?? null,
+      input.replay?.sha256 ?? null,
+      input.occurredAt,
+      input.failure.responded ? 1 : 0,
+    );
+    if (input.product !== undefined) {
+      database.prepare(
+        `UPDATE products
+         SET last_collection_attempt_at = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(input.occurredAt, input.occurredAt, input.product.id);
+    }
+  });
+  insert.immediate();
   return id;
 }
 
@@ -1760,20 +2594,42 @@ export function insertObservation(
     strategyId: string;
     strategyVersion: number;
     replay?: ReplayReference;
+    id?: string;
   },
 ): string {
   if (input.result.ok !== true || input.result.fields === undefined) {
     throw new Error("A successful extraction result is required");
   }
   const fields = input.result.fields;
-  const id = randomUUID();
+  if (!isDescriptiveProductTitle(fields.title)) {
+    throw new Error("Observed product title is not descriptive text");
+  }
+  const run = replayContextForRun(database, input.runId);
+  const product = database.prepare(
+    "SELECT retailer_id AS retailerId FROM products WHERE id = ?",
+  ).get(input.product.id) as { retailerId: string } | undefined;
+  if (product === undefined) throw new Error(`Product ${input.product.id} was not found`);
+  if (
+    run.stage !== "collect"
+    || run.status !== "running"
+    || run.finishedAt !== null
+    || run.collectionDay !== input.collectionDay
+    || run.retailerId !== product.retailerId
+    || run.strategyId !== input.strategyId
+    || run.strategyVersion !== input.strategyVersion
+  ) {
+    throw new Error("Observation must match its running collection run and strategy");
+  }
+  validateReplayReference(input.replay, run);
+  const id = input.id ?? randomUUID();
   const unit = normalizeUnit(fields.unit);
   const transaction = database.transaction(() => {
     database.prepare(
       `UPDATE products
        SET title = ?, brand = ?, raw_unit = ?, quantity_value = ?,
-           quantity_unit = ?, base_quantity = ?, base_unit = ?, last_seen = ?,
-           updated_at = ?
+           quantity_unit = ?, base_quantity = ?, base_unit = ?,
+           descriptive_title = 1, last_observed_at = ?,
+           last_collection_attempt_at = ?, updated_at = ?
        WHERE id = ?`,
     ).run(
       fields.title,
@@ -1783,6 +2639,7 @@ export function insertObservation(
       unit.unit,
       unit.baseQuantity,
       unit.baseUnit,
+      input.observedAt,
       input.observedAt,
       input.observedAt,
       input.product.id,

@@ -67,8 +67,12 @@ describe("embedded JSON extraction", () => {
         unit: "Pacote 1 kg",
         available: true,
       },
-      html: expect.stringContaining("Fixture offline"),
     });
+    expect(result.replay).toEqual(expect.objectContaining({
+      body: expect.stringContaining("Fixture offline"),
+      mediaType: "text/html",
+    }));
+    expect(Object.keys(result)).not.toContain("replay");
   });
 
   it("extracts the __NEXT_DATA__ document", async () => {

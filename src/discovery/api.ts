@@ -25,9 +25,10 @@ interface PaginationValues {
   from: string;
   to: string;
   cursor: string;
+  segment: string;
 }
 
-const PLACEHOLDER = /\{(page|pageSize|offset|from|to|cursor)\}/gu;
+const PLACEHOLDER = /\{(page|pageSize|offset|from|to|cursor|segment)\}/gu;
 
 function renderString(template: string, values: PaginationValues): string {
   return template.replace(PLACEHOLDER, (_match, name: keyof PaginationValues) => values[name]);
@@ -116,6 +117,7 @@ function productRef(
   item: unknown,
   strategy: ApiDiscoveryStrategy,
   baseUrl: string,
+  sourceCategory: string | undefined,
 ): ProductRef | null {
   const rawUrl = jsonPathValue(item, strategy.refFields.url);
   if (typeof rawUrl !== "string" || rawUrl.trim().length === 0) return null;
@@ -123,7 +125,8 @@ function productRef(
     return {
       canonicalUrl: canonicalizeRetailerUrl(rawUrl, baseUrl, strategy.allowedDomains),
       externalId: optionalString(jsonPathValue(item, strategy.refFields.externalId)),
-      sourceCategory: optionalString(jsonPathValue(item, strategy.refFields.sourceCategory)),
+      sourceCategory: sourceCategory
+        ?? optionalString(jsonPathValue(item, strategy.refFields.sourceCategory)),
     };
   } catch {
     return null;
@@ -134,6 +137,7 @@ function valuesFor(
   strategy: ApiDiscoveryStrategy,
   attempt: number,
   cursor: string | null,
+  segment: string,
 ): PaginationValues {
   if (strategy.pagination.kind === "page") {
     const page = strategy.pagination.start + attempt * strategy.pagination.step;
@@ -145,6 +149,7 @@ function valuesFor(
       from: String(offset),
       to: String(offset + strategy.pagination.pageSize - 1),
       cursor: "",
+      segment,
     };
   }
   if (strategy.pagination.kind === "offset") {
@@ -156,6 +161,7 @@ function valuesFor(
       from: String(offset),
       to: String(offset + strategy.pagination.pageSize - 1),
       cursor: "",
+      segment,
     };
   }
   return {
@@ -165,6 +171,7 @@ function valuesFor(
     from: "",
     to: "",
     cursor: cursor ?? "",
+    segment,
   };
 }
 
@@ -188,76 +195,146 @@ export async function* discoverApi(
   strategy: ApiDiscoveryStrategy,
   context: DiscoveryExecutionContext,
 ): AsyncGenerator<ProductRef> {
-  const seenCursors = new Set<string>();
-  const seenRequests = new Set<string>();
-  const seenResponses = new Set<string>();
   const seenProducts = new Set<string>();
-  let cursor = strategy.pagination.kind === "cursor"
-    ? strategy.pagination.initial
-    : null;
   let produced = 0;
+  let incompleteReason:
+    | "product_cap_reached"
+    | "page_cap_reached"
+    | "loop_guard_triggered"
+    | null = null;
+  const segments = strategy.segments ?? [{
+    value: "",
+    maxProducts: strategy.maxProducts,
+  }];
 
-  for (let attempt = 0; attempt < strategy.pagination.maxPages; attempt += 1) {
-    const request = renderDiscoveryRequest(strategy.request, valuesFor(strategy, attempt, cursor));
-    const requestKey = requestFingerprint(request);
-    if (seenRequests.has(requestKey)) return;
-    seenRequests.add(requestKey);
-    await context.beforeRequest?.();
-    const fetched = await fetchBounded(request, strategy.allowedDomains, context);
-    if (!fetched.ok) throw new DiscoveryFailureError(fetched.failure);
-    const responseKey = responseFingerprint(fetched.response.body);
-    if (seenResponses.has(responseKey)) return;
-    seenResponses.add(responseKey);
+  for (const segment of segments) {
+    const seenCursors = new Set<string>();
+    const seenRequests = new Set<string>();
+    const seenResponses = new Set<string>();
+    let cursor = strategy.pagination.kind === "cursor"
+      ? strategy.pagination.initial
+      : null;
+    let segmentProduced = 0;
+    let segmentExhausted = false;
+    let segmentIncomplete:
+      | "product_cap_reached"
+      | "page_cap_reached"
+      | "loop_guard_triggered"
+      | null = null;
 
-    let document: unknown;
-    try {
-      document = JSON.parse(fetched.response.body);
-    } catch (error) {
-      throw new DiscoveryFailureError({
-        category: "parse",
-        message: "Discovery response was not valid JSON",
-        responded: true,
-        statusCode: fetched.response.status,
-      }, { cause: error });
-    }
-    const items = itemArray(document, strategy.itemsPath);
-    if (items === null) {
-      throw new DiscoveryFailureError({
-        category: "parse",
-        message: `Discovery items path ${strategy.itemsPath} was missing or not an array`,
-        responded: true,
-        statusCode: fetched.response.status,
-      });
-    }
-    if (items.length === 0) return;
+    pageLoop: for (
+      let attempt = 0;
+      attempt < strategy.pagination.maxPages;
+      attempt += 1
+    ) {
+      const request = renderDiscoveryRequest(
+        strategy.request,
+        valuesFor(strategy, attempt, cursor, segment.value),
+      );
+      const requestKey = requestFingerprint(request);
+      if (seenRequests.has(requestKey)) {
+        segmentIncomplete = "loop_guard_triggered";
+        break;
+      }
+      seenRequests.add(requestKey);
+      await context.beforeRequest?.();
+      const fetched = await fetchBounded(request, strategy.allowedDomains, context);
+      if (!fetched.ok) throw new DiscoveryFailureError(fetched.failure);
+      const responseKey = responseFingerprint(fetched.response.body);
+      if (seenResponses.has(responseKey)) {
+        segmentIncomplete = "loop_guard_triggered";
+        break;
+      }
+      seenResponses.add(responseKey);
 
-    let validItems = 0;
-    for (const item of items) {
-      const ref = productRef(item, strategy, fetched.response.url || request.url);
-      if (ref === null) continue;
-      validItems += 1;
-      if (seenProducts.has(ref.canonicalUrl)) continue;
-      seenProducts.add(ref.canonicalUrl);
-      yield ref;
-      produced += 1;
-      if (produced >= strategy.maxProducts) return;
-    }
-    if (validItems === 0) {
-      throw new DiscoveryFailureError({
-        category: "parse",
-        message: "Discovery page contained no valid product references",
-        responded: true,
-        statusCode: fetched.response.status,
-      });
-    }
+      let document: unknown;
+      try {
+        document = JSON.parse(fetched.response.body);
+      } catch (error) {
+        throw new DiscoveryFailureError({
+          category: "parse",
+          message: "Discovery response was not valid JSON",
+          responded: true,
+          statusCode: fetched.response.status,
+        }, { cause: error });
+      }
+      const items = itemArray(document, strategy.itemsPath);
+      if (items === null) {
+        throw new DiscoveryFailureError({
+          category: "parse",
+          message: `Discovery items path ${strategy.itemsPath} was missing or not an array`,
+          responded: true,
+          statusCode: fetched.response.status,
+        });
+      }
+      if (items.length === 0) {
+        segmentExhausted = true;
+        break;
+      }
 
-    if (strategy.pagination.kind === "cursor") {
-      const next = optionalString(jsonPathValue(document, strategy.pagination.nextCursorPath));
-      if (next === null || seenCursors.has(next)) return;
-      seenCursors.add(next);
-      cursor = next;
-    } else if (items.length < strategy.pagination.pageSize) {
-      return;
+      let validItems = 0;
+      for (const item of items) {
+        const ref = productRef(
+          item,
+          strategy,
+          fetched.response.url || request.url,
+          segment.sourceCategory,
+        );
+        if (ref === null) continue;
+        validItems += 1;
+        if (seenProducts.has(ref.canonicalUrl)) continue;
+        seenProducts.add(ref.canonicalUrl);
+        yield ref;
+        produced += 1;
+        segmentProduced += 1;
+        if (produced >= strategy.maxProducts) {
+          context.reportCompletion?.({ complete: false, reason: "product_cap_reached" });
+          return;
+        }
+        if (segmentProduced >= segment.maxProducts) {
+          segmentIncomplete = "product_cap_reached";
+          break pageLoop;
+        }
+      }
+      if (validItems === 0) {
+        throw new DiscoveryFailureError({
+          category: "parse",
+          message: "Discovery page contained no valid product references",
+          responded: true,
+          statusCode: fetched.response.status,
+        });
+      }
+
+      if (strategy.pagination.kind === "cursor") {
+        const next = optionalString(jsonPathValue(document, strategy.pagination.nextCursorPath));
+        if (next === null) {
+          segmentExhausted = true;
+          break;
+        }
+        if (seenCursors.has(next)) {
+          segmentIncomplete = "loop_guard_triggered";
+          break;
+        }
+        seenCursors.add(next);
+        cursor = next;
+      } else if (items.length < strategy.pagination.pageSize) {
+        segmentExhausted = true;
+        break;
+      }
     }
+    if (!segmentExhausted && segmentIncomplete === null) {
+      segmentIncomplete = "page_cap_reached";
+    }
+    incompleteReason ??= segmentIncomplete;
   }
+  if (produced === 0) {
+    throw new DiscoveryFailureError({
+      category: "parse",
+      message: "Discovery completed without any valid product references",
+      responded: true,
+    });
+  }
+  context.reportCompletion?.(incompleteReason === null
+    ? { complete: true, reason: "source_exhausted" }
+    : { complete: false, reason: incompleteReason });
 }

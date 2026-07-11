@@ -105,6 +105,7 @@ function listEligibleProducts(database: Database.Database, version: number): Cla
      FROM products p
      WHERE p.active = 1
        AND p.in_scope = 1
+       AND p.descriptive_title = 1
        AND NOT EXISTS (
          SELECT 1 FROM classifications c
          WHERE c.product_id = p.id AND c.version = ?

@@ -42,6 +42,14 @@ export interface ExtractionExecutionContext {
   maxRedirects?: number;
   userAgent?: string;
   allowDocumentUrl?: (url: string) => boolean;
+  onMainDocumentResponse?: (evidence: MainDocumentResponseEvidence) => void;
+}
+
+export interface MainDocumentResponseEvidence {
+  finalUrl: string;
+  statusCode: number;
+  contentType: string;
+  body: Uint8Array;
 }
 
 export interface BoundedHttpRequest {

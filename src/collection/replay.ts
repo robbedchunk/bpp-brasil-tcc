@@ -1,12 +1,23 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, link, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { gzip } from "node:zlib";
+import { constants } from "node:fs";
+import { chmod, link, mkdir, open, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
+import { gunzipSync, gzip } from "node:zlib";
 import { promisify } from "node:util";
 
 const gzipAsync = promisify(gzip);
 
 export interface ReplayArtifact {
+  path: string;
+  sha256: string;
+}
+
+export interface ReplayPayload {
+  body: string;
+  mediaType: "application/json" | "text/html" | "text/plain";
+}
+
+export interface VerifiedReplayPayload extends ReplayPayload {
   path: string;
   sha256: string;
 }
@@ -56,6 +67,11 @@ const DAY_DIRECTORY = /^\d{4}-\d{2}-\d{2}$/u;
 const STATE_FILE = ".reservoir.json";
 const FINAL_MANIFEST = "replay-samples.json";
 const TRANSACTION_FILE = ".reservoir-transaction.json";
+const PRIVATE_REPLAY_PATH = new RegExp(
+  String.raw`^(\d{4}-\d{2}-\d{2})\/([a-z0-9]+(?:-[a-z0-9]+)*)\/([a-f0-9]{64})\.(html|json|txt)\.gz$`,
+  "u",
+);
+const MAX_REPLAY_BODY_BYTES = 2_000_000;
 
 function validateEvidence(value: unknown): value is ReplayEvidenceRef {
   if (value === null || typeof value !== "object") return false;
@@ -438,6 +454,157 @@ export function reservoirSample<T>(
     if (replacement < size) reservoir[replacement] = value;
   }
   return reservoir;
+}
+
+function replayExtension(mediaType: ReplayPayload["mediaType"]): "html" | "json" | "txt" {
+  if (mediaType === "text/html") return "html";
+  if (mediaType === "application/json") return "json";
+  return "txt";
+}
+
+function mediaTypeForExtension(extension: string): ReplayPayload["mediaType"] {
+  if (extension === "html") return "text/html";
+  if (extension === "json") return "application/json";
+  return "text/plain";
+}
+
+export async function writeReplayPayload(
+  payload: ReplayPayload,
+  root: string,
+  collectionDay: string,
+  retailerId: string,
+): Promise<VerifiedReplayPayload> {
+  if (!DAY_DIRECTORY.test(collectionDay) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(retailerId)) {
+    throw new Error("Replay day or retailer identifier is invalid");
+  }
+  const bodyBytes = Buffer.from(payload.body, "utf8");
+  if (bodyBytes.byteLength > MAX_REPLAY_BODY_BYTES) {
+    throw new Error(`Replay body exceeds ${MAX_REPLAY_BODY_BYTES} bytes`);
+  }
+  const sha256 = createHash("sha256").update(bodyBytes).digest("hex");
+  const file = `${sha256}.${replayExtension(payload.mediaType)}.gz`;
+  const directory = join(root, collectionDay, retailerId);
+  const path = join(directory, file);
+  const logicalPath = `${collectionDay}/${retailerId}/${file}`;
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  const compressed = await gzipAsync(bodyBytes);
+  const temporary = join(directory, `.replay-content-${sha256}-${randomUUID()}.tmp`);
+  let temporaryHandle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    temporaryHandle = await open(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await temporaryHandle.writeFile(compressed);
+      await temporaryHandle.chmod(0o600);
+      await temporaryHandle.sync();
+    } finally {
+      await temporaryHandle.close();
+      temporaryHandle = undefined;
+    }
+
+    let published = false;
+    try {
+      await link(temporary, path);
+      published = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (!published) {
+      try {
+        await readReplayPayload(root, { path: logicalPath, sha256 });
+      } catch {
+        // Repair a legacy/crash-truncated winner without ever streaming into
+        // the final name. Concurrent repairers publish identical hash-bound
+        // content, so moving either winner aside remains safe.
+        const quarantine = join(
+          directory,
+          `.replay-corrupt-${sha256}-${randomUUID()}.tmp`,
+        );
+        try {
+          await rename(path, quarantine);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        try {
+          await link(temporary, path);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        } finally {
+          await unlink(quarantine).catch(() => undefined);
+        }
+      }
+    }
+    await readReplayPayload(root, { path: logicalPath, sha256 });
+    const existing = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      await existing.chmod(0o600);
+    } finally {
+      await existing.close();
+    }
+    const directoryHandle = await open(directory, constants.O_RDONLY);
+    try {
+      await directoryHandle.sync();
+    } finally {
+      await directoryHandle.close();
+    }
+  } finally {
+    if (temporaryHandle !== undefined) await temporaryHandle.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+  }
+  return { ...payload, path: logicalPath, sha256 };
+}
+
+export async function readReplayPayload(
+  root: string,
+  reference: ReplayArtifact,
+  maxBodyBytes = MAX_REPLAY_BODY_BYTES,
+): Promise<VerifiedReplayPayload> {
+  if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
+    throw new RangeError("Replay read limit must be a positive safe integer");
+  }
+  const match = PRIVATE_REPLAY_PATH.exec(reference.path);
+  if (match === null || match[3] !== reference.sha256) {
+    throw new Error("Replay reference is not a valid content-addressed private path");
+  }
+  const absoluteRoot = resolve(root);
+  const absolutePath = resolve(absoluteRoot, reference.path);
+  if (!absolutePath.startsWith(`${absoluteRoot}${sep}`)) {
+    throw new Error("Replay reference escapes its private root");
+  }
+  const [realRoot, realParent] = await Promise.all([
+    realpath(absoluteRoot),
+    realpath(dirname(absolutePath)),
+  ]);
+  if (realParent !== realRoot && !realParent.startsWith(`${realRoot}${sep}`)) {
+    throw new Error("Replay reference escapes its private root through a symlink");
+  }
+  const handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let compressed: Buffer;
+  try {
+    const metadata = await handle.stat();
+    const maxCompressedBytes = maxBodyBytes + Math.ceil(maxBodyBytes / 1_000) + 65_536;
+    if (!metadata.isFile() || metadata.size > maxCompressedBytes) {
+      throw new Error("Replay artifact is not a bounded regular file");
+    }
+    compressed = await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+  const bytes = gunzipSync(compressed, { maxOutputLength: maxBodyBytes });
+  const actual = createHash("sha256").update(bytes).digest("hex");
+  if (actual !== reference.sha256) {
+    throw new Error("Replay artifact SHA-256 verification failed");
+  }
+  return {
+    body: bytes.toString("utf8"),
+    mediaType: mediaTypeForExtension(match[4] ?? "txt"),
+    path: reference.path,
+    sha256: reference.sha256,
+  };
 }
 
 export async function writeReplayHtml(

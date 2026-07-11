@@ -17,9 +17,14 @@ const DISCOVERY_PLACEHOLDERS = [
   "cursor",
 ] as const;
 
+const API_DISCOVERY_PLACEHOLDERS = [
+  ...DISCOVERY_PLACEHOLDERS,
+  "segment",
+] as const;
+
 export const STRATEGY_PLACEHOLDERS = [
   ...EXTRACTION_PLACEHOLDERS,
-  ...DISCOVERY_PLACEHOLDERS,
+  ...API_DISCOVERY_PLACEHOLDERS,
 ] as const;
 
 type Placeholder = (typeof STRATEGY_PLACEHOLDERS)[number];
@@ -189,6 +194,9 @@ export const ExtractionRequestTemplateSchema = makeRequestTemplateSchema(
 export const DiscoveryRequestTemplateSchema = makeRequestTemplateSchema(
   DISCOVERY_PLACEHOLDERS,
 );
+export const ApiDiscoveryRequestTemplateSchema = makeRequestTemplateSchema(
+  API_DISCOVERY_PLACEHOLDERS,
+);
 
 export type RequestTemplate = z.infer<typeof RequestTemplateSchema>;
 export type ExtractionRequestTemplate = z.infer<
@@ -262,6 +270,7 @@ export const RegionalContextSchema = z.object({
   kind: z.literal("vtex-segment"),
   regionId: z.string().min(1).max(300).regex(/^v\d+\.[A-Za-z0-9_-]+$/u),
   salesChannel: z.string().regex(/^\d{1,6}$/u),
+  catalogSellerId: z.string().min(1).max(200).optional(),
 }).strict();
 
 export type RegionalContext = z.infer<typeof RegionalContextSchema>;
@@ -590,18 +599,64 @@ export const ApiPaginationSchema = z.discriminatedUnion("kind", [
 
 export type ApiPagination = z.infer<typeof ApiPaginationSchema>;
 
+export const ApiDiscoverySegmentSchema = z.object({
+  value: z.string().min(1).max(300),
+  sourceCategory: z.string().min(1).max(500).optional(),
+  maxProducts: z.number().int().min(1).max(3_000),
+}).strict();
+
 export const ApiDiscoveryStrategySchema = z
   .object({
     ...CommonStrategyShape,
     purpose: z.literal("discovery"),
     tier: z.literal("api"),
-    request: DiscoveryRequestTemplateSchema,
+    request: ApiDiscoveryRequestTemplateSchema,
     itemsPath: JsonPathSchema,
     refFields: DiscoveryRefFieldsSchema,
     pagination: ApiPaginationSchema,
+    segments: z.array(ApiDiscoverySegmentSchema).min(1).max(50).optional(),
     maxProducts: MaxProductsSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((strategy, context) => {
+    const usesSegment = JSON.stringify(strategy.request).includes("{segment}");
+    if (usesSegment !== (strategy.segments !== undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: [strategy.segments === undefined ? "segments" : "request"],
+        message: "Segmented discovery requires both segments and a {segment} request placeholder",
+      });
+    }
+    if (strategy.segments !== undefined && strategy.pagination.kind === "cursor") {
+      context.addIssue({
+        code: "custom",
+        path: ["pagination"],
+        message: "Segmented discovery supports bounded page or offset pagination",
+      });
+    }
+    if (
+      strategy.segments !== undefined
+      && new Set(strategy.segments.map(({ value }) => value)).size
+        !== strategy.segments.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["segments"],
+        message: "Segment values must be unique",
+      });
+    }
+    if (
+      strategy.segments !== undefined
+      && strategy.segments.reduce((sum, segment) => sum + segment.maxProducts, 0)
+        > strategy.maxProducts
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["segments"],
+        message: "Segment product allocations must not exceed maxProducts",
+      });
+    }
+  });
 
 export const DomCrawlDiscoveryStrategySchema = z
   .object({

@@ -80,6 +80,7 @@ describe("extraction strategy schemas", () => {
         kind: "vtex-segment",
         regionId: "v2.ABC_123",
         salesChannel: "2",
+        catalogSellerId: "seller-01310",
       },
       fields: jsonFields,
     });
@@ -87,6 +88,7 @@ describe("extraction strategy schemas", () => {
       kind: "vtex-segment",
       regionId: "v2.ABC_123",
       salesChannel: "2",
+      catalogSellerId: "seller-01310",
     });
     expect(JSON.stringify(regional)).not.toMatch(/vtex_segment|cookie/iu);
 
@@ -353,6 +355,40 @@ describe("discovery strategy schemas", () => {
         javascript: "fetch('https://evil.test')",
       }),
     ).toThrow();
+  });
+
+  it("requires bounded allocations and provenance-aware request segments", () => {
+    const base = {
+      ...discoveryBase,
+      tier: "api",
+      request: {
+        method: "POST",
+        url: "https://api.shop.test/category",
+        headers: {},
+        body: { segment: "{segment}", page: "{page}" },
+      },
+      itemsPath: "$.items[*]",
+      refFields: { url: "$.url" },
+      pagination: { kind: "page", start: 1, pageSize: 50, maxPages: 20 },
+      maxProducts: 1_500,
+    } as const;
+
+    expect(ApiDiscoveryStrategySchema.parse({
+      ...base,
+      segments: [
+        { value: "food", sourceCategory: "Alimentos", maxProducts: 1_200 },
+        { value: "drinks", sourceCategory: "Bebidas", maxProducts: 300 },
+      ],
+    }).segments).toHaveLength(2);
+    expect(() => ApiDiscoveryStrategySchema.parse({ ...base }))
+      .toThrow(/segments.*placeholder|placeholder.*segments/iu);
+    expect(() => ApiDiscoveryStrategySchema.parse({
+      ...base,
+      segments: [
+        { value: "food", maxProducts: 1_500 },
+        { value: "drinks", maxProducts: 1 },
+      ],
+    })).toThrow(/allocations.*maxProducts/iu);
   });
 });
 

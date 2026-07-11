@@ -7,8 +7,10 @@ import { openDatabase } from "../../src/db/database.js";
 import {
   beginExplorationRun,
   beginHealingEvent,
+  finishHealingEvent,
   reconcileHealingExploration,
   recordExplorationAttempt,
+  setRetailerDegraded,
 } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
 import {
@@ -22,7 +24,12 @@ import {
 } from "../../src/healing/heal.js";
 import { ExplorationEvidenceError } from "../../src/explorer/explore.js";
 import { monitorRun } from "../../src/healing/monitor.js";
-import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
+import {
+  discoveryStrategy,
+  extractionStrategy,
+  seedRetailer,
+  seedStrategy,
+} from "../pipeline/helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 const temporaryDirectories: string[] = [];
@@ -40,6 +47,39 @@ function seed(): ReturnType<typeof openDatabase> {
   return database;
 }
 
+function insertActiveSuccessor(
+  database: ReturnType<typeof openDatabase>,
+  strategy: object,
+  tier: number,
+  activatedAt: string,
+): void {
+  const id = "retailer-1-extraction-v2";
+  database.prepare(`
+    INSERT INTO strategies
+      (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+       validation_sample_size, validation_successes, validation_rate,
+       active, validated_at, activated_at)
+    VALUES (?, 'retailer-1', 'extraction', ?, 2, ?, 'fixture successor',
+            30, 30, 1, 0, ?, NULL)
+  `).run(id, tier, JSON.stringify(strategy), activatedAt);
+  database.prepare(`
+    INSERT INTO strategy_validation_evidence
+      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+       executor_json, attestation_key_id, attempted, valid, score, validated_at)
+    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, ?)
+  `).run(
+    id,
+    "data/validation/retailer-1-extraction-v2.json",
+    "a".repeat(64),
+    "b".repeat(64),
+    "c".repeat(64),
+    activatedAt,
+  );
+  database.prepare(
+    "UPDATE strategies SET active = 1, activated_at = ? WHERE id = ?",
+  ).run(activatedAt, id);
+}
+
 function insertRun(
   database: ReturnType<typeof openDatabase>,
   id: string,
@@ -55,11 +95,11 @@ function insertRun(
        (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
         status, attempted, ok, failed, started_at, finished_at, metadata_json)
      VALUES (?, ?, 'collect', '2026-07-10',
-             ?, 1, ?, ?, ?, ?,
+             ?, 1, 'running', 0, 0, 0,
              '2026-07-10T00:00:00.000Z',
-             CASE WHEN ? = 'running' THEN NULL ELSE '2026-07-10T00:01:00.000Z' END,
+             NULL,
              ?)`,
-  ).run(id, retailerId, strategyId, status, attempted, ok, failures.length, status, JSON.stringify({
+  ).run(id, retailerId, strategyId, JSON.stringify({
     failureResponses: failures.map(({ responded }) => responded),
   }));
   const statement = database.prepare(
@@ -80,6 +120,40 @@ function insertRun(
       strategyId,
     );
   });
+  database.prepare(`
+    UPDATE runs
+    SET status = ?, attempted = ?, ok = ?, failed = ?,
+        finished_at = CASE WHEN ? = 'running'
+          THEN NULL ELSE '2026-07-10T00:01:00.000Z' END
+    WHERE id = ?
+  `).run(status, attempted, ok, failures.length, status, id);
+}
+
+function insertDiscoveryRun(
+  database: ReturnType<typeof openDatabase>,
+  id: string,
+): void {
+  database.prepare(`
+    INSERT INTO runs
+      (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+       status, attempted, ok, failed, started_at, finished_at, metadata_json)
+    VALUES (?, 'retailer-1', 'discover', '2026-07-10',
+            'retailer-1-discovery-v1', 1, 'running', 0, 0, 0,
+            '2026-07-10T00:00:00.000Z', NULL,
+            '{"failureResponses":[true]}')
+  `).run(id);
+  database.prepare(`
+    INSERT INTO run_failures
+      (id, run_id, retailer_id, category, responded, message, strategy_id,
+       strategy_version, occurred_at)
+    VALUES (?, ?, 'retailer-1', 'missing-fields', 1, 'discovery drift',
+            'retailer-1-discovery-v1', 1, '2026-07-10T00:00:30.000Z')
+  `).run(`${id}-failure`, id);
+  database.prepare(`
+    UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
+                    finished_at = '2026-07-10T00:01:00.000Z'
+    WHERE id = ?
+  `).run(id);
 }
 
 describe("drift monitor state machine", () => {
@@ -207,15 +281,12 @@ describe("drift monitor state machine", () => {
     database.prepare(
       "UPDATE strategies SET active = 0, retired_at = '2026-07-10T00:02:00.000Z' WHERE id = ?",
     ).run("retailer-1-extraction-v1");
-    database.prepare(
-      `INSERT INTO strategies
-         (id, retailer_id, purpose, tier, version, strategy_json, provenance,
-          validation_sample_size, validation_successes, validation_rate,
-          active, validated_at, activated_at)
-       VALUES ('retailer-1-extraction-v2', 'retailer-1', 'extraction', 4, 2, ?,
-               'fixture successor', 30, 30, 1, 1,
-               '2026-07-10T00:02:00.000Z', '2026-07-10T00:02:00.000Z')`,
-    ).run(JSON.stringify({ ...extractionStrategy, tier: "script", script: "return {};" }));
+    insertActiveSuccessor(
+      database,
+      { ...extractionStrategy, tier: "script", script: "return {};" },
+      4,
+      "2026-07-10T00:02:00.000Z",
+    );
 
     await monitorRun("onset-v1", { database });
 
@@ -287,6 +358,23 @@ describe("drift monitor state machine", () => {
     ).get()).toMatchObject({ degraded: 1 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM healing_events").get())
       .toEqual({ n: 3 });
+    expect(database.prepare(
+      `SELECT state, reason, source, healing_event_id FROM retailer_state_events
+       WHERE retailer_id = 'retailer-1' ORDER BY sequence`,
+    ).all()).toEqual([
+      {
+        state: "recovered",
+        reason: null,
+        source: "retailer_insert",
+        healing_event_id: null,
+      },
+      {
+        state: "degraded",
+        reason: "extraction regeneration failed for 3 consecutive events",
+        source: "healing_transition",
+        healing_event_id: third.healingEventId,
+      },
+    ]);
     expect(alerts.at(-1)).toMatchObject({ severity: "error" });
 
     insertRun(database, "drift-4", [
@@ -299,6 +387,10 @@ describe("drift monitor state machine", () => {
       alertSink: { send: async (event) => { alerts.push(event); } },
     });
     expect(fourth).toMatchObject({ status: "failed", degraded: true });
+    expect(database.prepare(
+      `SELECT COUNT(*) AS n FROM retailer_state_events
+       WHERE retailer_id = 'retailer-1' AND state = 'degraded'`,
+    ).get()).toEqual({ n: 1 });
     expect(alerts.filter(({ title }) => title === "Retailer strategy healing degraded"))
       .toHaveLength(1);
   });
@@ -325,6 +417,240 @@ describe("drift monitor state machine", () => {
       "SELECT id FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1",
     ).all()).toEqual([{ id: "retailer-1-extraction-v1" }]);
     expect(alerts).toHaveLength(1);
+  });
+
+  it("appends a recovered state boundary when healing restores a degraded retailer", async () => {
+    const database = seed();
+    database.prepare(`
+      UPDATE retailers
+      SET degraded = 1,
+          degraded_reason = 'fixture degraded interval',
+          updated_at = '2026-07-10T00:02:00.000Z'
+      WHERE id = 'retailer-1'
+    `).run();
+    insertRun(database, "recovery-drift", [
+      { category: "missing-fields", responded: true },
+    ]);
+
+    const outcome = await healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "recovery-drift",
+      now: () => new Date("2026-07-10T00:10:00.000Z"),
+      explore: async () => ({
+        explorationRunId: "recovery-exploration",
+        activated: true,
+        attempts: 1,
+        externalScore: 1,
+        outcome: "validated",
+        costUsd: 0,
+      }),
+    });
+
+    expect(outcome).toMatchObject({ status: "recovered", degraded: false });
+    expect(database.prepare(
+      "SELECT degraded, degraded_reason FROM retailers WHERE id = 'retailer-1'",
+    ).get()).toEqual({ degraded: 0, degraded_reason: null });
+    expect(database.prepare(`
+      SELECT state, source, healing_event_id, effective_at
+      FROM retailer_state_events
+      WHERE retailer_id = 'retailer-1' AND source <> 'retailer_insert'
+      ORDER BY sequence
+    `).all()).toEqual([
+      {
+        state: "degraded",
+        source: "retailer_transition",
+        healing_event_id: null,
+        effective_at: "2026-07-10T00:02:00.000Z",
+      },
+      {
+        state: "recovered",
+        source: "healing_transition",
+        healing_event_id: outcome.healingEventId,
+        effective_at: "2026-07-10T00:10:00.000Z",
+      },
+    ]);
+  });
+
+  it("does not clear an extraction degradation when only discovery recovers", async () => {
+    const database = seed();
+    const failedExplore = async () => ({
+      explorationRunId: "failed-exploration",
+      activated: false,
+      attempts: 1,
+      externalScore: 0,
+      outcome: "validation_failed" as const,
+      costUsd: 0,
+    });
+    for (let index = 1; index <= 3; index += 1) {
+      insertRun(database, `extraction-drift-${index}`, [
+        { category: "missing-fields", responded: true },
+      ]);
+      await healRetailer("retailer-1", "extraction", {
+        database,
+        onsetRunId: `extraction-drift-${index}`,
+        explore: failedExplore,
+        now: () => new Date(`2026-07-10T00:0${index}:00.000Z`),
+      });
+    }
+    expect(database.prepare(
+      "SELECT degraded FROM retailers WHERE id = 'retailer-1'",
+    ).get()).toEqual({ degraded: 1 });
+
+    insertRun(database, "extraction-provider-unavailable", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const unavailable = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "extraction-provider-unavailable",
+      detectedAt: "2026-07-10T00:04:00.000Z",
+    });
+    finishHealingEvent(database, {
+      healingEventId: unavailable.event.id,
+      status: "provider_unavailable",
+      attempts: 1,
+      finishedAt: "2026-07-10T00:04:30.000Z",
+      details: { outcome: "provider_unavailable" },
+    });
+
+    seedStrategy(database, "discovery", discoveryStrategy);
+    insertDiscoveryRun(database, "discovery-recovered");
+    const recovery = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "discovery",
+      onsetRunId: "discovery-recovered",
+      detectedAt: "2026-07-10T00:05:00.000Z",
+    });
+    finishHealingEvent(database, {
+      healingEventId: recovery.event.id,
+      status: "recovered",
+      attempts: 1,
+      finishedAt: "2026-07-10T00:06:00.000Z",
+      details: { outcome: "validated" },
+    });
+    const remainsDegraded = setRetailerDegraded(
+      database,
+      "retailer-1",
+      false,
+      undefined,
+      "2026-07-10T00:06:00.000Z",
+      recovery.event.id,
+    );
+
+    expect(remainsDegraded).toBe(true);
+    expect(database.prepare(
+      "SELECT degraded, degraded_reason FROM retailers WHERE id = 'retailer-1'",
+    ).get()).toMatchObject({
+      degraded: 1,
+      degraded_reason: "extraction regeneration failed for 3 consecutive events",
+    });
+    expect(database.prepare(`
+      SELECT state, purpose
+      FROM retailer_state_events
+      WHERE retailer_id = 'retailer-1'
+      ORDER BY sequence DESC
+      LIMIT 1
+    `).get()).toEqual({ state: "degraded", purpose: "extraction" });
+
+    for (let index = 1; index <= 3; index += 1) {
+      const runId = `discovery-failed-${index}`;
+      insertDiscoveryRun(database, runId);
+      const failed = beginHealingEvent(database, {
+        retailerId: "retailer-1",
+        purpose: "discovery",
+        onsetRunId: runId,
+        detectedAt: `2026-07-10T00:0${index + 6}:00.000Z`,
+      });
+      finishHealingEvent(database, {
+        healingEventId: failed.event.id,
+        status: "failed",
+        attempts: 1,
+        finishedAt: `2026-07-10T00:0${index + 6}:30.000Z`,
+        details: { outcome: "validation_failed" },
+      });
+    }
+
+    insertRun(database, "extraction-recovered", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const extractionRecovery = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "extraction-recovered",
+      detectedAt: "2026-07-10T00:10:00.000Z",
+    });
+    finishHealingEvent(database, {
+      healingEventId: extractionRecovery.event.id,
+      status: "recovered",
+      attempts: 1,
+      finishedAt: "2026-07-10T00:11:00.000Z",
+      details: { outcome: "validated" },
+    });
+    expect(setRetailerDegraded(
+      database,
+      "retailer-1",
+      false,
+      undefined,
+      "2026-07-10T00:11:00.000Z",
+      extractionRecovery.event.id,
+    )).toBe(true);
+
+    insertDiscoveryRun(database, "discovery-final-recovery");
+    const discoveryRecovery = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "discovery",
+      onsetRunId: "discovery-final-recovery",
+      detectedAt: "2026-07-10T00:12:00.000Z",
+    });
+    finishHealingEvent(database, {
+      healingEventId: discoveryRecovery.event.id,
+      status: "recovered",
+      attempts: 1,
+      finishedAt: "2026-07-10T00:13:00.000Z",
+      details: { outcome: "validated" },
+    });
+    expect(setRetailerDegraded(
+      database,
+      "retailer-1",
+      false,
+      undefined,
+      "2026-07-10T00:13:00.000Z",
+      discoveryRecovery.event.id,
+    )).toBe(false);
+    expect(database.prepare(
+      "SELECT degraded FROM retailers WHERE id = 'retailer-1'",
+    ).get()).toEqual({ degraded: 0 });
+  });
+
+  it("rejects a healing event from another retailer as state-transition evidence", () => {
+    const database = seed();
+    seedRetailer(database, "retailer-2");
+    seedStrategy(database, "extraction", extractionStrategy, "retailer-2");
+    insertRun(database, "other-retailer-drift", [
+      { category: "missing-fields", responded: true },
+    ], 0, "failed", "retailer-2");
+    const otherEvent = beginHealingEvent(database, {
+      retailerId: "retailer-2",
+      purpose: "extraction",
+      onsetRunId: "other-retailer-drift",
+      detectedAt: "2026-07-10T00:02:00.000Z",
+    });
+    finishHealingEvent(database, {
+      healingEventId: otherEvent.event.id,
+      status: "failed",
+      attempts: 1,
+      finishedAt: "2026-07-10T00:03:00.000Z",
+      details: { outcome: "validation_failed" },
+    });
+
+    expect(() => setRetailerDegraded(
+      database,
+      "retailer-1",
+      true,
+      "wrong retailer cause",
+      "2026-07-10T00:03:00.000Z",
+      otherEvent.event.id,
+    )).toThrow(/identity/iu);
   });
 
   it("refuses direct healing for a blocking onset without opening an event or calling exploration", async () => {
@@ -1534,15 +1860,12 @@ describe("drift monitor state machine", () => {
     database.prepare(
       "UPDATE strategies SET active = 0, retired_at = '2026-07-10T00:05:00.000Z' WHERE id = ?",
     ).run("retailer-1-extraction-v1");
-    database.prepare(
-      `INSERT INTO strategies
-         (id, retailer_id, purpose, tier, version, strategy_json, provenance,
-          validation_sample_size, validation_successes, validation_rate,
-          active, validated_at, activated_at)
-       VALUES ('retailer-1-extraction-v2', 'retailer-1', 'extraction', 3, 2, ?,
-               'fixture successor', 30, 30, 1, 1,
-               '2026-07-10T00:05:00.000Z', '2026-07-10T00:05:00.000Z')`,
-    ).run(JSON.stringify(extractionStrategy));
+    insertActiveSuccessor(
+      database,
+      extractionStrategy,
+      3,
+      "2026-07-10T00:05:00.000Z",
+    );
     let explorationCalls = 0;
 
     const summary = await healPendingEvents({

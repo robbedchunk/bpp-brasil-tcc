@@ -77,7 +77,15 @@ function healthyRunWhere(alias: string): string {
     AND ${alias}.status IN ('completed', 'partial')
     AND ${alias}.finished_at IS NOT NULL
     AND ${alias}.attempted > 0
-    AND CAST(${alias}.ok AS REAL) / ${alias}.attempted >= 0.7`;
+    AND CAST(${alias}.ok AS REAL) / ${alias}.attempted >= 0.7
+    AND COALESCE((
+      SELECT state.state
+      FROM retailer_state_events state
+      WHERE state.retailer_id = ${alias}.retailer_id
+        AND state.effective_at <= ${alias}.started_at
+      ORDER BY state.effective_at DESC, state.sequence DESC
+      LIMIT 1
+    ), 'recovered') = 'recovered'`;
 }
 
 export function loadIndexInput(

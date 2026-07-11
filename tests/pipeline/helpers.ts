@@ -20,12 +20,29 @@ export function seedStrategy(
   const id = `${retailerId}-${purpose}-v1`;
   database.prepare(
     `INSERT INTO strategies
-       (id, retailer_id, purpose, tier, version, strategy_json, provenance,
+     (id, retailer_id, purpose, tier, version, strategy_json, provenance,
         validation_sample_size, validation_successes, validation_rate, active,
         validated_at, activated_at)
-     VALUES (?, ?, ?, 1, 1, ?, 'test fixture', 30, 30, 1, 1,
-             '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')`,
+     VALUES (?, ?, ?, 1, 1, ?, 'test fixture', 30, 30, 1, 0,
+             '2026-07-10T00:00:00.000Z', NULL)`,
   ).run(id, retailerId, purpose, JSON.stringify(strategy));
+  database.prepare(`
+    INSERT INTO strategy_validation_evidence
+      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+       executor_json, attestation_key_id, attempted, valid, score, validated_at)
+    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, '2026-07-10T00:00:00.000Z')
+  `).run(
+    id,
+    `data/validation/${id}.json`,
+    "a".repeat(64),
+    "b".repeat(64),
+    "c".repeat(64),
+  );
+  database.prepare(
+    `UPDATE strategies
+     SET active = 1, activated_at = '2026-07-10T00:00:00.000Z'
+     WHERE id = ?`,
+  ).run(id);
   return id;
 }
 

@@ -151,12 +151,13 @@ describe("daily pipeline", () => {
     ]);
   });
 
-  it("continues deterministic collection and records the heartbeat when monitoring fails", async () => {
+  it("continues collection but records a non-qualifying partial heartbeat when monitoring fails", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database, "a");
     seedRetailer(database, "b");
     const collected: string[] = [];
+    const operationalFailures: string[] = [];
 
     const summary = await runDaily({
       database,
@@ -179,16 +180,79 @@ describe("daily pipeline", () => {
       monitor: async (runId) => {
         if (runId === "run-a") throw new Error("monitor fixture failure");
       },
+      reportOperationalFailure: async (failure) => {
+        operationalFailures.push(`${failure.kind}/${failure.retailerId}/${failure.runId}`);
+      },
     });
 
     expect(collected).toEqual(["a", "b"]);
     expect(summary.monitorFailedRunIds).toEqual(["run-a"]);
+    expect(summary.status).toBe("partial");
     expect(summary.heartbeatRecorded).toBe(true);
+    expect(operationalFailures).toEqual(["monitor/a/run-a"]);
     const heartbeat = database.prepare(
-      "SELECT details_json FROM heartbeats",
-    ).get() as { details_json: string };
+      "SELECT status, details_json FROM heartbeats",
+    ).get() as { status: string; details_json: string };
+    expect(heartbeat.status).toBe("partial");
     expect(JSON.parse(heartbeat.details_json)).toMatchObject({
       monitorFailedRunIds: ["run-a"],
+      retailerFailures: [],
+    });
+  });
+
+  it("isolates a retailer-level throw, attempts later retailers, and persists the partial boundary", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database, "a");
+    seedRetailer(database, "b");
+    seedRetailer(database, "c");
+    const attempted: string[] = [];
+    const alerted: string[] = [];
+
+    const summary = await runDaily({
+      database,
+      collect: async (retailerId) => {
+        attempted.push(retailerId);
+        if (retailerId === "b") throw new Error("fixture orchestration failure");
+        return {
+          id: `run-${retailerId}`,
+          retailerId,
+          stage: "collect",
+          attempted: 1,
+          ok: 1,
+          failed: 0,
+          successRate: 1,
+          status: "completed",
+          startedAt: "2026-07-10T06:00:00.000Z",
+          finishedAt: "2026-07-10T06:00:01.000Z",
+          dryRun: false,
+        };
+      },
+      reportOperationalFailure: async (failure) => {
+        alerted.push(`${failure.kind}/${failure.retailerId}`);
+      },
+    });
+
+    expect(attempted).toEqual(["a", "b", "c"]);
+    expect(alerted).toEqual(["collection/b"]);
+    expect(summary).toMatchObject({
+      status: "partial",
+      retailers: 3,
+      terminal: 2,
+      heartbeatRecorded: true,
+      retailerFailures: [{
+        retailerId: "b",
+        message: "fixture orchestration failure",
+      }],
+    });
+    const heartbeat = database.prepare(
+      "SELECT status, details_json FROM heartbeats",
+    ).get() as { status: string; details_json: string };
+    expect(heartbeat.status).toBe("partial");
+    expect(JSON.parse(heartbeat.details_json)).toMatchObject({
+      runIds: ["run-a", "run-c"],
+      monitorFailedRunIds: [],
+      retailerFailures: [{ retailerId: "b" }],
     });
   });
 });

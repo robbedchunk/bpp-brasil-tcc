@@ -1,5 +1,6 @@
 import type { ExtractionResult, ProductRef } from "./types.js";
 import type { ExtractionStrategy } from "./schema.js";
+import { isDescriptiveProductTitle } from "../normalize/title.js";
 
 export interface ValidationReport {
   attempted: number;
@@ -17,7 +18,9 @@ export type ExtractionStrategyExecutor = (
 const ACTIVATION_SAMPLE_SIZE = 30;
 const ACTIVATION_SCORE = 0.9;
 
-function invalidReason(result: ExtractionResult): string | undefined {
+export function extractionValidationFailureReason(
+  result: ExtractionResult,
+): string | undefined {
   if (result.ok !== true) {
     return result.failure?.message?.trim() || "Extraction failed";
   }
@@ -26,8 +29,8 @@ function invalidReason(result: ExtractionResult): string | undefined {
   if (fields === undefined || fields === null || typeof fields !== "object") {
     return "Extraction returned no fields";
   }
-  if (typeof fields.title !== "string" || fields.title.trim().length === 0) {
-    return "Title must be a non-empty string";
+  if (!isDescriptiveProductTitle(fields.title)) {
+    return "Title must contain descriptive product text";
   }
   if (
     fields.brand !== null &&
@@ -105,7 +108,7 @@ export async function validateExtractionStrategy(
   for (const ref of selectedRefs) {
     try {
       const result = await execute(strategy, ref);
-      const reason = invalidReason(result);
+      const reason = extractionValidationFailureReason(result);
       if (reason === undefined) {
         valid += 1;
         samples.push({ ref, valid: true });

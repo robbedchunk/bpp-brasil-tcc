@@ -46,13 +46,20 @@ export function recordHeartbeat(
 export function latestSuccessfulHeartbeat(
   database: Database.Database,
   pipeline: string,
+  options: { scheduledOnly?: boolean } = {},
 ): Date | null {
   const row = database.prepare(
     `SELECT completed_at
      FROM heartbeats
      WHERE pipeline = ? AND status = 'completed'
+       AND COALESCE(json_array_length(details_json, '$.monitorFailedRunIds'), 0) = 0
+       AND COALESCE(json_array_length(details_json, '$.retailerFailures'), 0) = 0
+       AND (? = 0 OR (
+         json_extract(details_json, '$.trigger') = 'systemd-timer'
+         AND json_extract(details_json, '$.timerUnit') = 'precos-daily.timer'
+       ))
      ORDER BY completed_at DESC, id DESC
      LIMIT 1`,
-  ).get(pipeline) as { completed_at: string } | undefined;
+  ).get(pipeline, options.scheduledOnly === true ? 1 : 0) as { completed_at: string } | undefined;
   return row === undefined ? null : new Date(row.completed_at);
 }

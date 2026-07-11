@@ -15,7 +15,10 @@ import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
 
 import { OFFICIAL_IPCA_ARCHIVE_SHA256 } from "../reference/ipca.js";
-import { buildDailyIndex } from "./aggregate.js";
+import {
+  buildDailyIndex,
+  experimentalDailySeriesFacts,
+} from "./aggregate.js";
 import { OfficialSidraClient, SIDRA_ENDPOINT } from "./sidra.js";
 import {
   INDEX_METHOD_VERSION,
@@ -131,7 +134,8 @@ function observationRange(database: Database.Database): ObservationRange {
 function databaseEvidence(database: Database.Database): ExportManifest["sources"]["database"] {
   const tables = [
     "retailers", "strategies", "products", "observations", "runs", "run_failures",
-    "ipca_items", "classifications", "exploration_runs", "healing_events", "cost_ledger",
+    "ipca_items", "classifications", "exploration_runs", "healing_events",
+    "retailer_state_events", "cost_ledger",
   ] as const;
   const counts: Record<string, number> = {};
   for (const table of tables) {
@@ -144,6 +148,7 @@ function databaseEvidence(database: Database.Database): ExportManifest["sources"
       (SELECT MAX(finished_at) FROM runs) AS runs,
       (SELECT MAX(created_at) FROM classifications) AS classifications,
       (SELECT MAX(recovered_at) FROM healing_events) AS healing_events,
+      (SELECT MAX(effective_at) FROM retailer_state_events) AS retailer_state_events,
       (SELECT MAX(occurred_at) FROM cost_ledger) AS cost_ledger
   `).get() as Record<string, string | null>;
   return { counts, maxima: maximaRow };
@@ -495,10 +500,10 @@ export async function exportResearchData(
           fetchedRange: { startMonth, endMonth },
           missingMonths: sidra.missingMonths,
         };
-    const hasMovement = series.aggregate.some((point) => point.dailyRelative !== null);
+    const { hasExperimentalDailySeries } = experimentalDailySeriesFacts(series);
     const status = sidra === null
       ? "official_unavailable" as const
-      : !hasMovement ? "no_index_data" as const : "complete" as const;
+      : !hasExperimentalDailySeries ? "no_index_data" as const : "complete" as const;
     const manifest: ExportManifest = {
       schemaVersion: 1,
       snapshotId,

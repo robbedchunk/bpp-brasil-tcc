@@ -43,19 +43,49 @@ function insertRetailer(database: ReturnType<typeof openDatabase>): void {
     );
 }
 
+function insertFixtureStrategy(
+  database: ReturnType<typeof openDatabase>,
+  id: string,
+  version: number,
+  active = true,
+  provenance = "hand-authored",
+): void {
+  database.prepare(`
+    INSERT INTO strategies
+      (id, retailer_id, purpose, tier, version, strategy_json, provenance, active,
+       validation_sample_size, validation_successes, validation_rate, validated_at)
+    VALUES (?, 'retailer-1', 'extraction', 1, ?, '{}', ?, 0, 30, 30, 1,
+            '2026-07-10T00:00:00.000Z')
+  `).run(id, version, provenance);
+  if (!active) return;
+  database.prepare(`
+    INSERT INTO strategy_validation_evidence
+      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+       executor_json, attestation_key_id, attempted, valid, score, validated_at)
+    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, '2026-07-10T00:00:00.000Z')
+  `).run(
+    id,
+    `data/validation/${id}.json`,
+    "a".repeat(64),
+    "b".repeat(64),
+    "c".repeat(64),
+  );
+  database.prepare(`
+    UPDATE strategies
+    SET active = 1, activated_at = '2026-07-10T00:00:00.000Z'
+    WHERE id = ?
+  `).run(id);
+}
+
 function seedEvidenceGraph(database: ReturnType<typeof openDatabase>): void {
   insertRetailer(database);
+  insertFixtureStrategy(database, "strategy-1", 1);
+  insertFixtureStrategy(database, "strategy-2", 2, false, "generated");
   database.exec(`
     INSERT INTO ipca_items
       (id, code, name, weight, weight_period, source_url, citation)
     VALUES
       ('ipca-1', '1101002', 'Arroz', 1.5, '2026-01', 'https://sidra.ibge.gov.br', 'IBGE');
-
-    INSERT INTO strategies
-      (id, retailer_id, purpose, tier, version, strategy_json, provenance, active)
-    VALUES
-      ('strategy-1', 'retailer-1', 'extraction', 1, 1, '{}', 'hand-authored', 1),
-      ('strategy-2', 'retailer-1', 'extraction', 2, 2, '{}', 'generated', 0);
 
     INSERT INTO products
       (id, retailer_id, canonical_url, title, first_seen, last_seen)
@@ -78,10 +108,11 @@ function seedEvidenceGraph(database: ReturnType<typeof openDatabase>): void {
        '2026-07-10T03:00:30.000Z', '2026-07-10', 1000, 899);
 
     INSERT INTO run_failures
-      (id, run_id, retailer_id, product_id, category, message, occurred_at)
+      (id, run_id, retailer_id, product_id, category, message,
+       strategy_id, strategy_version, occurred_at)
     VALUES
       ('failure-1', 'run-1', 'retailer-1', 'product-1', 'parse', 'bad markup',
-       '2026-07-10T03:00:40.000Z');
+       'strategy-1', 1, '2026-07-10T03:00:40.000Z');
 
     INSERT INTO classifications
       (id, product_id, ipca_item_id, version, decision, confidence, method)
@@ -181,6 +212,7 @@ describe("database foundation", () => {
         "cost_ledger",
         "model_budget_reservations",
         "exploration_recovery_adjustments",
+        "retailer_state_events",
         "schema_migrations",
       ]),
     );
@@ -193,9 +225,11 @@ describe("database foundation", () => {
          (@id, 'retailer-1', 'extraction', 1, @version, '{}', 'hand-authored', 1)`,
     );
 
-    insertStrategy.run({ id: "strategy-1", version: 1 });
+    expect(() => insertStrategy.run({ id: "direct-active", version: 1 }))
+      .toThrow(/inserted inactive|evidence-backed/iu);
+    insertFixtureStrategy(database, "strategy-1", 1);
     expect(() =>
-      insertStrategy.run({ id: "strategy-2", version: 2 }),
+      insertFixtureStrategy(database, "strategy-2", 2),
     ).toThrow(/UNIQUE/);
   });
 
@@ -229,23 +263,25 @@ describe("database foundation", () => {
       }),
     ).toThrow(/FOREIGN KEY/);
 
+    insertFixtureStrategy(database, "strategy-1", 1, true, "fixture");
     database
       .prepare(
         `INSERT INTO runs
-           (id, retailer_id, stage, collection_day, status, attempted, ok, failed,
-            started_at, finished_at)
+           (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+            status, attempted, ok, failed, started_at, finished_at)
          VALUES
-           ('run-1', 'retailer-1', 'collect', '2026-07-10', 'completed', 1, 1, 0,
-            '2026-07-10T03:00:00.000Z', '2026-07-10T03:01:00.000Z')`,
+           ('run-1', 'retailer-1', 'collect', '2026-07-10', 'strategy-1', 1,
+            'running', 0, 0, 0, '2026-07-10T03:00:00.000Z', NULL)`,
       )
       .run();
 
     const insertObservation = database.prepare(
       `INSERT INTO observations
-         (id, product_id, run_id, observed_at, collection_day, price_cents,
-          promo_price_cents)
+         (id, product_id, run_id, strategy_id, strategy_version, observed_at,
+          collection_day, price_cents, promo_price_cents)
        VALUES
-         (@id, 'product-1', 'run-1', '2026-07-10T03:00:30.000Z', '2026-07-10',
+         (@id, 'product-1', 'run-1', 'strategy-1', 1,
+          '2026-07-10T03:00:30.000Z', '2026-07-10',
           @price, @promoPrice)`,
     );
 
@@ -275,7 +311,7 @@ describe("database foundation", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 10 });
+    ).toEqual({ count: 13 });
 
     database.exec("SELECT 1");
     expect(() => openMemoryDatabase()).not.toThrow();
@@ -297,7 +333,7 @@ describe("database foundation", () => {
     databases.push(database);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-    ).toEqual({ count: 10 });
+    ).toEqual({ count: 13 });
   });
 
   it("binds at most one immutable exploration run to each healing event", () => {
@@ -348,6 +384,7 @@ describe("database foundation", () => {
       "cost_ledger",
       "heartbeats",
       "healing_events",
+      "retailer_state_events",
       "exploration_runs",
       "exploration_recovery_adjustments",
       "classifications",

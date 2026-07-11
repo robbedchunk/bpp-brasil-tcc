@@ -31,6 +31,24 @@ function seedProducts(database: ReturnType<typeof openDatabase>, count: number):
   insert();
 }
 
+function fillCollectionRequestAdmissions(
+  database: ReturnType<typeof openDatabase>,
+  runId: string,
+  count: number,
+): void {
+  database.prepare(`
+    WITH RECURSIVE ordinals(ordinal) AS (
+      VALUES (1)
+      UNION ALL SELECT ordinal + 1 FROM ordinals WHERE ordinal < ?
+    )
+    INSERT INTO request_admissions
+      (id, run_id, retailer_id, collection_day, stage, stage_ordinal, admitted_at)
+    SELECT printf('%s-request-%04d', ?, ordinal), ?, 'retailer-1',
+           '2026-07-10', 'collect', ordinal, '2026-07-10T03:00:00.000Z'
+    FROM ordinals
+  `).run(count, runId, runId);
+}
+
 async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
   for (let attempt = 0; attempt < 2_000; attempt += 1) {
     if (predicate()) return;
@@ -100,7 +118,7 @@ describe("collection pipeline", () => {
         return {
           ok: true,
           fields: {
-            title: "Product",
+            title: "Fresh grocery product",
             brand: null,
             price: 1,
             promoPrice: null,
@@ -114,6 +132,75 @@ describe("collection pipeline", () => {
     expect(maximum).toBe(5);
     expect(summary).toMatchObject({ attempted: 20, ok: 19, failed: 1 });
     expect(database.prepare("SELECT category FROM run_failures").get()).toEqual({ category: "unknown" });
+  });
+
+  it("records numeric API titles as coherent missing-fields drift evidence", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 2);
+    const root = await mkdtemp(join(tmpdir(), "precos-numeric-title-"));
+    const replayRoot = join(root, "replay");
+    const logDirectory = join(root, "logs");
+    directories.push(root);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      title: "123456",
+      brand: "Marca",
+      price: 10,
+      promo: null,
+      unit: "1 kg",
+      available: true,
+    }), { headers: { "content-type": "application/json" } });
+    try {
+      const summary = await runCollection("retailer-1", {
+        database,
+        concurrency: 1,
+        rawHtmlRoot: replayRoot,
+        logDirectory,
+        blockingPolicy: {
+          hardFailureLimit: 1,
+          transportFailureLimit: 2,
+          initialDelayMs: 0,
+          maxDelayMs: 0,
+        },
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+      });
+
+      expect(summary).toMatchObject({
+        attempted: 2,
+        ok: 0,
+        failed: 2,
+        stoppedForBlocking: false,
+        status: "failed",
+      });
+      expect(database.prepare(`
+        SELECT category, responded FROM run_failures ORDER BY id
+      `).all()).toEqual([
+        { category: "missing-fields", responded: 1 },
+        { category: "missing-fields", responded: 1 },
+      ]);
+      const logFile = (await readdir(logDirectory))[0];
+      expect(logFile).toBeDefined();
+      const events = (await readFile(join(logDirectory, logFile!), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as {
+          event: string;
+          fields?: { category?: string; ok?: boolean };
+        });
+      expect(events.filter(({ event }) => event === "attempt.finished")).toEqual([
+        expect.objectContaining({
+          fields: expect.objectContaining({ ok: false, category: "missing-fields" }),
+        }),
+        expect.objectContaining({
+          fields: expect.objectContaining({ ok: false, category: "missing-fields" }),
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("caps attempts at 2,000 even when a higher limit is requested", async () => {
@@ -146,12 +233,12 @@ describe("collection pipeline", () => {
     database.prepare(
       `INSERT INTO runs
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
-          status, attempted, ok, failed, started_at, finished_at)
+          status, attempted, ok, failed, started_at)
        VALUES
-         ('prior', 'retailer-1', 'discover', '2026-07-10', ?, 1,
-          'failed', 1999, 0, 1999, '2026-07-10T03:00:00.000Z',
-          '2026-07-10T03:10:00.000Z')`,
+         ('prior', 'retailer-1', 'collect', '2026-07-10', ?, 1,
+          'running', 0, 0, 0, '2026-07-10T03:00:00.000Z')`,
     ).run(strategyId);
+    fillCollectionRequestAdmissions(database, "prior", 1_999);
     let calls = 0;
 
     const summary = await runCollection("retailer-1", {
@@ -166,6 +253,154 @@ describe("collection pipeline", () => {
 
     expect(calls).toBe(1);
     expect(summary.attempted).toBe(1);
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM request_admissions WHERE stage = 'collect'",
+    ).get()).toEqual({ count: 2_000 });
+  });
+
+  it("aggregates concurrent collection runs under the durable 2,000-request cap", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 2_500);
+    let calls = 0;
+    const execute = async () => {
+      calls += 1;
+      await new Promise((resolve) => setImmediate(resolve));
+      return {
+        ok: false as const,
+        failure: { category: "parse" as const, message: "fixture", responded: true },
+      };
+    };
+
+    const [first, second] = await Promise.all([
+      runCollection("retailer-1", {
+        database,
+        id: () => "concurrent-collection-a",
+        limit: 2_000,
+        concurrency: 5,
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+        execute,
+      }),
+      runCollection("retailer-1", {
+        database,
+        id: () => "concurrent-collection-b",
+        limit: 2_000,
+        concurrency: 5,
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+        execute,
+      }),
+    ]);
+
+    expect(first.attempted + second.attempted).toBe(2_000);
+    expect(calls).toBe(2_000);
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count, COUNT(DISTINCT stage_ordinal) AS ordinals
+      FROM request_admissions WHERE stage = 'collect'
+    `).get()).toEqual({ count: 2_000, ordinals: 2_000 });
+  }, 30_000);
+
+  it("drains every started worker before finalizing after a fatal pool error", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 5);
+    database.exec(`
+      CREATE TRIGGER reject_second_collection_admission
+      BEFORE INSERT ON request_admissions
+      WHEN NEW.stage = 'collect' AND NEW.stage_ordinal = 2
+      BEGIN SELECT RAISE(ABORT, 'fatal admission fixture'); END
+    `);
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+    let started = 0;
+    let resolved = false;
+    const running = runCollection("retailer-1", {
+      database,
+      concurrency: 3,
+      execute: async () => {
+        started += 1;
+        await gate;
+        return {
+          ok: true,
+          fields: {
+            title: "Arroz tipo 1 pacote 5 kg",
+            brand: null,
+            price: 10,
+            promoPrice: null,
+            unit: "5 kg",
+            available: true,
+          },
+        };
+      },
+    });
+    void running.then(() => { resolved = true; });
+    await waitUntil(() => started === 1, "first admitted executor did not start");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(resolved).toBe(false);
+
+    release();
+    const summary = await running;
+    expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0, status: "partial" });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM observations").get())
+      .toEqual({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM request_admissions").get())
+      .toEqual({ count: 1 });
+    const terminal = database.prepare(`
+      SELECT status, attempted, ok, failed FROM runs WHERE id = ?
+    `).get(summary.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(database.prepare(`
+      SELECT status, attempted, ok, failed FROM runs WHERE id = ?
+    `).get(summary.id)).toEqual(terminal);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM observations").get())
+      .toEqual({ count: 1 });
+  });
+
+  it("admits at most 20 replay writes across concurrent same-day runs", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 40);
+    const root = await mkdtemp(join(tmpdir(), "precos-replay-concurrent-"));
+    directories.push(root);
+    const collect = (label: string) => runCollection("retailer-1", {
+      database,
+      id: () => `replay-${label}`,
+      rawHtmlRoot: root,
+      concurrency: 5,
+      random: () => 0,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      execute: async (_strategy, ref) => {
+        await new Promise((resolve) => setImmediate(resolve));
+        return {
+          ok: true as const,
+          fields: {
+            title: `Product ${ref.externalId}`,
+            brand: null,
+            price: 2,
+            promoPrice: null,
+            unit: null,
+            available: true,
+          },
+          html: `<html>${label}-${ref.externalId}</html>`,
+        };
+      },
+    });
+
+    const summaries = await Promise.all([collect("a"), collect("b")]);
+    expect(summaries.reduce((sum, summary) => sum + summary.attempted, 0)).toBe(80);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM replay_slot_admissions").get())
+      .toEqual({ count: 20 });
+    expect(database.prepare(`
+      SELECT COUNT(*) AS count FROM observations WHERE response_path IS NOT NULL
+    `).get()).toEqual({ count: 20 });
+    const files = (await readdir(join(root, "2026-07-10", "retailer-1")))
+      .filter((file) => file.endsWith(".gz"));
+    expect(files).toHaveLength(20);
   });
 
   it("uses reservoir sampling to retain exactly 20 of 100 HTML bodies", async () => {
@@ -210,11 +445,11 @@ describe("collection pipeline", () => {
     expect(files.every((file) => /^[a-f0-9]{64}\.html\.gz$/u.test(file))).toBe(true);
     expect(database.prepare(
       "SELECT COUNT(*) AS n FROM observations WHERE response_path IS NOT NULL",
-    ).get()).toEqual({ n: 0 });
+    ).get()).toEqual({ n: 20 });
     expect(database.prepare("SELECT COUNT(*) AS n FROM observations WHERE response_path LIKE '%<html>%'").get()).toEqual({ n: 0 });
   });
 
-  it("keeps one persistent unbiased reservoir across same-day runs", async () => {
+  it("keeps one immutable linked replay sample across same-day runs", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
@@ -246,25 +481,16 @@ describe("collection pipeline", () => {
 
     const directory = join(root, "2026-07-10", "retailer-1");
     const files = (await readdir(directory)).filter((file) => file.endsWith(".html.gz"));
-    const state = JSON.parse(await readFile(join(directory, ".reservoir.json"), "utf8")) as {
-      population: number;
-      slots: unknown[];
-    };
     expect(files).toHaveLength(20);
-    expect(state).toMatchObject({ population: 60 });
-    expect(state.slots).toHaveLength(20);
-    expect(state.slots.every((slot) => {
-      const candidate = slot as { evidence?: { kind?: string; id?: string } };
-      return candidate.evidence?.kind === "observation"
-        && typeof candidate.evidence.id === "string";
-    })).toBe(true);
-    const observationIds = new Set((database.prepare("SELECT id FROM observations").all() as Array<{
-      id: string;
-    }>).map(({ id }) => id));
-    expect(state.slots.every((slot) => {
-      const candidate = slot as { evidence: { id: string } };
-      return observationIds.has(candidate.evidence.id);
-    })).toBe(true);
+    const links = database.prepare(`
+      SELECT response_path AS path, response_sha256 AS sha256
+      FROM observations
+      WHERE response_path IS NOT NULL
+    `).all() as Array<{ path: string; sha256: string }>;
+    expect(links).toHaveLength(20);
+    expect(new Set(links.map(({ path }) => path)).size).toBe(20);
+    expect(links.every(({ path, sha256 }) =>
+      path === `2026-07-10/retailer-1/${sha256}.html.gz`)).toBe(true);
   });
 
   it("rolls back file and manifest replacement atomically when publication fails", async () => {
@@ -490,7 +716,7 @@ describe("collection pipeline", () => {
     expect(sleeps).toEqual([750, 750]);
   });
 
-  it("finalizes replay-storage failure without rewriting a successful observation", async () => {
+  it("preserves a successful observation when optional replay storage fails", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
@@ -499,15 +725,17 @@ describe("collection pipeline", () => {
     const directory = await mkdtemp(join(tmpdir(), "precos-replay-error-"));
     directories.push(directory);
     const invalidRoot = join(directory, "not-a-directory");
+    const logDirectory = join(directory, "logs");
     await writeFile(invalidRoot, "occupied");
 
     const summary = await runCollection("retailer-1", {
       database,
       rawHtmlRoot: invalidRoot,
+      logDirectory,
       execute: async () => ({
         ok: true,
         fields: {
-          title: "Product",
+          title: "Fresh grocery product",
           brand: null,
           price: 1,
           promoPrice: null,
@@ -520,21 +748,33 @@ describe("collection pipeline", () => {
 
     expect(summary).toMatchObject({
       planned: 1,
-      attempted: 0,
-      ok: 0,
+      attempted: 1,
+      ok: 1,
       failed: 0,
-      skipped: 1,
+      skipped: 0,
       stoppedForBlocking: false,
-      status: "failed",
+      status: "partial",
     });
-    expect(database.prepare("SELECT status, attempted, ok, failed FROM runs").get()).toEqual({
-      status: "failed",
-      attempted: 0,
-      ok: 0,
+    expect(database.prepare(
+      "SELECT status, attempted, ok, failed, error_category, error_message FROM runs",
+    ).get()).toMatchObject({
+      status: "partial",
+      attempted: 1,
+      ok: 1,
       failed: 0,
+      error_category: "unknown",
+      error_message: expect.stringMatching(/not-a-directory|ENOTDIR/iu),
     });
-    expect(database.prepare("SELECT COUNT(*) AS n FROM observations").get()).toEqual({ n: 0 });
-    expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM observations").get()).toEqual({ n: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS n FROM run_failures").get()).toEqual({ n: 0 });
+    const logFile = (await readdir(logDirectory))[0];
+    const events = (await readFile(join(logDirectory, logFile!), "utf8"))
+      .trim().split("\n").map((line) => JSON.parse(line) as {
+        event: string;
+        fields?: { status?: string };
+      });
+    expect(events.find(({ event }) => event === "run.finished"))
+      .toMatchObject({ fields: { status: "partial" } });
   });
 
   it("persists each completed attempt before executing the next queued product", async () => {
@@ -566,7 +806,7 @@ describe("collection pipeline", () => {
         return {
           ok: true,
           fields: {
-            title: "Product",
+            title: "Fresh grocery product",
             brand: null,
             price: 1,
             promoPrice: null,

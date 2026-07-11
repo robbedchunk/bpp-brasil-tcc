@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
 
+import { resolve } from "node:path";
+
+import { readReplayPayload } from "../collection/replay.js";
 import {
   beginHealingEvent,
   claimStaleHealingEvent,
@@ -7,6 +10,7 @@ import {
   findRunHealthEvidence,
   finishHealingWorkerFailureIfSafe,
   finishHealingEvent,
+  listPriorSuccessfulReplayEvidence,
   listPendingHealingEvents,
   promoteQueuedHealingEvent,
   reconcileHealingExploration,
@@ -16,6 +20,7 @@ import {
 import {
   exploreRetailer,
   ExplorationEvidenceError,
+  type CandidateValidator,
   type ExploreRetailerDependencies,
   type ExplorationOutcome,
 } from "../explorer/explore.js";
@@ -24,7 +29,11 @@ import type {
   StrategyPurpose,
 } from "../explorer/provider.js";
 import type { AlertSink } from "../ops/alerts.js";
-import { redactSandboxText } from "../explorer/package.js";
+import {
+  redactSandboxText,
+  representativeFailureSamples,
+  type SandboxSample,
+} from "../explorer/package.js";
 import type { ExtractionStrategy } from "../strategies/schema.js";
 import type { ExtractionResult, ProductRef } from "../strategies/types.js";
 import { classifyRunHealth } from "./classify-failure.js";
@@ -37,6 +46,7 @@ export interface HealRetailerDependencies {
     strategy: ExtractionStrategy,
     ref: ProductRef,
   ) => Promise<ExtractionResult>;
+  validateCandidate?: CandidateValidator;
   explore?: (
     retailerId: string,
     purpose: StrategyPurpose,
@@ -49,6 +59,8 @@ export interface HealRetailerDependencies {
   monthlyBudgetUsd?: number;
   env?: NodeJS.ProcessEnv;
   openEventLeaseMs?: number;
+  replayRoot?: string;
+  readReplay?: typeof readReplayPayload;
 }
 
 export type HealingStatus =
@@ -214,7 +226,16 @@ export async function healRetailer(
   }
   if (reconciled !== null) {
     let degraded = isDegraded(dependencies.database, retailerId);
-    if (reconciled.status === "failed") {
+    if (reconciled.status === "recovered" && degraded) {
+      degraded = setRetailerDegraded(
+        dependencies.database,
+        retailerId,
+        false,
+        undefined,
+        now().toISOString(),
+        opened.event.id,
+      );
+    } else if (reconciled.status === "failed") {
       const consecutive = consecutiveFailedHealingEvents(
         dependencies.database,
         retailerId,
@@ -227,6 +248,7 @@ export async function healRetailer(
           true,
           `${purpose} regeneration failed for ${consecutive} consecutive events`,
           now().toISOString(),
+          opened.event.id,
         );
         degraded = true;
         await dependencies.alertSink?.send({
@@ -274,11 +296,59 @@ export async function healRetailer(
     };
   }
 
-  const failureSamples = evidence.failures.map((failure) => ({
+  const failureSamples = representativeFailureSamples(evidence.failures.map((failure) => ({
     canonicalUrl: failure.canonicalUrl,
     category: failure.category,
     message: failure.message,
-  }));
+  })));
+  const verifiedReplaySamples: SandboxSample[] = [];
+  let rejectedReplaySamples = 0;
+  let archiveReplaySamplesUsed = 0;
+  let archiveReplaySamplesRejected = 0;
+  const replayRoot = resolve(dependencies.replayRoot ?? "data/raw-html");
+  for (const failure of evidence.failures) {
+    if (failure.canonicalUrl === null || failure.replay === null) continue;
+    try {
+      const replay = await (dependencies.readReplay ?? readReplayPayload)(
+        replayRoot,
+        failure.replay,
+      );
+      verifiedReplaySamples.push({
+        canonicalUrl: failure.canonicalUrl,
+        body: replay.body,
+        capture: "current",
+        collectionDay: evidence.run.collectionDay,
+      });
+    } catch {
+      // A missing or tampered private artifact is never handed to the explorer.
+      rejectedReplaySamples += 1;
+    }
+  }
+  const archiveEvidence = listPriorSuccessfulReplayEvidence(dependencies.database, {
+    retailerId,
+    beforeCollectionDay: evidence.run.collectionDay,
+    canonicalUrls: evidence.failures.flatMap((failure) =>
+      failure.canonicalUrl === null ? [] : [failure.canonicalUrl]),
+    limit: 5,
+  });
+  for (const archive of archiveEvidence) {
+    try {
+      const replay = await (dependencies.readReplay ?? readReplayPayload)(
+        replayRoot,
+        archive.replay,
+      );
+      verifiedReplaySamples.push({
+        canonicalUrl: archive.canonicalUrl,
+        body: replay.body,
+        capture: "archive",
+        collectionDay: archive.collectionDay,
+      });
+      archiveReplaySamplesUsed += 1;
+    } catch {
+      rejectedReplaySamples += 1;
+      archiveReplaySamplesRejected += 1;
+    }
+  }
   let exploration: ExplorationOutcome;
   let explorationError: string | undefined;
   try {
@@ -291,7 +361,14 @@ export async function healRetailer(
           ? {}
           : { generator: dependencies.generator }),
         ...(dependencies.execute === undefined ? {} : { execute: dependencies.execute }),
+        ...(dependencies.validateCandidate === undefined
+          ? {}
+          : { validateCandidate: dependencies.validateCandidate }),
         failureSamples,
+        failureSampleTotal: evidence.failures.length,
+        ...(verifiedReplaySamples.length === 0
+          ? {}
+          : { sandboxSamples: verifiedReplaySamples }),
         trigger: "healing",
         healingEventId: opened.event.id,
         ...(dependencies.alertSink === undefined
@@ -352,14 +429,24 @@ export async function healRetailer(
       explorationOutcome: exploration.outcome,
       externalScore: exploration.externalScore,
       costUsd: exploration.costUsd,
+      replaySamplesUsed: verifiedReplaySamples.length,
+      replaySamplesRejected: rejectedReplaySamples,
+      archiveReplaySamplesUsed,
+      archiveReplaySamplesRejected,
       ...(explorationError === undefined ? {} : { error: explorationError.slice(0, 2_000) }),
     },
   });
 
   let degraded = isDegraded(dependencies.database, retailerId);
   if (status === "recovered") {
-    setRetailerDegraded(dependencies.database, retailerId, false, undefined, finishedAt);
-    degraded = false;
+    degraded = setRetailerDegraded(
+      dependencies.database,
+      retailerId,
+      false,
+      undefined,
+      finishedAt,
+      opened.event.id,
+    );
   } else if (status === "failed") {
     const consecutive = consecutiveFailedHealingEvents(
       dependencies.database,
@@ -373,6 +460,7 @@ export async function healRetailer(
         true,
         `${purpose} regeneration failed for ${consecutive} consecutive events`,
         finishedAt,
+        opened.event.id,
       );
       degraded = true;
       await dependencies.alertSink?.send({
@@ -460,6 +548,9 @@ export async function healPendingEvents(
         onsetRunId: event.onsetRunId,
         ...(dependencies.generator === undefined ? {} : { generator: dependencies.generator }),
         ...(dependencies.execute === undefined ? {} : { execute: dependencies.execute }),
+        ...(dependencies.validateCandidate === undefined
+          ? {}
+          : { validateCandidate: dependencies.validateCandidate }),
         ...(dependencies.explore === undefined ? {} : { explore: dependencies.explore }),
         ...(dependencies.alertSink === undefined ? {} : { alertSink: dependencies.alertSink }),
         ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
@@ -474,6 +565,12 @@ export async function healPendingEvents(
         ...(dependencies.openEventLeaseMs === undefined
           ? {}
           : { openEventLeaseMs: dependencies.openEventLeaseMs }),
+        ...(dependencies.replayRoot === undefined
+          ? {}
+          : { replayRoot: dependencies.replayRoot }),
+        ...(dependencies.readReplay === undefined
+          ? {}
+          : { readReplay: dependencies.readReplay }),
       });
       countOutcome(outcome.status);
     } catch (error) {

@@ -9,13 +9,17 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
+import { build } from "esbuild";
 import type { Strategy } from "../strategies/schema.js";
 import type { StrategyPurpose } from "./provider.js";
 
 export interface SandboxSample {
   canonicalUrl: string;
   body?: string;
+  capture?: "current" | "archive";
+  collectionDay?: string;
 }
 
 export interface SandboxFailureSample {
@@ -31,7 +35,38 @@ export interface SandboxPackageInput {
   samples: readonly SandboxSample[];
   oldStrategy?: Strategy | Record<string, unknown>;
   failureSamples?: readonly SandboxFailureSample[];
+  failureSampleTotal?: number;
   temporaryRoot?: string;
+}
+
+export function representativeFailureSamples(
+  values: readonly SandboxFailureSample[],
+  limit = 60,
+): SandboxFailureSample[] {
+  const unique = new Map<string, SandboxFailureSample>();
+  for (const value of values) {
+    const key = JSON.stringify([
+      value.category,
+      value.canonicalUrl ?? null,
+      value.message ?? null,
+    ]);
+    if (!unique.has(key)) unique.set(key, value);
+  }
+  const buckets = new Map<string, SandboxFailureSample[]>();
+  for (const value of unique.values()) {
+    const bucket = buckets.get(value.category) ?? [];
+    bucket.push(value);
+    buckets.set(value.category, bucket);
+  }
+  const result: SandboxFailureSample[] = [];
+  while (result.length < limit && [...buckets.values()].some((bucket) => bucket.length > 0)) {
+    for (const bucket of buckets.values()) {
+      const next = bucket.shift();
+      if (next !== undefined) result.push(next);
+      if (result.length >= limit) break;
+    }
+  }
+  return result;
 }
 
 export interface SandboxPackage {
@@ -41,7 +76,18 @@ export interface SandboxPackage {
 }
 
 const BEARER_PATTERN = /\b(?:authorization\s*:\s*)?bearer\s+[^\s<>'"]+/giu;
-const SECRET_ASSIGNMENT_PATTERN = /\b(?:api[_-]?key|secret|token|password|cookie)\b\s*[:=]\s*[^\s,;<>]+/giu;
+const SECRET_LABEL_PATTERN =
+  String.raw`[\p{L}\p{N}_-]*(?:api[_-]?key|authorization|cookie|credential|password|secret|session[_-]?(?:id|token)|token)[\p{L}\p{N}_-]*`;
+const SECRET_ASSIGNMENT_PATTERN = new RegExp(
+  `(["']?${SECRET_LABEL_PATTERN}["']?\\s*[:=]\\s*)(?:"[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s,;<>}\\]]+)`,
+  "giu",
+);
+const SENSITIVE_HTML_ELEMENT =
+  /<(?:meta|input)\b(?=[^>]*(?:api[_-]?key|authorization|cookie|credential|password|secret|session[_-]?(?:id|token)|token))[^>]*>/giu;
+const SENSITIVE_HTML_ATTRIBUTE = new RegExp(
+  `(\\b(?:data-)?${SECRET_LABEL_PATTERN}\\s*=\\s*)(?:"[^"]*"|'[^']*'|[^\\s>]+)`,
+  "giu",
+);
 const UNIX_HOME_PATTERN = /\/(?:home|Users)\/[^\s"'<>]+/gu;
 const WINDOWS_HOME_PATTERN = /[A-Za-z]:\\Users\\[^\s"'<>]+/gu;
 const SENSITIVE_JSON_KEY = /(?:^|[_-])(?:auth(?:orization|entication)?|cookie|credential|password|secret|token|api[_-]?key)(?:$|[_-])/iu;
@@ -49,7 +95,9 @@ const SENSITIVE_JSON_KEY = /(?:^|[_-])(?:auth(?:orization|entication)?|cookie|cr
 export function redactSandboxText(value: string): string {
   return value
     .replace(BEARER_PATTERN, "[REDACTED]")
-    .replace(SECRET_ASSIGNMENT_PATTERN, "[REDACTED]")
+    .replace(SENSITIVE_HTML_ELEMENT, "<redacted-sensitive-element>")
+    .replace(SENSITIVE_HTML_ATTRIBUTE, "$1[REDACTED]")
+    .replace(SECRET_ASSIGNMENT_PATTERN, "$1[REDACTED]")
     .replace(UNIX_HOME_PATTERN, "[REDACTED]")
     .replace(WINDOWS_HOME_PATTERN, "[REDACTED]");
 }
@@ -96,11 +144,20 @@ export async function createSandboxPackage(
       asset("strategy-schema.md"),
       join(workspacePath, "strategy-schema.md"),
     );
-    await copyFile(
-      asset("validate-strategy"),
-      join(workspacePath, "validate-strategy"),
-    );
-    await chmod(join(workspacePath, "validate-strategy"), 0o700);
+    const validatorPath = join(workspacePath, "validate-strategy");
+    await build({
+      entryPoints: [fileURLToPath(asset("validate-entry.ts"))],
+      outfile: validatorPath,
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node24",
+      banner: { js: "#!/usr/bin/env node" },
+      legalComments: "none",
+      logLevel: "silent",
+      sourcemap: false,
+    });
+    await chmod(validatorPath, 0o700);
 
     const allowed = new Set(input.allowedDomains.map((domain) => domain.toLowerCase()));
     const samples = input.samples.map((sample) => {
@@ -108,9 +165,23 @@ export async function createSandboxPackage(
       if (url.username || url.password || !allowed.has(url.hostname.toLowerCase())) {
         throw new Error("Sandbox sample URL is outside the retailer domain allowlist");
       }
+      if (
+        sample.capture !== undefined
+        && (
+          (sample.capture !== "current" && sample.capture !== "archive")
+          || sample.collectionDay === undefined
+          || !/^\d{4}-\d{2}-\d{2}$/u.test(sample.collectionDay)
+        )
+      ) {
+        throw new Error("Replay sandbox samples require a valid capture and collection day");
+      }
       return {
         canonicalUrl: url.toString(),
         ...(sample.body === undefined ? {} : { body: redactSandboxText(sample.body) }),
+        ...(sample.capture === undefined ? {} : { capture: sample.capture }),
+        ...(sample.collectionDay === undefined
+          ? {}
+          : { collectionDay: sample.collectionDay }),
       };
     });
     await writeFile(
@@ -132,9 +203,14 @@ export async function createSandboxPackage(
       );
     }
     if (input.failureSamples !== undefined && input.failureSamples.length > 0) {
+      const failures = representativeFailureSamples(input.failureSamples);
       await writeFile(
         join(workspacePath, "failures.json"),
-        sanitizedJson(input.failureSamples),
+        sanitizedJson({
+          total: Math.max(input.failureSampleTotal ?? input.failureSamples.length, failures.length),
+          included: failures.length,
+          samples: failures,
+        }),
         { encoding: "utf8", mode: 0o600 },
       );
     }

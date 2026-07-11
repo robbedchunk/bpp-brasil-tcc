@@ -15,6 +15,7 @@ import type {
   StrategyGenerator,
 } from "../../src/explorer/provider.js";
 import type { ExtractionStrategy } from "../../src/strategies/schema.js";
+import { signedCandidateReport } from "../helpers/validation-receipt.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
@@ -36,11 +37,13 @@ const candidate = {
   },
 } as const satisfies ExtractionStrategy;
 
-function seedExploration(): ReturnType<typeof openDatabase> {
+function seedExploration(
+  activeStrategy: ExtractionStrategy = extractionStrategy,
+): ReturnType<typeof openDatabase> {
   const database = openDatabase(":memory:");
   databases.push(database);
   seedRetailer(database);
-  seedStrategy(database, "extraction", extractionStrategy);
+  seedStrategy(database, "extraction", activeStrategy);
   const insert = database.prepare(
     `INSERT INTO products
        (id, retailer_id, canonical_url, retailer_product_id, title,
@@ -81,18 +84,91 @@ function generated(strategy: unknown, tokens = { inputTokens: 100, outputTokens:
 }
 
 function scoreSequence(...scores: number[]): CandidateValidator {
-  return async () => {
+  return async (strategy, refs, context) => {
     const score = scores.shift() ?? 0;
-    return {
-      attempted: 30,
-      valid: Math.round(score * 30),
-      score,
-      activatable: score >= 0.9,
-    };
+    return signedCandidateReport(strategy, refs, context, score);
   };
 }
 
 describe("trusted strategy exploration", () => {
+  it("merges all 30 authoritative refs with labeled current/archive replay samples", async () => {
+    const database = seedExploration();
+    const generator = new FixtureGenerator([generated(candidate)]);
+    let packagedSamples: readonly unknown[] = [];
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      validateCandidate: scoreSequence(0.9),
+      maxAttempts: 1,
+      sandboxSamples: [
+        {
+          canonicalUrl: "https://shop.test/products/0",
+          body: "today body",
+          capture: "current",
+          collectionDay: "2026-07-10",
+        },
+        {
+          canonicalUrl: "https://shop.test/products/0",
+          body: "archive body",
+          capture: "archive",
+          collectionDay: "2026-07-01",
+        },
+      ],
+      createSandbox: async (input) => {
+        packagedSamples = input.samples;
+        return {
+          workspacePath: "/tmp/fixture-merged-sandbox",
+          files: [],
+          async dispose() {},
+        };
+      },
+    });
+
+    expect(outcome.outcome).toBe("activated");
+    expect(packagedSamples).toHaveLength(32);
+    expect(packagedSamples.slice(0, 30).every((sample) =>
+      !("capture" in (sample as object)))).toBe(true);
+    expect(packagedSamples.slice(30)).toEqual([
+      expect.objectContaining({ capture: "current", collectionDay: "2026-07-10" }),
+      expect.objectContaining({ capture: "archive", collectionDay: "2026-07-01" }),
+    ]);
+    expect(database.prepare(`
+      SELECT evidence.receipt_path, evidence.attempted, evidence.valid, evidence.score
+      FROM strategy_validation_evidence AS evidence
+      JOIN strategies AS strategy ON strategy.id = evidence.strategy_id
+      WHERE strategy.version = 2
+    `).get()).toEqual({
+      receipt_path: "data/validation/retailer-1-extraction-v2.json",
+      attempted: 30,
+      valid: 27,
+      score: 0.9,
+    });
+  });
+
+  it("never activates from an aggregate-only validator report without a signed receipt", async () => {
+    const database = seedExploration();
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: new FixtureGenerator([generated(candidate)]),
+      validateCandidate: async () => ({
+        attempted: 30,
+        valid: 30,
+        score: 1,
+        activatable: true,
+      }),
+      maxAttempts: 1,
+    });
+
+    expect(outcome).toMatchObject({
+      activated: false,
+      outcome: "validation_failed",
+    });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM strategies WHERE version = 2",
+    ).get()).toEqual({ count: 0 });
+  });
+
   it("ignores an agent score claim and keeps the active strategy when host score is 0.8", async () => {
     const database = seedExploration();
     const generator = new FixtureGenerator([
@@ -486,8 +562,8 @@ describe("trusted strategy exploration", () => {
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
           status, attempted, ok, failed, started_at, finished_at)
        VALUES ('atomic-drift', 'retailer-1', 'collect', '2026-07-10',
-               'retailer-1-extraction-v1', 1, 'failed', 1, 0, 1,
-               '2026-07-10T00:00:00.000Z', '2026-07-10T00:01:00.000Z')`,
+               'retailer-1-extraction-v1', 1, 'running', 0, 0, 0,
+               '2026-07-10T00:00:00.000Z', NULL)`,
     ).run();
     database.prepare(
       `INSERT INTO run_failures
@@ -497,6 +573,11 @@ describe("trusted strategy exploration", () => {
                'fixture drift', 'retailer-1-extraction-v1', 1,
                '2026-07-10T00:00:30.000Z')`,
     ).run();
+    database.prepare(`
+      UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
+                      finished_at = '2026-07-10T00:01:00.000Z'
+      WHERE id = 'atomic-drift'
+    `).run();
     const healing = beginHealingEvent(database, {
       retailerId: "retailer-1",
       purpose: "extraction",
@@ -542,8 +623,8 @@ describe("trusted strategy exploration", () => {
          (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
           status, attempted, ok, failed, started_at, finished_at)
        VALUES ('failed-drift', 'retailer-1', 'collect', '2026-07-10',
-               'retailer-1-extraction-v1', 1, 'failed', 1, 0, 1,
-               '2026-07-10T00:00:00.000Z', '2026-07-10T00:01:00.000Z')`,
+               'retailer-1-extraction-v1', 1, 'running', 0, 0, 0,
+               '2026-07-10T00:00:00.000Z', NULL)`,
     ).run();
     database.prepare(
       `INSERT INTO run_failures
@@ -554,6 +635,11 @@ describe("trusted strategy exploration", () => {
                'retailer-1-extraction-v1', 1,
                '2026-07-10T00:00:30.000Z')`,
     ).run();
+    database.prepare(`
+      UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
+                      finished_at = '2026-07-10T00:01:00.000Z'
+      WHERE id = 'failed-drift'
+    `).run();
     const healing = beginHealingEvent(database, {
       retailerId: "retailer-1",
       purpose: "extraction",
@@ -630,6 +716,91 @@ describe("trusted strategy exploration", () => {
     });
 
     expect(outcome).toMatchObject({ activated: false, outcome: "invalid_candidate" });
+  });
+
+  it("rejects a regional API candidate without a validated catalog seller binding", async () => {
+    const database = seedExploration();
+    let validated = false;
+    const regional = {
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: {
+        method: "GET",
+        url: "https://shop.test/products/{externalId}",
+        headers: { accept: "application/json" },
+      },
+      regionalContext: {
+        kind: "vtex-segment",
+        regionId: "v2.REGION",
+        salesChannel: "2",
+      },
+      fields: {
+        title: "$.title",
+        brand: "$.brand",
+        price: "$.price",
+        promoPrice: "$.promo",
+        unit: "$.unit",
+        availability: "$.available",
+      },
+    };
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: new FixtureGenerator([generated(regional)]),
+      validateCandidate: async () => {
+        validated = true;
+        return { attempted: 30, valid: 30, score: 1, activatable: true };
+      },
+      maxAttempts: 1,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+    });
+
+    expect(outcome).toMatchObject({ activated: false, outcome: "invalid_candidate" });
+    expect(validated).toBe(false);
+  });
+
+  it("rejects a successor that drops the active regional identity before validation", async () => {
+    const previousRegional = {
+      ...extractionStrategy,
+      regionalContext: {
+        kind: "vtex-segment" as const,
+        regionId: "v2.TRUSTED-REGION",
+        salesChannel: "2",
+        catalogSellerId: "trusted-seller",
+      },
+    } satisfies ExtractionStrategy;
+    const database = seedExploration(previousRegional);
+    let validated = false;
+    const plainCandidate = {
+      ...extractionStrategy,
+      fields: {
+        title: "$[0].productName",
+        brand: "$[0].brand",
+        price: "$[0].items[0].sellers[0].commertialOffer.Price",
+        promoPrice: "$[0].items[0].sellers[0].commertialOffer.PromotionPrice",
+        unit: "$[0].items[0].measurementUnit",
+        availability: "$[0].items[0].sellers[0].commertialOffer.IsAvailable",
+      },
+    };
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: new FixtureGenerator([generated(plainCandidate)]),
+      validateCandidate: async () => {
+        validated = true;
+        return { attempted: 30, valid: 30, score: 1, activatable: true };
+      },
+      maxAttempts: 1,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+    });
+
+    expect(outcome).toMatchObject({ activated: false, outcome: "invalid_candidate" });
+    expect(validated).toBe(false);
+    expect(database.prepare(
+      "SELECT id FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1",
+    ).all()).toEqual([{ id: "retailer-1-extraction-v1" }]);
   });
 
   it("rejects schema-valid candidate credentials before validation or persistence", async () => {

@@ -226,7 +226,7 @@ function listEligibleProducts(
   return database.prepare(`
     SELECT p.id, p.retailer_id, p.title, p.brand, p.source_category
     FROM products p
-    WHERE p.active = 1 AND p.in_scope = 1
+    WHERE p.active = 1 AND p.in_scope = 1 AND p.descriptive_title = 1
       AND NOT EXISTS (
         SELECT 1 FROM classifications c
         WHERE c.product_id = p.id AND c.version = ?

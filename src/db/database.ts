@@ -40,6 +40,18 @@ const EXPLORATION_RECOVERY_ADJUSTMENTS_SQL = readFileSync(
   new URL("./migrations/010_exploration_recovery_adjustments.sql", import.meta.url),
   "utf8",
 );
+const COLLECTION_INTEGRITY_SQL = readFileSync(
+  new URL("./migrations/011_collection_integrity.sql", import.meta.url),
+  "utf8",
+);
+const RETAILER_STATE_HISTORY_SQL = readFileSync(
+  new URL("./migrations/012_retailer_state_history.sql", import.meta.url),
+  "utf8",
+);
+const STRATEGY_VALIDATION_EVIDENCE_SQL = readFileSync(
+  new URL("./migrations/013_strategy_validation_evidence.sql", import.meta.url),
+  "utf8",
+);
 
 const MIGRATIONS = [
   { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
@@ -71,6 +83,21 @@ const MIGRATIONS = [
     version: 10,
     name: "exploration_recovery_adjustments",
     sql: EXPLORATION_RECOVERY_ADJUSTMENTS_SQL,
+  },
+  {
+    version: 11,
+    name: "collection_integrity",
+    sql: COLLECTION_INTEGRITY_SQL,
+  },
+  {
+    version: 12,
+    name: "retailer_state_history",
+    sql: RETAILER_STATE_HISTORY_SQL,
+  },
+  {
+    version: 13,
+    name: "strategy_validation_evidence",
+    sql: STRATEGY_VALIDATION_EVIDENCE_SQL,
   },
 ] as const;
 

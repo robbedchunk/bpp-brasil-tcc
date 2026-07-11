@@ -8,8 +8,9 @@
   strings, not locale commas.
 - Null means unavailable/not observed/not applicable; it is never silently zero.
 - Strategy, run, observation, failure, classification, exploration, healing,
-  heartbeat, cost, and batch evidence is append-only except documented lifecycle
-  finalization fields. Products retain mutable current catalog state.
+  retailer-state, heartbeat, cost, and batch evidence is append-only except
+  documented lifecycle finalization fields. Products retain mutable current
+  catalog state.
 
 ## SQLite tables
 
@@ -17,10 +18,17 @@
 |---|---|
 | `retailers` | Retailer identity, base URL, CEP, domains, active/degraded state. |
 | `strategies` | Typed discovery/extraction versions, validation, provenance, lifecycle. |
+| `strategy_validation_evidence` | Immutable active-strategy receipt digest, sample-set hash, executor identity, attestation key ID, and exact 30-sample aggregate. |
 | `products` | Canonical retailer product identity and current classification pointer. |
+| `product_scope_decisions` | Immutable per-discovery-run food-at-home decision, category/path evidence, reason, and rule version. |
+| `catalog_snapshots` | Immutable discovery completion evidence and disappeared-product count; only verified-complete snapshots may record disappearances. |
 | `observations` | Collected title/unit/availability and regular/promo cent values. |
 | `runs` | Per-retailer/stage operational counts and terminal state. |
+| `request_admissions` | Append-only pre-network request charges, independently capped at 2,000 per retailer/day for discovery and collection. |
+| `discovery_reference_admissions` | Append-only pre-persistence discovery-reference charges, capped at 3,000 per retailer/day. |
+| `replay_slot_admissions` | Append-only pre-file-I/O replay charges, capped at 20 per retailer/day across concurrent runs. |
 | `run_failures` | Categorized attempt evidence; public exports omit message/URL/replay fields. |
+| `replay_reextractions` | Immutable audited result of an operator-invoked offline normalization re-extraction; it stores structured output and verified logical reference, never raw response bytes. |
 | `ipca_items` | 84 cited São Paulo food-at-home sub-items and exact POF weights. |
 | `classifications` | Versioned item decisions, confidence, method/model/usage evidence. |
 | `classification_batch_jobs/items/events` | Asynchronous classification lifecycle. |
@@ -29,14 +37,30 @@
 | `model_budget_reservations` | Concurrent exploration budget commitments/settlement. |
 | `exploration_recovery_adjustments` | Append-only reconciliation after interrupted work. |
 | `healing_events` | Drift onset, attempts, recovery, successor, tier change, duration. |
+| `retailer_state_events` | Immutable degraded/recovered boundaries used for historical retailer-day eligibility. |
 | `heartbeats` | Completed scheduled-pipeline evidence. |
 | `cost_ledger` | Model/classification usage and estimated/actual USD evidence. |
 | `schema_migrations` | Applied forward-only migration versions. |
 
+`products.last_seen` is a discovery fact only. Collection never advances it:
+`last_observed_at` records the latest successful price observation and
+`last_collection_attempt_at` drives fair never-attempted/oldest-attempted
+rotation. `descriptive_title = 1` means a trusted extraction supplied the title;
+numeric retailer IDs and discovery placeholders remain classification-ineligible.
+`in_scope` is the mutable current pointer backed by immutable
+`product_scope_decisions` evidence.
+
 `response_path`/`response_sha256` are replay metadata, not response bodies. A
 public database must contain no raw HTML, credential, personal data, or private
 absolute path. A non-null path may refer only to an ignored, untracked runtime
-root; the target archive is never public.
+root; the target archive is never public. References are paired, relative,
+content-addressed SHA-256 paths. The private daily reservoir is bounded to
+approximately 20 linked responses per retailer and every read is hash-verified.
+Admission rows are charged before their protected action and are intentionally
+not refunded by a later crash: this makes process restarts and concurrent CLI
+runs unable to exceed the daily network/reference/replay bounds. Run, product,
+retailer, day, stage, and strategy identity are enforced again by SQLite
+triggers at the append-only observation/failure/scope/snapshot boundary.
 
 ## Research CSV snapshot
 
@@ -71,3 +95,12 @@ paths/hashes, raw HTML, cookies, authorization, environment paths, and secrets.
 manifest derived only from verified public CSVs. `data/acceptance/` contains a
 sanitized machine report and drill receipts. Private alert lines, backup files,
 temporary clones, command output, topics, and absolute paths are not included.
+
+`data/validation/{retailer}-{purpose}-v{version}.json` is the canonical
+schema-v2 trusted-host receipt for an active strategy. Each receipt binds the
+exact strategy hash and 30 authoritative product references, request URL/method
+and body hash, response status/type/byte count/body hash when a response exists,
+bounded sample duration, normalized result or failure, returned product
+identity, and any required regional catalog-seller match. Request headers and
+raw response bodies are never stored. A null response is permitted only for an
+honest failure whose `responded` flag is false.

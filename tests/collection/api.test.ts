@@ -177,6 +177,92 @@ describe("API extraction", () => {
     ]);
   });
 
+  it("selects the validated VTEX catalog seller by identity", async () => {
+    const vtexFields = {
+      title: "$[0].productName",
+      brand: "$[0].brand",
+      price: "$[0].items[0].sellers[0].commertialOffer.Price",
+      promoPrice: "$[0].items[0].sellers[0].commertialOffer.PromotionPrice",
+      unit: "$[0].items[0].measurementUnit",
+      availability: "$[0].items[0].sellers[0].commertialOffer.IsAvailable",
+    };
+    const strategy = ApiExtractionStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: {
+        method: "GET",
+        url: "https://shop.test/api/products/{externalId}",
+        headers: { accept: "application/json" },
+      },
+      regionalContext: {
+        kind: "vtex-segment",
+        regionId: "v2.REGION_123",
+        salesChannel: "2",
+        catalogSellerId: "expected-store",
+      },
+      fields: vtexFields,
+    });
+    const response = (
+      sellers: unknown[],
+      productId = productRef.externalId,
+    ) => fixtureResponse(JSON.stringify([{
+      productId,
+      productName: "Café Regional 500g",
+      brand: "Marca",
+      items: [{ measurementUnit: "un", sellers }],
+    }]));
+    const other = {
+      sellerId: "other-store",
+      commertialOffer: { Price: 1, IsAvailable: true },
+    };
+    const expected = {
+      sellerId: "expected-store",
+      commertialOffer: { Price: 12.99, IsAvailable: true },
+    };
+
+    const selected = await executeExtraction(strategy, productRef, {
+      fetch: async () => response([other, expected]),
+    });
+    const missing = await executeExtraction(strategy, productRef, {
+      fetch: async () => response([other]),
+    });
+    const wrongProduct = await executeExtraction(strategy, productRef, {
+      fetch: async () => response([expected], "WRONG-PRODUCT"),
+    });
+    const duplicateSeller = await executeExtraction(strategy, productRef, {
+      fetch: async () => response([expected, { ...expected }]),
+    });
+
+    expect(selected).toMatchObject({
+      ok: true,
+      fields: { price: 12.99, available: true },
+    });
+    expect(missing).toMatchObject({
+      ok: false,
+      failure: {
+        category: "missing-fields",
+        responded: true,
+        statusCode: 200,
+      },
+    });
+    expect(wrongProduct).toMatchObject({
+      ok: false,
+      failure: {
+        category: "missing-fields",
+        message: expect.stringMatching(/product identity/iu),
+      },
+    });
+    expect(duplicateSeller).toMatchObject({
+      ok: false,
+      failure: {
+        category: "missing-fields",
+        message: expect.stringMatching(/exactly once/iu),
+      },
+    });
+  });
+
   it("renders nested POST body JSON templates without changing value types", async () => {
     let seenBody: unknown;
     let seenUrl = "";
@@ -441,7 +527,7 @@ describe("API extraction", () => {
     const payload = JSON.stringify({
       data: {
         product: {
-          name: "Produto",
+          name: "Arroz tipo 1 pacote",
           manufacturer: { name: "Marca" },
           pricing: { regular: 10, promotion: 11 },
           package: "1 kg",
@@ -470,7 +556,7 @@ describe("API extraction", () => {
 
   it("maps storefront sale/list order to regular and promotional prices", () => {
     const result = mapJsonExtractionFields({
-      title: "Produto",
+      title: "Arroz tipo 1 pacote",
       brand: "Marca",
       sale: 8,
       list: 10,
@@ -493,7 +579,7 @@ describe("API extraction", () => {
 
   it("normalizes Portuguese unavailable labels to a boolean", () => {
     expect(mapExtractionFields({
-      title: "Produto",
+      title: "Arroz tipo 1 pacote",
       brand: null,
       price: "R$ 10,00",
       promoPrice: null,
@@ -502,7 +588,7 @@ describe("API extraction", () => {
     })).toEqual({
       ok: true,
       fields: {
-        title: "Produto",
+        title: "Arroz tipo 1 pacote",
         brand: null,
         price: 10,
         promoPrice: null,

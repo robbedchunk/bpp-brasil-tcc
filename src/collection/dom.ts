@@ -17,9 +17,11 @@ import {
   type RawExtractionFields,
 } from "./field-map.js";
 import {
+  DEFAULT_MAX_BODY_BYTES,
   renderUrlTemplate,
   type ExtractionExecutionContext,
 } from "./http.js";
+import { attachPrivateReplay } from "./private-replay.js";
 
 type SelectorList = DomExtractionStrategy["selectors"][keyof DomExtractionStrategy["selectors"]];
 
@@ -95,49 +97,56 @@ export async function executeDom(
       strategy.allowedDomains,
       executionContext,
       async (session) => {
-        try {
-          const response = await session.page.goto(target, {
-            waitUntil: "domcontentloaded",
-            timeout: executionContext.timeoutMs ?? 10_000,
-          });
-          if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
-          if (session.policyDenied) {
-            return failure("domain-denied", "Navigation denied by robots policy", false);
+        const result = await (async (): Promise<ExtractionResult> => {
+          try {
+            const response = await session.page.goto(target, {
+              waitUntil: "domcontentloaded",
+              timeout: executionContext.timeoutMs ?? 10_000,
+            });
+            if (session.deniedUrl !== null) throw new DomainDeniedError(session.deniedUrl);
+            if (session.policyDenied) {
+              return failure("domain-denied", "Navigation denied by robots policy", false);
+            }
+            if (session.redirectLimitExceeded) {
+              return failure("network", "Browser redirect limit exceeded", true);
+            }
+            if (session.bodyLimitExceeded) {
+              return failure("parse", "Browser response exceeded maxBodyBytes", true);
+            }
+            assertNavigationAllowed(session.page.url(), target, strategy.allowedDomains);
+            if (response === null) return failure("network", "Navigation produced no response", false);
+            if (response.status() === 403) {
+              return failure("http-403", "HTTP 403", true, 403);
+            }
+            if (response.status() === 429) {
+              return failure("http-429", "HTTP 429", true, 429);
+            }
+            if (!response.ok()) {
+              return failure("network", `HTTP ${response.status()}`, true, response.status());
+            }
+            return mapExtractionFields(await collectFields(session.page, strategy));
+          } catch (error) {
+            if (session.deniedUrl !== null) {
+              return failure("domain-denied", `URL domain is not allowed: ${session.deniedUrl}`, false);
+            }
+            if (session.bodyLimitExceeded) {
+              return failure("parse", "Browser response exceeded maxBodyBytes", true);
+            }
+            if (session.redirectLimitExceeded) {
+              return failure("network", "Browser redirect limit exceeded", true);
+            }
+            return failure(
+              errorCategory(error),
+              error instanceof Error ? error.message : "Browser extraction failed",
+              false,
+            );
           }
-          if (session.redirectLimitExceeded) {
-            return failure("network", "Browser redirect limit exceeded", true);
-          }
-          if (session.bodyLimitExceeded) {
-            return failure("parse", "Browser response exceeded maxBodyBytes", true);
-          }
-          assertNavigationAllowed(session.page.url(), target, strategy.allowedDomains);
-          if (response === null) return failure("network", "Navigation produced no response", false);
-          if (response.status() === 403) {
-            return failure("http-403", "HTTP 403", true, 403);
-          }
-          if (response.status() === 429) {
-            return failure("http-429", "HTTP 429", true, 429);
-          }
-          if (!response.ok()) {
-            return failure("network", `HTTP ${response.status()}`, true, response.status());
-          }
-          return mapExtractionFields(await collectFields(session.page, strategy));
-        } catch (error) {
-          if (session.deniedUrl !== null) {
-            return failure("domain-denied", `URL domain is not allowed: ${session.deniedUrl}`, false);
-          }
-          if (session.bodyLimitExceeded) {
-            return failure("parse", "Browser response exceeded maxBodyBytes", true);
-          }
-          if (session.redirectLimitExceeded) {
-            return failure("network", "Browser redirect limit exceeded", true);
-          }
-          return failure(
-            errorCategory(error),
-            error instanceof Error ? error.message : "Browser extraction failed",
-            false,
-          );
-        }
+        })();
+        const body = await session.page.content().catch(() => null);
+        return body !== null
+          && Buffer.byteLength(body) <= (executionContext.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES)
+          ? attachPrivateReplay(result, { body, mediaType: "text/html" })
+          : result;
       },
     );
   } catch (error) {

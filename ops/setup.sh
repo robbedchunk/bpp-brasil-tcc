@@ -25,9 +25,30 @@ if command -v ldd >/dev/null 2>&1 && ldd "$CHROMIUM_PATH" 2>/dev/null | grep -q 
   npx playwright install-deps chromium
 fi
 
-install -d -m 0700 data data/raw-html var var/backups var/log var/replay
+install -d -m 0700 data data/raw-html var var/backups var/log var/operations var/replay
 migrate_legacy_database "$PROJECT_ROOT/var/precos.sqlite" "$PROJECT_ROOT/data/precos.sqlite"
 DATABASE_PATH="${DATABASE_PATH:-data/precos.sqlite}" npm run --silent cli -- db init >/dev/null
+VALIDATION_PRIVATE_KEY="$PROJECT_ROOT/var/operations/validation-attestation-private.pem"
+VALIDATION_PUBLIC_KEY="$PROJECT_ROOT/ops/validation-attestation-public.pem"
+if [[ -f "$VALIDATION_PRIVATE_KEY" || ! -f "$VALIDATION_PUBLIC_KEY" ]]; then
+  npm run --silent strategies:key:init >/dev/null
+else
+  printf 'setup: validation receipts are verification-only until the matching private key is restored.\n'
+fi
+
+STRATEGY_COUNT="$(DATABASE_PATH="${DATABASE_PATH:-data/precos.sqlite}" node --input-type=module -e '
+  import Database from "better-sqlite3";
+  const database = new Database(process.env.DATABASE_PATH, { readonly: true });
+  try {
+    process.stdout.write(String(database.prepare("SELECT COUNT(*) AS count FROM strategies").get().count));
+  } finally {
+    database.close();
+  }
+')"
+if [[ "$STRATEGY_COUNT" == "0" ]]; then
+  DATABASE_PATH="${DATABASE_PATH:-data/precos.sqlite}" \
+    npm run --silent retailers:register -- --bootstrap-inactive >/dev/null
+fi
 
 if [[ "${INSTALL_TIMERS:-0}" == "1" ]]; then
   "$PROJECT_ROOT/ops/install-systemd.sh"

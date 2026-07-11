@@ -24,6 +24,7 @@ data/*.sqlite.migration-*
 __pycache__/
 *.pyc
 .venv/
+data/reviews/*.csv
 
 # Test and editor artifacts
 playwright-report/

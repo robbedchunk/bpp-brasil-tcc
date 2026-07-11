@@ -1,12 +1,25 @@
 [
   {
     "_fixture": {
-      "provenance": "synthetic mutation for drift testing",
+      "provenance": "synthetic mutation for regional seller drift testing",
       "synthetic": true
     },
-    "productId": "synthetic-4244",
-    "productName": "Arroz Synthetic 1kg",
+    "productId": "14751",
+    "productName": "Café Synthetic 1 Kg",
     "brand": "Synthetic",
-    "items": []
+    "items": [
+      {
+        "measurementUnit": "un",
+        "sellers": [
+          {
+            "sellerId": "unexpected-store",
+            "commertialOffer": {
+              "Price": 10.99,
+              "IsAvailable": true
+            }
+          }
+        ]
+      }
+    ]
   }
 ]

@@ -3,15 +3,28 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
 import {
+  decideFoodAtHomeScope,
+  MAX_FOOD_CATALOG_PRODUCTS,
+  type CatalogScopeDecision,
+} from "../catalog/scope.js";
+import {
+  activeCatalogProductCount,
+  admitDiscoveryReference,
+  admitRequest,
+  catalogDisappearanceCandidateCount,
   createRun,
-  attemptedForDay,
-  finalizeRun,
+  finalizeDiscoveryRun,
   findActiveDiscoveryStrategy,
   insertRunFailure,
+  remainingDiscoveryReferenceAdmissions,
+  remainingRequestAdmissions,
   upsertDiscoveredProduct,
 } from "../db/repositories.js";
 import { executeDiscovery } from "../discovery/executor.js";
-import type { DiscoveryExecutionContext } from "../discovery/executor.js";
+import type {
+  DiscoveryCompletionEvidence,
+  DiscoveryExecutionContext,
+} from "../discovery/executor.js";
 import {
   DiscoveryFailureError,
   discoveryFailureFromUnknown,
@@ -20,6 +33,7 @@ import { RobotsPolicy } from "../discovery/robots.js";
 import { fetchBounded } from "../collection/http.js";
 import type { DiscoveryStrategy } from "../strategies/schema.js";
 import type { ProductRef } from "../strategies/types.js";
+import { JsonlLogger } from "../ops/logger.js";
 
 export type RunStatus = "completed" | "partial" | "failed";
 
@@ -38,6 +52,13 @@ export interface RunSummary {
   planned?: number;
 }
 
+export interface DiscoveryRunSummary extends RunSummary {
+  snapshotComplete: boolean;
+  disappeared: number;
+  inScope: number;
+  outOfScope: number;
+}
+
 export interface DiscoveryPipelineDependencies {
   database: Database.Database;
   execute?: (
@@ -53,9 +74,11 @@ export interface DiscoveryPipelineDependencies {
   sleep?: (milliseconds: number) => Promise<void>;
   clock?: () => number;
   executionContext?: DiscoveryExecutionContext;
+  scopeDecider?: (ref: ProductRef) => CatalogScopeDecision;
+  logDirectory?: string;
 }
 
-const MAX_DAILY_PAGES = 2_000;
+const MAX_DISCOVERY_PRODUCTS_PER_DAY = MAX_FOOD_CATALOG_PRODUCTS;
 
 export function collectionDay(date: Date): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -75,6 +98,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.trim().length > 0
     ? error.message
     : String(error) || "Unknown pipeline error";
+}
+
+class RequestBudgetExhaustedError extends Error {
+  constructor() {
+    super("Daily discovery request budget is exhausted");
+    this.name = "RequestBudgetExhaustedError";
+  }
+}
+
+function causedByRequestBudgetExhaustion(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    if (current instanceof RequestBudgetExhaustedError) return true;
+    seen.add(current);
+    current = "cause" in current ? current.cause : null;
+  }
+  return false;
 }
 
 function createPoliteGate(
@@ -119,14 +160,33 @@ function robotsOrigins(strategy: DiscoveryStrategy): string[] {
 async function executionContextFor(
   strategy: DiscoveryStrategy,
   dependencies: DiscoveryPipelineDependencies,
+  admission: {
+    runId: string;
+    retailerId: string;
+    collectionDay: string;
+    now: () => Date;
+  },
 ): Promise<DiscoveryExecutionContext> {
-  const beforeRequest = createPoliteGate(
+  const politeGate = createPoliteGate(
     dependencies.politeDelayMs,
     dependencies.random ?? Math.random,
     dependencies.sleep ?? ((milliseconds) =>
       new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
     dependencies.clock ?? Date.now,
   );
+  const inheritedBeforeRequest = dependencies.executionContext?.beforeRequest;
+  const beforeRequest = async (): Promise<void> => {
+    await inheritedBeforeRequest?.();
+    await politeGate();
+    const result = admitRequest(dependencies.database, {
+      runId: admission.runId,
+      retailerId: admission.retailerId,
+      collectionDay: admission.collectionDay,
+      stage: "discover",
+      admittedAt: admission.now().toISOString(),
+    });
+    if (!result.admitted) throw new RequestBudgetExhaustedError();
+  };
   const context: DiscoveryExecutionContext = {
     ...dependencies.executionContext,
     beforeRequest,
@@ -177,24 +237,48 @@ async function executionContextFor(
 export async function runDiscovery(
   retailerId: string,
   dependencies: DiscoveryPipelineDependencies,
-): Promise<RunSummary> {
+): Promise<DiscoveryRunSummary> {
   const now = dependencies.now ?? (() => new Date());
   const makeId = dependencies.id ?? randomUUID;
   const startedAt = now().toISOString();
   const day = collectionDay(new Date(startedAt));
   const active = findActiveDiscoveryStrategy(dependencies.database, retailerId);
+  const activeCatalogBefore = activeCatalogProductCount(
+    dependencies.database,
+    retailerId,
+  );
   const runId = dependencies.dryRun === true ? `dry-run-${makeId()}` : makeId();
-  const limit = Math.min(
-    Math.max(
-      0,
-      MAX_DAILY_PAGES - attemptedForDay(dependencies.database, retailerId, day),
-    ),
-    Math.max(0, Math.trunc(dependencies.limit ?? MAX_DAILY_PAGES)),
+  const requestedProductLimit = Math.min(
+    MAX_DISCOVERY_PRODUCTS_PER_DAY,
+    Math.max(0, Math.trunc(
+      dependencies.limit ?? MAX_DISCOVERY_PRODUCTS_PER_DAY,
+    )),
+  );
+  const remainingDailyReferences = remainingDiscoveryReferenceAdmissions(
+    dependencies.database,
+    retailerId,
+    day,
+  );
+  const limit = Math.min(requestedProductLimit, remainingDailyReferences);
+  const remainingDailyRequests = remainingRequestAdmissions(
+    dependencies.database,
+    retailerId,
+    day,
+    "discover",
   );
   const counters = { attempted: 0, ok: 0, failed: 0 };
   let finalError: { category: string; message: string } | undefined;
   let finishedAt = startedAt;
   let status = terminalStatus(0, 0);
+  let inScope = 0;
+  let outOfScope = 0;
+  let iteratorCompleted = false;
+  const completionState: { evidence: DiscoveryCompletionEvidence | null } = {
+    evidence: null,
+  };
+  let snapshotComplete = false;
+  let disappeared = 0;
+  let referenceBudgetExhausted = false;
 
   if (dependencies.dryRun === true) {
     return {
@@ -208,6 +292,10 @@ export async function runDiscovery(
       startedAt,
       finishedAt: now().toISOString(),
       dryRun: true,
+      snapshotComplete: false,
+      disappeared: 0,
+      inScope: 0,
+      outOfScope: 0,
     };
   }
 
@@ -220,22 +308,97 @@ export async function runDiscovery(
     strategyVersion: active.version,
     startedAt,
   });
+  const logger = dependencies.logDirectory === undefined
+    ? null
+    : new JsonlLogger({
+        directory: dependencies.logDirectory,
+        basename: `discover-${runId}`,
+        now,
+      });
+  const loggingErrors: string[] = [];
+  const log = async (
+    level: "info" | "warning" | "error",
+    event: string,
+    fields: unknown,
+  ): Promise<void> => {
+    if (logger === null) return;
+    try {
+      await logger.log(level, event, fields);
+    } catch (error) {
+      loggingErrors.push(errorMessage(error));
+    }
+  };
+  await log("info", "run.started", {
+    runId,
+    retailerId,
+    stage: "discover",
+    strategyId: active.id,
+    strategyVersion: active.version,
+    limit,
+  });
 
   try {
     try {
-      if (limit > 0) {
-        const context = await executionContextFor(active.strategy, dependencies);
+      if (loggingErrors.length > 0) {
+        throw new Error(loggingErrors[0] ?? "Discovery run logging initialization failed");
+      }
+      if (limit > 0 && remainingDailyRequests > 0) {
+        const context = await executionContextFor(active.strategy, dependencies, {
+          runId,
+          retailerId,
+          collectionDay: day,
+          now,
+        });
+        const inheritedCompletionReporter = context.reportCompletion;
+        context.reportCompletion = (evidence) => {
+          inheritedCompletionReporter?.(evidence);
+          completionState.evidence = evidence;
+        };
         const refs = (dependencies.execute ?? ((strategy, executionContext) =>
           executeDiscovery(strategy, executionContext)))(active.strategy, context);
         const iterator = refs[Symbol.asyncIterator]();
         while (counters.attempted < limit) {
           const next = await iterator.next();
-          if (next.done) break;
+          if (next.done) {
+            iteratorCompleted = true;
+            break;
+          }
           const ref = next.value;
+          const referenceAdmission = admitDiscoveryReference(dependencies.database, {
+            runId,
+            retailerId,
+            collectionDay: day,
+            canonicalUrl: typeof ref.canonicalUrl === "string" ? ref.canonicalUrl : null,
+            admittedAt: now().toISOString(),
+          });
+          if (!referenceAdmission.admitted) {
+            referenceBudgetExhausted = true;
+            completionState.evidence = {
+              complete: false,
+              reason: "product_cap_reached",
+            };
+            break;
+          }
           counters.attempted += 1;
           try {
-            upsertDiscoveredProduct(dependencies.database, retailerId, ref, now().toISOString());
+            const scope = (dependencies.scopeDecider ?? decideFoodAtHomeScope)(ref);
+            upsertDiscoveredProduct(
+              dependencies.database,
+              retailerId,
+              ref,
+              now().toISOString(),
+              { runId, scope },
+            );
             counters.ok += 1;
+            if (scope.inScope) inScope += 1;
+            else outOfScope += 1;
+            await log("info", "product.discovered", {
+              runId,
+              retailerId,
+              inScope: scope.inScope,
+              scopeReason: scope.reason,
+              sourceCategory: ref.sourceCategory,
+            });
           } catch (error) {
             counters.failed += 1;
             try {
@@ -260,46 +423,147 @@ export async function runDiscovery(
             }
           }
         }
-        if (counters.attempted >= limit) {
+        if (
+          counters.attempted >= limit
+          && remainingDailyReferences <= requestedProductLimit
+        ) {
+          referenceBudgetExhausted = true;
+          completionState.evidence = {
+            complete: false,
+            reason: "product_cap_reached",
+          };
+        }
+        if (counters.attempted >= limit || referenceBudgetExhausted) {
           try {
             await iterator.return?.();
           } catch {
             // Iterator cleanup is not another page attempt and cannot exceed the cap.
           }
         }
+      } else if (remainingDailyRequests === 0) {
+        completionState.evidence = {
+          complete: false,
+          reason: "request_cap_reached",
+        };
+      } else if (remainingDailyReferences === 0 && requestedProductLimit > 0) {
+        referenceBudgetExhausted = true;
+        completionState.evidence = {
+          complete: false,
+          reason: "product_cap_reached",
+        };
       }
     } catch (error) {
-      counters.attempted += 1;
-      counters.failed += 1;
-      const failure = discoveryFailureFromUnknown(error);
-      finalError = { category: failure.category, message: failure.message };
-      try {
-        insertRunFailure(dependencies.database, {
-          runId,
-          retailerId,
-          failure,
-          occurredAt: now().toISOString(),
-          strategyId: active.id,
-          strategyVersion: active.version,
-        });
-      } catch (persistenceError) {
-        finalError = {
-          category: "unknown",
-          message: errorMessage(persistenceError),
+      if (causedByRequestBudgetExhaustion(error)) {
+        completionState.evidence = {
+          complete: false,
+          reason: "request_cap_reached",
+        };
+      } else {
+        const failure = discoveryFailureFromUnknown(error);
+        finalError = { category: failure.category, message: failure.message };
+        try {
+          insertRunFailure(dependencies.database, {
+            runId,
+            retailerId,
+            failure,
+            occurredAt: now().toISOString(),
+            strategyId: active.id,
+            strategyVersion: active.version,
+          });
+        } catch (persistenceError) {
+          finalError = {
+            category: "unknown",
+            message: errorMessage(persistenceError),
+          };
         }
       }
     }
   } finally {
     finishedAt = now().toISOString();
-    status = terminalStatus(counters.ok, counters.failed);
-    finalizeRun(
-      dependencies.database,
+    status = finalError === undefined
+      ? terminalStatus(counters.ok, counters.failed)
+      : counters.ok > 0 ? "partial" : "failed";
+    snapshotComplete = limit > 0
+      && iteratorCompleted
+      && completionState.evidence?.complete === true
+      && counters.failed === 0
+      && finalError === undefined;
+    let completionReason = completionState.evidence?.reason === "request_cap_reached"
+      || completionState.evidence?.reason === "product_cap_reached"
+      ? completionState.evidence.reason
+      : limit === 0
+        ? "discovery_budget_exhausted"
+        : finalError !== undefined
+          ? "pipeline_failure"
+          : !iteratorCompleted
+            ? "run_limit_reached"
+            : completionState.evidence?.reason ?? "completion_unverified";
+    if (snapshotComplete && counters.ok === 0) {
+      snapshotComplete = false;
+      completionReason = "empty_snapshot_guard";
+    } else if (snapshotComplete && activeCatalogBefore > 0) {
+      const disappearanceCandidates = catalogDisappearanceCandidateCount(
+        dependencies.database,
+        retailerId,
+        runId,
+      );
+      const safeDisappearanceLimit = Math.max(
+        1,
+        Math.floor(activeCatalogBefore * 0.2),
+      );
+      if (disappearanceCandidates > safeDisappearanceLimit) {
+        snapshotComplete = false;
+        completionReason = "catastrophic_shrink_guard";
+      }
+    }
+    if (loggingErrors.length > 0) {
+      snapshotComplete = false;
+      completionReason = "logging_failure";
+      finalError ??= {
+        category: "unknown",
+        message: loggingErrors[0] ?? "Run logging failed",
+      };
+      status = counters.ok > 0 ? "partial" : "failed";
+    }
+    await log(status === "completed" ? "info" : "warning", "run.finished", {
       runId,
+      retailerId,
+      stage: "discover",
+      status,
+      ...counters,
+      inScope,
+      outOfScope,
+      snapshotComplete,
+      disappeared: snapshotComplete
+        ? catalogDisappearanceCandidateCount(dependencies.database, retailerId, runId)
+        : 0,
+      completionReason,
+    });
+    if (loggingErrors.length > 0) {
+      snapshotComplete = false;
+      completionReason = "logging_failure";
+      finalError ??= {
+        category: "unknown",
+        message: loggingErrors[0] ?? "Run logging failed",
+      };
+      status = counters.ok > 0 ? "partial" : "failed";
+    }
+    disappeared = finalizeDiscoveryRun(dependencies.database, {
+      snapshot: {
+        runId,
+        retailerId,
+        complete: snapshotComplete,
+        completionReason,
+        discovered: counters.ok,
+        inScope,
+        outOfScope,
+        completedAt: finishedAt,
+      },
       counters,
       status,
       finishedAt,
-      finalError,
-    );
+      ...(finalError === undefined ? {} : { error: finalError }),
+    });
   }
 
   return {
@@ -312,5 +576,9 @@ export async function runDiscovery(
     startedAt,
     finishedAt,
     dryRun: false,
+    snapshotComplete,
+    disappeared,
+    inScope,
+    outOfScope,
   };
 }

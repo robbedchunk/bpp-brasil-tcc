@@ -54,6 +54,10 @@ describe("DOM crawl discovery", () => {
         ).join(""));
         return;
       }
+      if (request.url === "/empty") {
+        response.end("<p>No catalog links</p>");
+        return;
+      }
       if (request.url === "/throttled") {
         response.statusCode = 429;
         response.end("throttled");
@@ -102,6 +106,26 @@ describe("DOM crawl discovery", () => {
       { canonicalUrl: `${server.origin}/produto/3`, externalId: null, sourceCategory: null },
     ]);
     expect(gated).toBe(2);
+  });
+
+  it("derives authoritative source category from a collection URL", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/collections/sushi-e-sashimi?page=1`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 1,
+    });
+
+    const refs = await collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+    }));
+
+    expect(refs[0]?.sourceCategory).toBe("sushi e sashimi");
   });
 
   it("applies product caps after canonical de-duplication", async () => {
@@ -188,6 +212,25 @@ describe("DOM crawl discovery", () => {
 
     await expect(collect(executeDiscovery(strategy, { browser })))
       .rejects.toMatchObject({ failure: { category: "domain-denied" } });
+  });
+
+  it("treats a selector-valid page with zero product references as parse drift", async () => {
+    const strategy = DomCrawlDiscoveryStrategySchema.parse({
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "dom-crawl",
+      allowedDomains: ["127.0.0.1"],
+      startUrls: [`${server.origin}/empty`],
+      linkSelectors: [{ selector: "a.product", attribute: "href" }],
+      paginationSelectors: [{ selector: "a.next", attribute: "href" }],
+      maxPages: 1,
+      maxProducts: 10,
+    });
+
+    await expect(collect(executeDiscovery(strategy, {
+      browser,
+      robots: RobotsPolicy.allowAll(server.origin),
+    }))).rejects.toMatchObject({ failure: { category: "parse", responded: true } });
   });
 
   it("categorizes a robots-denied DOM entry instead of returning zero refs", async () => {

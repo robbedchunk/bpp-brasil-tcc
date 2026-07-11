@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -8,13 +8,38 @@ import { join, resolve } from "node:path";
 
 import { openDatabase } from "../../src/db/database.js";
 import {
+  buildClassificationReviewTemplate,
+  evaluateClassificationReview,
+} from "../../src/classify/review.js";
+import {
+  loadRetailerConfigs,
+  registerRetailerConfigs,
+  type RetailerConfig,
+} from "../../src/retailers/config.js";
+import type { Strategy } from "../../src/strategies/schema.js";
+import {
+  attestStrategyValidationEvidence,
+  evidenceValueSha256,
+  StrategyValidationEvidenceSchema,
+  strategyEvidenceSha256,
+  validationRefSha256,
+  validationReceiptSha256,
+  validationSampleSetSha256,
+  type StrategyValidationEvidence,
+} from "../../src/strategies/validation-evidence.js";
+import {
   acceptanceExitCode,
   aggregateAcceptanceStatus,
   buildAcceptanceReport,
   classificationAutomationIsCurrent,
+  csvDataRowCount,
+  experimentalSeriesState,
   evaluateM2,
   evaluateM3,
   evaluateM4,
+  evaluateClassificationHumanReview,
+  evaluateActiveStrategyValidationReceipts,
+  resolveAcceptanceEvaluatedCommit,
   renderAcceptanceMarkdown,
   readSystemdInstallationState,
   reviewFindingState,
@@ -24,6 +49,10 @@ import {
 } from "../../src/ops/acceptance.js";
 
 const databases: Database.Database[] = [];
+const {
+  privateKey: TEST_VALIDATION_PRIVATE_KEY,
+  publicKey: TEST_VALIDATION_PUBLIC_KEY,
+} = generateKeyPairSync("ed25519");
 
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
@@ -35,6 +64,12 @@ function fixture(): Database.Database {
   return database;
 }
 
+function m3Criterion(result: ReturnType<typeof evaluateM3>, id: string) {
+  const item = result.criteria.find((candidate) => candidate.id === id);
+  if (item === undefined) throw new Error(`Missing M3 criterion ${id}`);
+  return item;
+}
+
 function seedRetailer(database: Database.Database, id: string, products = 30): void {
   database.prepare(`
     INSERT INTO retailers(id, name, base_url, cep, domains_json)
@@ -44,8 +79,22 @@ function seedRetailer(database: Database.Database, id: string, products = 30): v
     INSERT INTO strategies(
       id, retailer_id, purpose, tier, version, strategy_json, provenance,
       validation_sample_size, validation_successes, validation_rate, active
-    ) VALUES (?, ?, 'extraction', 1, 1, '{}', 'fixture', 30, 27, 0.9, 1)
+    ) VALUES (?, ?, 'extraction', 1, 1, '{}', 'fixture', 30, 27, 0.9, 0)
   `).run(`strategy-${id}`, id);
+  database.prepare(`
+    INSERT INTO strategy_validation_evidence
+      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+       executor_json, attestation_key_id, attempted, valid, score, validated_at)
+    VALUES (?, ?, ?, ?, '{}', ?, 30, 27, 0.9, '2026-07-10T00:00:00.000Z')
+  `).run(
+    `strategy-${id}`,
+    `data/validation/strategy-${id}.json`,
+    "a".repeat(64),
+    "b".repeat(64),
+    "c".repeat(64),
+  );
+  database.prepare("UPDATE strategies SET active = 1 WHERE id = ?")
+    .run(`strategy-${id}`);
   const insert = database.prepare(`
     INSERT INTO products(
       id, retailer_id, canonical_url, title, first_seen, last_seen
@@ -56,6 +105,156 @@ function seedRetailer(database: Database.Database, id: string, products = 30): v
   }
 }
 
+function seedHumanReviewClassifications(
+  database: Database.Database,
+  count = 200,
+  version = 7,
+): void {
+  seedRetailer(database, "review-retailer", count);
+  database.prepare(`
+    INSERT INTO ipca_items(id, code, name, weight, weight_period, source_url, citation)
+    VALUES ('review-item', '1100001', 'Review item', 1, '2026-01',
+      'https://example.test/ipca', 'review fixture')
+  `).run();
+  const rows = database.prepare(`
+    SELECT id, title, brand, source_category FROM products
+    WHERE retailer_id = 'review-retailer' ORDER BY id
+  `).all() as Array<{ id: string; title: string; brand: string | null; source_category: string | null }>;
+  const insert = database.prepare(`
+    INSERT INTO classifications(
+      id, product_id, ipca_item_id, version, decision, confidence, method,
+      prompt_version, model, input_json, output_json, created_at
+    ) VALUES (?, ?, 'review-item', ?, '1100001', 0.95, 'llm',
+      'review-v1', 'review-model', ?, '{}', ?)
+  `);
+  rows.forEach((row, index) => insert.run(
+    `review-classification-${String(index).padStart(3, "0")}`,
+    row.id,
+    version,
+    JSON.stringify({
+      productId: row.id,
+      title: row.title,
+      brand: row.brand,
+      sourceCategory: row.source_category,
+      allowedItems: [],
+    }),
+    `2026-07-11T04:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+  ));
+}
+
+function fillReviewLabels(csv: string): string {
+  return `${csv.trimEnd().split("\n").map((line, index) =>
+    index === 0 ? line : `${line}1100001`).join("\n")}\n`;
+}
+
+function strategyReceipt(
+  config: RetailerConfig,
+  purpose: "discovery" | "extraction",
+  sourceCommit = "a".repeat(40),
+) {
+  const strategy = config[purpose] as Strategy;
+  const validation = config.validation[purpose];
+  const regionalSeller = purpose === "extraction"
+    && strategy.purpose === "extraction"
+    && strategy.tier === "api"
+    ? strategy.regionalContext?.catalogSellerId ?? null
+    : null;
+  const samples = Array.from({ length: 30 }, (_, index) => {
+    const externalId = String(10_000 + index);
+    const ref = {
+      canonicalUrl: `https://carrefourbrfood.vtexcommercestable.com.br/product-${index}/p`,
+      externalId,
+      sourceCategory: "/Mercearia/",
+    };
+    const request = {
+      method: "GET" as const,
+      url: `https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search?fq=productId:${externalId}`,
+      bodySha256: null,
+    };
+    const valid = index < validation.successes;
+    const outcome = valid
+      ? purpose === "extraction"
+        ? {
+            status: "valid" as const,
+            fields: {
+              title: `Product ${index}`,
+              brand: "Brand",
+              price: 10,
+              promoPrice: 9,
+              unit: "1 kg",
+              available: true,
+            },
+          }
+        : { status: "valid" as const, fields: null }
+      : {
+          status: "invalid" as const,
+          failure: {
+            category: "invalid-price" as const,
+            message: "No positive price",
+            responded: true,
+            statusCode: 200,
+          },
+        };
+    return {
+      ordinal: index + 1,
+      startedOffsetMs: index * 1_100,
+      durationMs: 100 + index,
+      ref,
+      refSha256: validationRefSha256(ref),
+      request,
+      requestSha256: evidenceValueSha256(request),
+      response: {
+        finalUrl: request.url,
+        statusCode: 200,
+        contentType: "application/json",
+        bodyBytes: 100 + index,
+        bodySha256: createHash("sha256").update(`response-${purpose}-${index}`).digest("hex"),
+      },
+      outcome,
+      outcomeSha256: evidenceValueSha256(outcome),
+      validatedFacts: {
+        returnedProductId: externalId,
+        catalogSellerId: regionalSeller,
+        catalogSellerMatchCount: regionalSeller === null ? null : 1,
+      },
+    };
+  });
+  const parsedSamples = StrategyValidationEvidenceSchema.shape.samples.parse(samples);
+  const elapsedMs = 29 * 1_100 + 129;
+  const finishedAt = validation.validatedAt ?? "2026-07-11T05:00:00.000Z";
+  return attestStrategyValidationEvidence({
+    schemaVersion: 2,
+    retailerId: config.id,
+    purpose,
+    strategyVersion: config.strategyVersions[purpose],
+    strategySha256: strategyEvidenceSha256(strategy),
+    validatedAt: validation.validatedAt,
+    executor: {
+      program: "scripts/validate-strategies.ts",
+      version: 1,
+      mode: "trusted-live-host",
+      runtime: "node-v24.18.0",
+      sourceCommit,
+      playwrightVersion: "1.61.1",
+      chromiumVersion: "Chromium 141.0.0.0",
+      sequentialPacingMs: 1_100,
+      timeoutMs: 15_000,
+      maxBodyBytes: 2_000_000,
+      startedAt: new Date(Date.parse(finishedAt) - elapsedMs).toISOString(),
+      finishedAt,
+      elapsedMs,
+      requestHeadersStored: false,
+      responseBodiesStored: false,
+    },
+    attempted: 30,
+    valid: validation.successes,
+    score: validation.score,
+    activatable: true,
+    sampleSetSha256: validationSampleSetSha256(parsedSamples),
+    samples: parsedSamples,
+  }, TEST_VALIDATION_PRIVATE_KEY);
+}
+
 function seedCollection(
   database: Database.Database,
   retailerId: string,
@@ -64,6 +263,10 @@ function seedCollection(
   attempted = 30,
   scheduledTime = "06:00:00.000Z",
   trigger: "manual" | "systemd-timer" = "systemd-timer",
+  operational: {
+    monitorFailedRunIds?: string[];
+    retailerFailures?: Array<Record<string, unknown>>;
+  } = {},
 ): void {
   const runId = `run-${retailerId}-${day}`;
   const scheduledAt = `${day}T${scheduledTime}`;
@@ -73,17 +276,13 @@ function seedCollection(
     INSERT INTO runs(
       id, retailer_id, stage, collection_day, strategy_id, strategy_version,
       status, attempted, ok, failed, started_at, finished_at
-    ) VALUES (?, ?, 'collect', ?, ?, 1, 'completed', ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, 'collect', ?, ?, 1, 'running', 0, 0, 0, ?, NULL)
   `).run(
     runId,
     retailerId,
     day,
     `strategy-${retailerId}`,
-    attempted,
-    ok,
-    attempted - ok,
     scheduledAt,
-    completedAt,
   );
   const products = database.prepare(
     "SELECT id FROM products WHERE retailer_id = ? ORDER BY id LIMIT ?",
@@ -105,6 +304,11 @@ function seedCollection(
     );
   }
   database.prepare(`
+    UPDATE runs
+    SET status = 'completed', attempted = ?, ok = ?, failed = ?, finished_at = ?
+    WHERE id = ?
+  `).run(attempted, ok, attempted - ok, completedAt, runId);
+  database.prepare(`
     INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
     VALUES (?, 'collect', ?, ?, 'completed', ?)
   `).run(
@@ -115,6 +319,8 @@ function seedCollection(
       trigger,
       ...(trigger === "systemd-timer" ? { timerUnit: "precos-daily.timer" } : {}),
       runIds: [runId],
+      monitorFailedRunIds: operational.monitorFailedRunIds ?? [],
+      retailerFailures: operational.retailerFailures ?? [],
     }),
   );
 }
@@ -143,8 +349,25 @@ function seedM4Evidence(database: Database.Database, estimateSource: string): vo
         validation_rate, active, validated_at, activated_at
       ) VALUES (?, 'agent-retailer', ?, 1, 2, '{}',
         'Codex SDK; trusted host validation', 'gpt-test', 'prompt-v1',
-        30, 27, 0.9, 1, '2026-07-10T10:00:00.000Z', '2026-07-10T10:00:00.000Z')
+        30, 27, 0.9, 0, '2026-07-10T10:00:00.000Z', NULL)
     `).run(strategyId, purpose);
+    database.prepare(`
+      INSERT INTO strategy_validation_evidence
+        (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+         executor_json, attestation_key_id, attempted, valid, score, validated_at)
+      VALUES (?, ?, ?, ?, '{}', ?, 30, 27, 0.9, '2026-07-10T10:00:00.000Z')
+    `).run(
+      strategyId,
+      `data/validation/agent-retailer-${purpose}-v2.json`,
+      "a".repeat(64),
+      "b".repeat(64),
+      "c".repeat(64),
+    );
+    database.prepare(`
+      UPDATE strategies
+      SET active = 1, activated_at = '2026-07-10T10:00:00.000Z'
+      WHERE id = ?
+    `).run(strategyId);
     database.prepare(`
       INSERT INTO exploration_runs(
         id, retailer_id, purpose, trigger, previous_strategy_id,
@@ -207,6 +430,115 @@ describe("acceptance status and evidence", () => {
     expect(acceptanceExitCode("fail", false)).toBe(1);
   });
 
+  it("resolves a trailing report/receipt commit to the last implementation cut", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-evidence-cut-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Evidence Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "evidence@example.test"], { cwd: root });
+      await mkdir(join(root, "src"), { recursive: true });
+      await writeFile(join(root, "src", "implementation.ts"), "export const implemented = true;\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "implementation"], { cwd: root });
+      const implementation = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+
+      await mkdir(join(root, "data", "acceptance", "evidence"), { recursive: true });
+      await mkdir(join(root, "docs"), { recursive: true });
+      await writeFile(join(root, "data", "acceptance", "acceptance.json"), "{}\n");
+      await writeFile(join(root, "data", "acceptance", "evidence", "fresh-clone.json"), "{}\n");
+      await writeFile(join(root, "data", "acceptance", "evidence", "classification-review-v7.json"), "{}\n");
+      await writeFile(join(root, "docs", "acceptance-report.md"), "# Generated report\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "evidence only"], { cwd: root });
+
+      expect(resolveAcceptanceEvaluatedCommit(root)).toBe(implementation);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "src/changed.ts",
+    "tests/changed.test.ts",
+    "retailers/changed.json",
+    "data/precos.sqlite",
+    "data/exports/latest.json",
+    "analysis/output/latest.json",
+    "data/acceptance/unreviewed-note.json",
+    "data/acceptance/evidence/classification-review-v0.json",
+  ])("makes %s a new implementation cut instead of evidence-only ancestry", async (path) => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-cut-attack-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Evidence Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "evidence@example.test"], { cwd: root });
+      await writeFile(join(root, "README.md"), "implementation\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "implementation"], { cwd: root });
+      await mkdir(join(root, path.split("/").slice(0, -1).join("/")), { recursive: true });
+      await writeFile(join(root, path), "changed\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "not evidence only"], { cwd: root });
+      const changedCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+      await mkdir(join(root, "docs"), { recursive: true });
+      await writeFile(join(root, "docs", "acceptance-report.md"), "generated\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "trailing evidence"], { cwd: root });
+
+      expect(resolveAcceptanceEvaluatedCommit(root)).toBe(changedCommit);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires a nonempty experimental relative chain while allowing absent official overlap", () => {
+    const exportManifest = (rows: number, status: "no_index_data" | "complete") => ({
+      status,
+      files: [
+        "product_relatives.csv",
+        "retailer_subitem_daily.csv",
+        "subitem_daily.csv",
+        "aggregate_daily.csv",
+      ].map((path) => ({ path, rows })),
+    });
+    const analysisManifest = (rows: number, noIndexData: boolean) => ({
+      statuses: { noIndexData, noOfficialOverlap: true },
+      inputs: [{ path: "aggregate_daily.csv", rows }],
+    });
+
+    expect(experimentalSeriesState(
+      exportManifest(0, "no_index_data"),
+      analysisManifest(0, true),
+    )).toMatchObject({ valid: true, nonempty: false, aggregateDailyRows: 0 });
+    expect(experimentalSeriesState(
+      exportManifest(1, "complete"),
+      analysisManifest(1, false),
+    )).toMatchObject({ valid: true, nonempty: true, aggregateDailyRows: 1 });
+    expect(experimentalSeriesState(
+      exportManifest(0, "complete"),
+      analysisManifest(0, false),
+    ).valid).toBe(false);
+    expect(experimentalSeriesState(
+      { status: "complete", files: [{ path: "aggregate_daily.csv", rows: 1 }] },
+      analysisManifest(1, false),
+    ).valid).toBe(false);
+  });
+
+  it("counts actual CSV data rows instead of trusting manifest metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-series-csv-"));
+    try {
+      const path = join(root, "aggregate_daily.csv");
+      await writeFile(path, "date,daily_relative\n2026-07-10,1.01\n");
+      expect(csvDataRowCount(path)).toBe(1);
+      await writeFile(path, "date,daily_relative\n");
+      expect(csvDataRowCount(path)).toBe(0);
+      await writeFile(path, 'date,daily_relative\n"unterminated\n');
+      expect(csvDataRowCount(path)).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires two consecutive qualifying collection days for two retailers", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta"]) {
@@ -265,6 +597,25 @@ describe("acceptance status and evidence", () => {
     expect(evaluateM2(database, new Date("2026-07-10T18:00:00.000Z")).criterion.status).not.toBe("pass");
   });
 
+  it("rejects a completed-label heartbeat that admits monitor or retailer failures", () => {
+    const database = fixture();
+    seedRetailer(database, "alpha");
+    seedCollection(
+      database,
+      "alpha",
+      "2026-07-10",
+      30,
+      30,
+      "06:05:00.000Z",
+      "systemd-timer",
+      { monitorFailedRunIds: ["run-alpha-2026-07-10"] },
+    );
+
+    const result = evaluateM2(database, new Date("2026-07-10T18:00:00.000Z"));
+    expect(result.criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+  });
+
   it("accepts timer-provenanced persistent catch-up outside the nominal 03:00 window", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta"]) {
@@ -314,6 +665,83 @@ describe("acceptance status and evidence", () => {
     expect(result.evidence[0]?.facts.qualifyingRetailers).toBe(0);
   });
 
+  it.each([
+    ["cross-retailer strategy", "strategy-alpha", 1],
+    ["wrong strategy version", "strategy-beta", 2],
+  ])("rejects M2 runs bound to a %s", (_label, strategyId, strategyVersion) => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-09", 30, 30);
+      seedCollection(database, retailer, "2026-07-10", 30, 30);
+    }
+    database.exec("DROP TRIGGER runs_restrict_update");
+    database.prepare(`
+      UPDATE runs SET strategy_id = ?, strategy_version = ?
+      WHERE retailer_id = 'beta'
+    `).run(strategyId, strategyVersion);
+
+    const result = evaluateM2(database, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).not.toBe("pass");
+    expect(result.evidence[0]?.facts.qualifyingRetailers).toBe(1);
+  });
+
+  it("rejects M2 runs that substitute a discovery strategy", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      database.prepare(`
+        INSERT INTO strategies(
+          id, retailer_id, purpose, tier, version, strategy_json, provenance,
+          validation_sample_size, validation_successes, validation_rate, active
+        ) VALUES (?, ?, 'discovery', 1, 1, '{}', 'fixture', 30, 27, 0.9, 0)
+      `).run(`discovery-${retailer}`, retailer);
+      database.prepare(`
+        INSERT INTO strategy_validation_evidence
+          (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+           executor_json, attestation_key_id, attempted, valid, score, validated_at)
+        VALUES (?, ?, ?, ?, '{}', ?, 30, 27, 0.9, '2026-07-10T00:00:00.000Z')
+      `).run(
+        `discovery-${retailer}`,
+        `data/validation/discovery-${retailer}.json`,
+        "d".repeat(64),
+        "e".repeat(64),
+        "f".repeat(64),
+      );
+      database.prepare("UPDATE strategies SET active = 1 WHERE id = ?")
+        .run(`discovery-${retailer}`);
+      seedCollection(database, retailer, "2026-07-09", 30, 30);
+      seedCollection(database, retailer, "2026-07-10", 30, 30);
+    }
+    database.exec("DROP TRIGGER runs_restrict_update");
+    database.prepare(`
+      UPDATE runs SET strategy_id = 'discovery-beta'
+      WHERE retailer_id = 'beta'
+    `).run();
+
+    const result = evaluateM2(database, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).not.toBe("pass");
+    expect(result.evidence[0]?.facts.qualifyingRetailers).toBe(1);
+  });
+
+  it("rejects observations that are not bound to the run strategy and version", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-09", 30, 30);
+      seedCollection(database, retailer, "2026-07-10", 30, 30);
+    }
+    database.exec("DROP TRIGGER observations_no_update");
+    database.prepare(`
+      UPDATE observations SET strategy_id = 'strategy-alpha'
+      WHERE product_id LIKE 'beta-product-%'
+    `).run();
+
+    const result = evaluateM2(database, new Date("2026-07-10T12:00:00.000Z"));
+    expect(result.criterion.status).not.toBe("pass");
+    expect(result.evidence[0]?.facts.qualifyingRetailers).toBe(1);
+  });
+
   it("uses only the latest classification and retains low-confidence products in M3", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
@@ -337,10 +765,11 @@ describe("acceptance status and evidence", () => {
       credentialConfigured: true,
       siteValidated: true,
       authorityApproved: true,
-    });
-    expect(result.criterion.status).toBe("pass");
-    expect(result.evidence[0]?.facts.activeProducts).toBe(20);
-    expect(result.evidence[0]?.facts.highConfidenceProducts).toBe(16);
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(result, "m3-live-panel").status).toBe("pass");
+    expect(m3Criterion(result, "m3-classification-coverage").status).toBe("pass");
+    expect(result.evidence.find((item) => item.id === "db-m3-latest-classification-coverage")?.facts.activeProducts).toBe(20);
+    expect(result.evidence.find((item) => item.id === "db-m3-latest-classification-coverage")?.facts.highConfidenceProducts).toBe(16);
   });
 
   it("keeps M4 credential and spend gates pending without invoking a provider", () => {
@@ -403,8 +832,8 @@ describe("acceptance status and evidence", () => {
       namedBackupDocumented: false,
       blockedDayTriggerProven: false,
     } as never);
-    expect(result.criterion.status).toBe("pending");
-    expect(result.criterion.reasonCodes).toContain("SITE_VALIDATION_PENDING");
+    expect(m3Criterion(result, "m3-live-panel").status).toBe("pending");
+    expect(m3Criterion(result, "m3-live-panel").reasonCodes).toContain("SITE_VALIDATION_PENDING");
   });
 
   it("fails M3 when all external gates are declared available but collection proof is absent", () => {
@@ -417,11 +846,13 @@ describe("acceptance status and evidence", () => {
       database.prepare(`INSERT INTO classifications(id, product_id, ipca_item_id, version, decision, confidence, method)
         VALUES (?, ?, 'item', 1, 'accepted', 0.9, 'fixture')`).run(`coverage-${index}`, product.id);
     }
-    expect(evaluateM3(database, {
+    const result = evaluateM3(database, {
       credentialConfigured: true,
       siteValidated: true,
       authorityApproved: true,
-    }).criterion.status).toBe("fail");
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(result, "m3-live-panel").status).not.toBe("pass");
+    expect(m3Criterion(result, "m3-classification-coverage").status).toBe("pass");
   });
 
   it("fails an active degraded panel before considering credential or site gates", () => {
@@ -432,8 +863,8 @@ describe("acceptance status and evidence", () => {
       credentialConfigured: false,
       siteValidated: false,
     });
-    expect(result.criterion.status).toBe("fail");
-    expect(result.criterion.reasonCodes).toContain("UNSAFE_CONFIGURATION");
+    expect(m3Criterion(result, "m3-live-panel").status).toBe("fail");
+    expect(m3Criterion(result, "m3-live-panel").reasonCodes).toContain("UNSAFE_CONFIGURATION");
   });
 
   it("keeps a never-yet-complete retailer panel externally site/credential gated", () => {
@@ -444,8 +875,312 @@ describe("acceptance status and evidence", () => {
       credentialConfigured: false,
       siteValidated: false,
     });
-    expect(result.criterion.status).toBe("pending");
-    expect(result.criterion.reasonCodes).toContain("CREDENTIAL_NOT_CONFIGURED");
+    expect(m3Criterion(result, "m3-live-panel").reasonCodes).toContain("SITE_VALIDATION_PENDING");
+    expect(m3Criterion(result, "m3-classification-coverage").status).toBe("pending");
+    expect(m3Criterion(result, "m3-classification-coverage").reasonCodes).toContain("CREDENTIAL_NOT_CONFIGURED");
+    expect(result.gates.map((item) => item.criterionId).sort()).toEqual([
+      "m3-classification-coverage",
+      "m3-live-panel",
+    ]);
+  });
+
+  it("does not count manual or stale collection as live-panel proof", () => {
+    const manual = fixture();
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(manual, retailer, 1);
+      seedCollection(manual, retailer, "2026-07-10", 1, 1, "06:00:00.000Z", "manual");
+    }
+    const manualResult = evaluateM3(manual, {
+      credentialConfigured: false,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(manualResult, "m3-live-panel").status).toBe("pending");
+    expect(m3Criterion(manualResult, "m3-live-panel").reasonCodes)
+      .toContain("SCHEDULED_RUN_NOT_YET_DUE");
+
+    const stale = fixture();
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(stale, retailer, 1);
+      seedCollection(stale, retailer, "2026-07-08", 1, 1);
+    }
+    const staleResult = evaluateM3(stale, {
+      credentialConfigured: false,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(staleResult, "m3-live-panel").status).toBe("fail");
+    expect(m3Criterion(staleResult, "m3-live-panel").reasonCodes)
+      .toContain("MISSED_SCHEDULED_RUN");
+  });
+
+  it("requires a healthy substantive scheduled run for every panel retailer", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-10", retailer === "delta" ? 20 : 30, 30);
+    }
+    const result = evaluateM3(database, {
+      credentialConfigured: false,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(result, "m3-live-panel").status).toBe("fail");
+    expect(m3Criterion(result, "m3-live-panel").reasonCodes)
+      .toContain("EVIDENCE_CONTRADICTION");
+  });
+
+  it("keeps the human classification review as an independent authority gate", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-human-review-pending-"));
+    try {
+      const database = fixture();
+      seedHumanReviewClassifications(database);
+      const result = evaluateClassificationHumanReview(
+        root,
+        database,
+        new Date("2026-07-11T06:00:00.000Z"),
+      );
+      expect(result.criterion).toMatchObject({
+        id: "m3-classification-human-review",
+        status: "pending",
+        reasonCodes: ["AUTHORITY_APPROVAL_REQUIRED"],
+      });
+      expect(result.gates).toEqual([
+        expect.objectContaining({ kind: "authority", criterionId: "m3-classification-human-review" }),
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes only a complete version-bound human review and fails a tampered artifact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-human-review-"));
+    try {
+      const database = fixture();
+      seedHumanReviewClassifications(database);
+      const template = buildClassificationReviewTemplate(database, {
+        version: 7,
+        sampledAt: "2026-07-11T05:00:00.000Z",
+      });
+      const reviewed = evaluateClassificationReview(database, fillReviewLabels(template.csv), {
+        reviewerId: "opaque-review-session-01",
+        reviewedAt: "2026-07-11T05:30:00.000Z",
+        now: new Date("2026-07-11T06:00:00.000Z"),
+      });
+      const directory = join(root, "data", "acceptance", "evidence");
+      await mkdir(directory, { recursive: true });
+      const path = join(directory, "classification-review-v7.json");
+      await writeFile(path, JSON.stringify(reviewed));
+      const passed = evaluateClassificationHumanReview(
+        root,
+        database,
+        new Date("2026-07-11T06:00:00.000Z"),
+      );
+      expect(passed.criterion.status).toBe("pass");
+      expect(passed.evidence[0]?.facts).toMatchObject({
+        artifactValid: true,
+        sampleSize: 200,
+        precision: 1,
+      });
+
+      await writeFile(path, JSON.stringify({ ...reviewed, sampleSha256: "0".repeat(64) }));
+      const tampered = evaluateClassificationHumanReview(
+        root,
+        database,
+        new Date("2026-07-11T06:00:00.000Z"),
+      );
+      expect(tampered.criterion.status).toBe("fail");
+      expect(tampered.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails active strategies with missing or malformed validation receipts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-strategy-receipts-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Receipt Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "receipt@example.test"], { cwd: root });
+      await writeFile(join(root, "README.md"), "receipt registry fixture\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+      const database = fixture();
+      seedRetailer(database, "alpha", 1);
+      const missing = evaluateActiveStrategyValidationReceipts(
+        root,
+        database,
+        new Date("2026-07-11T06:00:00.000Z"),
+      );
+      expect(missing.criterion.status).toBe("fail");
+      expect(missing.criterion.reasonCodes).toContain("REQUIRED_ARTIFACT_MISSING");
+
+      await mkdir(join(root, "data", "validation"), { recursive: true });
+      await writeFile(join(root, "data", "validation", "alpha-extraction-v1.json"), "{}\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "malformed receipt"], { cwd: root });
+      const malformed = evaluateActiveStrategyValidationReceipts(
+        root,
+        database,
+        new Date("2026-07-11T06:00:00.000Z"),
+      );
+      expect(malformed.criterion.status).toBe("fail");
+      expect(malformed.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts identity-bound v2 receipts and rejects strengthened evidence attacks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-strategy-receipts-v2-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Receipt Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "receipt@example.test"], { cwd: root });
+      await mkdir(join(root, "retailers"), { recursive: true });
+      await mkdir(join(root, "data", "validation"), { recursive: true });
+      await mkdir(join(root, "ops"), { recursive: true });
+      await writeFile(
+        join(root, "ops", "validation-attestation-public.pem"),
+        TEST_VALIDATION_PUBLIC_KEY.export({ type: "spki", format: "pem" }),
+      );
+      await writeFile(
+        join(root, "retailers", "carrefour.json"),
+        await readFile(resolve("retailers/carrefour.json")),
+      );
+      execFileSync("git", ["add", "retailers", "ops"], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "validation implementation"], { cwd: root });
+      const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+      const configs = loadRetailerConfigs(join(root, "retailers"));
+      const config = configs.find((candidate) => candidate.id === "carrefour");
+      if (config === undefined) throw new Error("Carrefour fixture config is missing");
+      const discoveryReceipt = strategyReceipt(config, "discovery", sourceCommit);
+      const extractionReceipt = strategyReceipt(config, "extraction", sourceCommit);
+      const boundConfig: RetailerConfig = {
+        ...config,
+        validation: {
+          discovery: {
+            ...config.validation.discovery,
+            receiptSha256: validationReceiptSha256(discoveryReceipt),
+          },
+          extraction: {
+            ...config.validation.extraction,
+            receiptSha256: validationReceiptSha256(extractionReceipt),
+          },
+        },
+      };
+      await writeFile(
+        join(root, "retailers", "carrefour.json"),
+        `${JSON.stringify(boundConfig, null, 2)}\n`,
+      );
+      const discoveryPath = join(root, "data", "validation", "carrefour-discovery-v4.json");
+      const extractionPath = join(root, "data", "validation", "carrefour-extraction-v4.json");
+      const serialize = (receipt: StrategyValidationEvidence) => `${JSON.stringify(receipt)}\n`;
+      await writeFile(discoveryPath, serialize(discoveryReceipt));
+      await writeFile(extractionPath, serialize(extractionReceipt));
+      const database = fixture();
+      registerRetailerConfigs(database, [boundConfig], {
+        projectRoot: root,
+        verificationPublicKey: TEST_VALIDATION_PUBLIC_KEY,
+      });
+      const insertProduct = database.prepare(`
+        INSERT INTO products(
+          id, retailer_id, canonical_url, retailer_product_id, title,
+          source_category, first_seen, last_seen
+        ) VALUES (?, 'carrefour', ?, ?, ?, ?, '2026-07-10', '2026-07-11')
+      `);
+      extractionReceipt.samples.forEach((sample, index) => insertProduct.run(
+        `carrefour-validation-${index}`,
+        sample.ref.canonicalUrl,
+        sample.ref.externalId,
+        `Product ${index}`,
+        sample.ref.sourceCategory,
+      ));
+      execFileSync("git", ["add", "retailers", "data"], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "valid receipt registry"], { cwd: root });
+
+      const now = new Date("2026-07-11T06:00:00.000Z");
+      const passed = evaluateActiveStrategyValidationReceipts(root, database, now);
+      expect(passed.criterion.status).toBe("pass");
+      expect(passed.evidence[0]?.facts).toMatchObject({
+        activeStrategies: 2,
+        validReceipts: 2,
+        missingActiveReceipts: 0,
+        malformedReceipts: 0,
+        untrackedReceipts: 0,
+        configRegistryValid: true,
+      });
+
+      const attacks: Array<[
+        string,
+        (receipt: StrategyValidationEvidence) => void,
+      ]> = [
+        ["recomputed reference absent from the authoritative DB sample", (receipt) => {
+          const sample = receipt.samples[0]!;
+          sample.ref.canonicalUrl = "https://carrefourbrfood.vtexcommercestable.com.br/attacker/p";
+          sample.refSha256 = validationRefSha256(sample.ref);
+          receipt.sampleSetSha256 = validationSampleSetSha256(receipt.samples);
+        }],
+        ["request changed behind its hash", (receipt) => {
+          receipt.samples[0]!.request.url += "&attacker=1";
+        }],
+        ["normalized outcome changed behind its hash", (receipt) => {
+          const outcome = receipt.samples[0]!.outcome;
+          if (outcome.status !== "valid" || outcome.fields === null) {
+            throw new Error("Expected a valid extraction outcome");
+          }
+          outcome.fields.price = 999;
+        }],
+        ["returned product identity mismatch", (receipt) => {
+          receipt.samples[0]!.validatedFacts.returnedProductId = "attacker-product";
+        }],
+        ["regional catalog seller mismatch", (receipt) => {
+          receipt.samples[0]!.validatedFacts.catalogSellerId = "attacker-seller";
+        }],
+        ["placeholder response-body digest", (receipt) => {
+          receipt.samples[0]!.response.bodySha256 = "0".repeat(64);
+        }],
+        ["sample-set digest mismatch", (receipt) => {
+          receipt.sampleSetSha256 = "f".repeat(64);
+        }],
+        ["strategy identity cross-binding", (receipt) => {
+          receipt.strategySha256 = strategyEvidenceSha256(config.discovery);
+        }],
+        ["validation timestamp disagrees with activation", (receipt) => {
+          receipt.validatedAt = "2026-07-11T05:08:25.000Z";
+        }],
+        ["internally valid aggregate disagrees with DB activation", (receipt) => {
+          const sample = receipt.samples[27]!;
+          sample.outcome = {
+            status: "invalid",
+            failure: {
+              category: "invalid-price",
+              message: "No positive price",
+              responded: true,
+              statusCode: 200,
+            },
+          };
+          sample.outcomeSha256 = evidenceValueSha256(sample.outcome);
+          receipt.valid = 27;
+          receipt.score = 0.9;
+          receipt.sampleSetSha256 = validationSampleSetSha256(receipt.samples);
+        }],
+      ];
+      for (const [name, mutate] of attacks) {
+        const attacked = structuredClone(extractionReceipt);
+        mutate(attacked);
+        await writeFile(extractionPath, serialize(attacked));
+        const result = evaluateActiveStrategyValidationReceipts(root, database, now);
+        expect([name, result.criterion.status]).toEqual([name, "fail"]);
+        expect(result.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
+        await writeFile(extractionPath, serialize(extractionReceipt));
+      }
+
+      expect(evaluateActiveStrategyValidationReceipts(root, database, now).criterion.status)
+        .toBe("pass");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("fails malformed activated M4 evidence even when the credential is absent", () => {

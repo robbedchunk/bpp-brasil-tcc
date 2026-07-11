@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,6 +34,8 @@ describe("operations logger", () => {
         endpoint: "https://user:password@example.test/path?api_key=query-secret-789",
         arbitrary: "prefix env-secret-value-123 suffix",
         error: new Error("token=error-secret-012"),
+        structured: '{"session_token":"json-secret-345","cookie":"sid=json-cookie-678"}',
+        html: '<meta name="csrf-token" content="html-secret-901"><div data-session-token="attribute-secret-234">',
       }));
 
       for (const secret of [
@@ -42,6 +44,10 @@ describe("operations logger", () => {
         "query-secret-789",
         "env-secret-value-123",
         "error-secret-012",
+        "json-secret-345",
+        "json-cookie-678",
+        "html-secret-901",
+        "attribute-secret-234",
       ]) {
         expect(serialized).not.toContain(secret);
       }
@@ -104,5 +110,35 @@ describe("operations logger", () => {
 
     await expect(readFile(join(directory, "ops-2026-07-09.jsonl"), "utf8"))
       .resolves.toContain("before-midnight-local");
+  });
+
+  it("rotates bounded private JSONL files by size", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-log-size-"));
+    directories.push(directory);
+    const logger = new JsonlLogger({
+      directory,
+      basename: "run-immutable",
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      maxBytes: 150,
+    });
+
+    await logger.info("attempt", { value: "a".repeat(80) });
+    await logger.info("attempt", { value: "b".repeat(80) });
+    await logger.info("attempt", { value: "c".repeat(80) });
+
+    const files = (await readdir(directory)).sort();
+    expect(files).toEqual([
+      "run-immutable-2026-07-10.1.jsonl",
+      "run-immutable-2026-07-10.2.jsonl",
+      "run-immutable-2026-07-10.jsonl",
+    ]);
+    for (const file of files) {
+      expect((await stat(join(directory, file))).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("rejects path-like basenames", () => {
+    expect(() => new JsonlLogger({ directory: "/tmp", basename: "../escape" }))
+      .toThrow(/path-safe/iu);
   });
 });

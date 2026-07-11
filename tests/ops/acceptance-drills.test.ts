@@ -122,7 +122,7 @@ describe("safe acceptance drills", () => {
       now: () => new Date("2026-07-10T12:00:00.000Z"),
     });
     expect(receipt.status).toBe("fail");
-    expect(receipt.facts.criticalTableCount).toBeLessThan(10);
+    expect(receipt.facts.criticalTableCount).toBeLessThan(11);
   });
 
   it("fails closed when the database resolves outside the project root", async () => {

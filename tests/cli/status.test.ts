@@ -160,7 +160,7 @@ describe("precos status", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 10 });
+    ).toEqual({ count: 13 });
     database.close();
   });
 });

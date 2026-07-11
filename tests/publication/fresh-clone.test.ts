@@ -13,7 +13,16 @@ describe("fresh-clone verifier", () => {
     expect(script).toMatch(/npm.*11/u);
     expect(script).toContain("fresh-clone-environment.sh");
     expect(script).toContain("DATABASE_PATH=var/acceptance/precos.sqlite");
-    expect(script).toContain("npm run audit:publication -- --json");
+    expect(script).toContain("npm run audit:publication -- --json --implementation-cut");
+    expect(script).toContain("resolve_evaluated_commit");
+    for (const path of [
+      "data/acceptance/acceptance.json",
+      "data/acceptance/evidence/alert-drill.json",
+      "data/acceptance/evidence/backup-drill.json",
+      "data/acceptance/evidence/fresh-clone.json",
+      "docs/acceptance-report.md",
+    ]) expect(script).toContain(path);
+    expect(script).toContain("classification-review-v[1-9][0-9]*");
     expect(script).toContain("npm run analysis");
     expect(script).toContain("trap cleanup EXIT");
     expect(script).toContain("PRAGMA wal_checkpoint(TRUNCATE)");
