@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   Codex,
@@ -27,6 +27,7 @@ const MAX_WORKSPACE_BYTES = 8_000_000;
 const MAX_WORKSPACE_ENTRIES = 128;
 const MAX_WORKSPACE_DEPTH = 8;
 const SANDBOX_DOMAIN_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const DEFAULT_PROJECT_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
 interface CodexThreadLike {
   runStreamed(
@@ -95,10 +96,10 @@ export function explorerModelFromEnv(
   return optional(env.OPENAI_EXPLORER_MODEL) ?? DEFAULT_EXPLORER_MODEL;
 }
 
-// The SDK flattens config objects into dotted paths. Quoting map keys here is
-// required for hostnames and absolute paths containing dots to remain one TOML key.
-function configMapKey(value: string): string {
-  return JSON.stringify(value);
+function tomlString(value: string): string {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Unable to encode Codex TOML string");
+  return serialized;
 }
 
 function endpointHostname(baseUrl: string | undefined): string | undefined {
@@ -145,49 +146,57 @@ function safeDomains(domains: readonly string[], baseUrl: string | undefined): s
   return [...new Set(allowed)];
 }
 
-function codexConfig(
+// Permission maps cannot safely cross the SDK's dotted config-override
+// serializer because quoted keys containing dots are split into path segments.
+// A real TOML file preserves each quoted hostname and absolute path as one key.
+function codexConfigToml(
   workspacePath: string,
   domains: readonly string[],
   baseUrl: string | undefined,
-): NonNullable<CodexOptions["config"]> {
-  const quotedWorkspace = configMapKey(workspacePath);
-  const filesystem: Record<string, string | number> = {
-    glob_scan_max_depth: 8,
-    [configMapKey(":minimal")]: "read",
-    [quotedWorkspace]: "write",
-    [configMapKey(`${workspacePath}/*env*`)]: "deny",
-    [configMapKey(`${workspacePath}/**/*env*`)]: "deny",
-    [configMapKey(`${workspacePath}/*auth*`)]: "deny",
-    [configMapKey(`${workspacePath}/**/*auth*`)]: "deny",
-    [configMapKey(`${workspacePath}/*credential*`)]: "deny",
-    [configMapKey(`${workspacePath}/**/*credential*`)]: "deny",
-  };
-  const domainPermissions = Object.fromEntries(
-    safeDomains(domains, baseUrl).map((domain) => [configMapKey(domain), "allow"]),
-  );
-  return {
-    default_permissions: "explorer",
-    approval_policy: "never",
-    features: { network_proxy: true },
-    shell_environment_policy: {
-      inherit: "none",
-      ignore_default_excludes: false,
-      include_only: ["PATH", "HOME", "LANG", "LC_ALL", "TZ"],
-    },
-    permissions: {
-      explorer: {
-        description: "Disposable retailer strategy exploration",
-        workspace_roots: { [quotedWorkspace]: true },
-        filesystem,
-        network: {
-          enabled: true,
-          mode: "full",
-          allow_local_binding: false,
-          domains: domainPermissions,
-        },
-      },
-    },
-  };
+): string {
+  const filesystemRules: Array<[string, "read" | "write" | "deny"]> = [
+    [":minimal", "read"],
+    [workspacePath, "write"],
+    [`${workspacePath}/*env*`, "deny"],
+    [`${workspacePath}/**/*env*`, "deny"],
+    [`${workspacePath}/*auth*`, "deny"],
+    [`${workspacePath}/**/*auth*`, "deny"],
+    [`${workspacePath}/*credential*`, "deny"],
+    [`${workspacePath}/**/*credential*`, "deny"],
+  ];
+  const lines = [
+    'default_permissions = "explorer"',
+    'approval_policy = "never"',
+    "",
+    "[features]",
+    "network_proxy = true",
+    "",
+    "[shell_environment_policy]",
+    'inherit = "none"',
+    "ignore_default_excludes = false",
+    'include_only = ["PATH", "HOME", "LANG", "LC_ALL", "TZ"]',
+    "",
+    "[permissions.explorer]",
+    'description = "Disposable retailer strategy exploration"',
+    "",
+    "[permissions.explorer.workspace_roots]",
+    `${tomlString(workspacePath)} = true`,
+    "",
+    "[permissions.explorer.filesystem]",
+    "glob_scan_max_depth = 8",
+    ...filesystemRules.map(([path, access]) => `${tomlString(path)} = ${tomlString(access)}`),
+    "",
+    "[permissions.explorer.network]",
+    "enabled = true",
+    'mode = "full"',
+    "allow_local_binding = false",
+    "",
+    "[permissions.explorer.network.domains]",
+    ...safeDomains(domains, baseUrl).map(
+      (domain) => `${tomlString(domain)} = "allow"`,
+    ),
+  ];
+  return `${lines.join("\n")}\n`;
 }
 
 function parseEnvelope(text: string, source: string) {
@@ -338,7 +347,8 @@ export class CodexStrategyGenerator implements StrategyGenerator {
     this.#baseUrl = resolveExplorerBaseUrl(env);
     this.#model = optional(options.model) ?? explorerModelFromEnv(env);
     this.#timeoutMs = options.timeoutMs ?? 120_000;
-    this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
+    const projectRoot = resolve(optional(env.PROJECT_ROOT) ?? DEFAULT_PROJECT_ROOT);
+    this.#temporaryRoot = resolve(options.temporaryRoot ?? join(projectRoot, "var"));
     this.#factory = options.codexFactory ?? ((codexOptions) => new Codex(codexOptions));
     this.#removeTemporaryState = options.removeTemporaryState ?? rm;
   }
@@ -369,6 +379,11 @@ export class CodexStrategyGenerator implements StrategyGenerator {
           mkdir(codexHome, { recursive: true, mode: 0o700 }),
         ]);
         const workspacePath = resolve(request.workspacePath);
+        await writeFile(
+          join(codexHome, "config.toml"),
+          codexConfigToml(workspacePath, request.allowedDomains, this.#baseUrl),
+          { encoding: "utf8", mode: 0o600, flag: "wx" },
+        );
         const runtimeEnv = {
           PATH: "/usr/local/bin:/usr/bin:/bin",
           HOME: home,
@@ -383,7 +398,6 @@ export class CodexStrategyGenerator implements StrategyGenerator {
           apiKey,
           ...(this.#baseUrl === undefined ? {} : { baseUrl: this.#baseUrl }),
           env: runtimeEnv,
-          config: codexConfig(workspacePath, request.allowedDomains, this.#baseUrl),
         });
         const thread = codex.startThread({
           model: this.#model,

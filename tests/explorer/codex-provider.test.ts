@@ -1,6 +1,17 @@
-import { access, chmod, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -12,6 +23,12 @@ import {
 } from "../../src/explorer/codex-provider.js";
 
 const roots: string[] = [];
+const sdkRequire = createRequire(import.meta.resolve("@openai/codex-sdk"));
+const codexCliEntrypoint = join(
+  dirname(sdkRequire.resolve("@openai/codex/package.json")),
+  "bin",
+  "codex.js",
+);
 afterEach(async () => {
   const { rm } = await import("node:fs/promises");
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -96,8 +113,11 @@ describe("Codex SDK strategy provider", () => {
       thread?: Record<string, any>;
       turn?: Record<string, any>;
     } = {};
+    let configToml = "";
+    let configMode = 0;
     const provider = new CodexStrategyGenerator({
       apiKey: "test-key",
+      env: {},
       model: "gpt-5.6-sol",
       codexFactory: (options) => {
         captured.options = options as Record<string, any>;
@@ -107,6 +127,9 @@ describe("Codex SDK strategy provider", () => {
             return {
               async runStreamed(_prompt, turnOptions) {
                 captured.turn = turnOptions as Record<string, any>;
+                const configPath = join(options.env!.CODEX_HOME!, "config.toml");
+                configToml = await readFile(configPath, "utf8");
+                configMode = (await stat(configPath)).mode & 0o777;
                 await writeFile(
                   join(workspacePath, "strategy.json"),
                   JSON.stringify({ strategy }),
@@ -136,6 +159,7 @@ describe("Codex SDK strategy provider", () => {
     });
     expect(captured.options).not.toHaveProperty("codexPathOverride");
     expect(captured.options).not.toHaveProperty("baseUrl");
+    expect(captured.options).not.toHaveProperty("config");
     expect(captured.options).toMatchObject({
       apiKey: "test-key",
       env: {
@@ -143,28 +167,48 @@ describe("Codex SDK strategy provider", () => {
         CODEX_HOME: expect.any(String),
         PATH: expect.any(String),
       },
-      config: {
-        default_permissions: "explorer",
-        features: { network_proxy: true },
-        permissions: {
-          explorer: {
-            filesystem: expect.objectContaining({
-              [JSON.stringify(workspacePath)]: "write",
-            }),
-            network: {
-              enabled: true,
-              mode: "full",
-              allow_local_binding: false,
-              domains: {
-                [JSON.stringify("shop.test")]: "allow",
-                [JSON.stringify("cdn.shop.test")]: "allow",
-                [JSON.stringify("api.openai.com")]: "allow",
-              },
-            },
-          },
-        },
-      },
     });
+    expect(configToml).toBe([
+      'default_permissions = "explorer"',
+      'approval_policy = "never"',
+      "",
+      "[features]",
+      "network_proxy = true",
+      "",
+      "[shell_environment_policy]",
+      'inherit = "none"',
+      "ignore_default_excludes = false",
+      'include_only = ["PATH", "HOME", "LANG", "LC_ALL", "TZ"]',
+      "",
+      "[permissions.explorer]",
+      'description = "Disposable retailer strategy exploration"',
+      "",
+      "[permissions.explorer.workspace_roots]",
+      `${JSON.stringify(workspacePath)} = true`,
+      "",
+      "[permissions.explorer.filesystem]",
+      "glob_scan_max_depth = 8",
+      `${JSON.stringify(":minimal")} = "read"`,
+      `${JSON.stringify(workspacePath)} = "write"`,
+      `${JSON.stringify(`${workspacePath}/*env*`)} = "deny"`,
+      `${JSON.stringify(`${workspacePath}/**/*env*`)} = "deny"`,
+      `${JSON.stringify(`${workspacePath}/*auth*`)} = "deny"`,
+      `${JSON.stringify(`${workspacePath}/**/*auth*`)} = "deny"`,
+      `${JSON.stringify(`${workspacePath}/*credential*`)} = "deny"`,
+      `${JSON.stringify(`${workspacePath}/**/*credential*`)} = "deny"`,
+      "",
+      "[permissions.explorer.network]",
+      "enabled = true",
+      'mode = "full"',
+      "allow_local_binding = false",
+      "",
+      "[permissions.explorer.network.domains]",
+      '"shop.test" = "allow"',
+      '"cdn.shop.test" = "allow"',
+      '"api.openai.com" = "allow"',
+      "",
+    ].join("\n"));
+    expect(configMode).toBe(0o600);
     expect(Object.keys(captured.options!.env).sort()).toEqual([
       "CODEX_HOME",
       "HOME",
@@ -173,6 +217,9 @@ describe("Codex SDK strategy provider", () => {
       "PATH",
       "TZ",
     ]);
+    expect(captured.options!.env.CODEX_HOME.startsWith(
+      join(resolve("var"), "codex-explorer-state-"),
+    )).toBe(true);
     expect(captured.thread).toMatchObject({
       workingDirectory: workspacePath,
       skipGitRepoCheck: true,
@@ -231,6 +278,7 @@ describe("Codex SDK strategy provider", () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-endpoint-test-"));
     roots.push(workspacePath);
     let captured: Record<string, any> | undefined;
+    let configToml = "";
     const provider = new CodexStrategyGenerator({
       env,
       codexFactory: (options) => {
@@ -238,6 +286,7 @@ describe("Codex SDK strategy provider", () => {
         return {
           startThread: () => ({
             runStreamed: async () => {
+              configToml = await readFile(join(options.env!.CODEX_HOME!, "config.toml"), "utf8");
               await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
               return streamed(JSON.stringify({ strategy }), usage(3, 2));
             },
@@ -255,8 +304,52 @@ describe("Codex SDK strategy provider", () => {
     })).resolves.toMatchObject({ status: "candidate" });
 
     expect(captured).toMatchObject({ baseUrl: expectedBaseUrl });
-    expect(Object.keys(captured!.config.permissions.explorer.network.domains))
-      .toEqual(expectedDomains.map((domain) => JSON.stringify(domain)));
+    expect(captured).not.toHaveProperty("config");
+    expect(configToml.split("\n").filter((line) => line.endsWith(' = "allow"')))
+      .toEqual(expectedDomains.map((domain) => `${JSON.stringify(domain)} = "allow"`));
+  });
+
+  it("writes dotted domain keys in a config.toml the pinned real Codex CLI parses", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-cli-config-test-"));
+    roots.push(workspacePath);
+    let cliParsedConfig = false;
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      env: {},
+      codexFactory: (options) => {
+        const parsed = spawnSync(process.execPath, [
+          codexCliEntrypoint,
+          "features",
+          "list",
+        ], {
+          encoding: "utf8",
+          env: options.env,
+          timeout: 10_000,
+        });
+        if (parsed.error !== undefined) throw parsed.error;
+        if (parsed.status !== 0) {
+          throw new Error(`Pinned Codex CLI rejected config.toml: ${parsed.stderr.trim()}`);
+        }
+        cliParsedConfig = true;
+        return {
+          startThread: () => ({
+            runStreamed: async () => {
+              await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
+              return streamed(JSON.stringify({ strategy }), usage(2, 1));
+            },
+          }),
+        };
+      },
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Load the offline config only.",
+    })).resolves.toMatchObject({ status: "candidate" });
+    expect(cliParsedConfig).toBe(true);
   });
 
   it.each([
