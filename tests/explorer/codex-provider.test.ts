@@ -14,12 +14,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   canonicalJson,
   CodexStrategyGenerator,
   resolveExplorerApiKey,
   resolveExplorerBaseUrl,
+  stripOptionalNulls,
 } from "../../src/explorer/codex-provider.js";
 
 const roots: string[] = [];
@@ -626,6 +628,67 @@ describe("Codex SDK strategy provider", () => {
       workspacePath,
       prompt: "Create the artifact.",
     })).resolves.toMatchObject({ status: "candidate", strategy: getStrategy });
+  });
+
+  it("strips null nested inside optional regionalContext", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-regional-context-test-"));
+    roots.push(workspacePath);
+    const regionalStrategy = {
+      schemaVersion: 1,
+      purpose: "extraction",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: { method: "GET", url: "{productUrl}", headers: {} },
+      regionalContext: {
+        kind: "vtex-segment",
+        regionId: "v2.REGION",
+        salesChannel: "2",
+      },
+      fields: {
+        title: "$.title",
+        brand: "$.brand",
+        price: "$.price",
+        promoPrice: "$.promoPrice",
+        unit: "$.unit",
+        availability: "$.availability",
+      },
+    } as const;
+    const responseWithNullCatalogSeller = {
+      strategy: {
+        ...regionalStrategy,
+        regionalContext: { ...regionalStrategy.regionalContext, catalogSellerId: null },
+      },
+    };
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => {
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy: regionalStrategy }));
+            return streamed(JSON.stringify(responseWithNullCatalogSeller), usage(1, 1));
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({ status: "candidate", strategy: regionalStrategy });
+  });
+
+  it("strips null through nested optional object wrappers", () => {
+    const schema = z.object({
+      outer: z.object({
+        inner: z.object({ value: z.string().optional() }).optional(),
+      }).optional(),
+    });
+
+    expect(stripOptionalNulls({ outer: { inner: { value: null } } }, schema))
+      .toEqual({ outer: { inner: {} } });
   });
 
   it("restores a null cursor initial value through its Zod default", async () => {

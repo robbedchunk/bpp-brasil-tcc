@@ -254,10 +254,19 @@ function codexConfigToml(
   return `${lines.join("\n")}\n`;
 }
 
-function stripOptionalNulls(value: unknown, schema: z.core.$ZodType): unknown {
-  if (schema instanceof z.ZodObject && value !== null && typeof value === "object" && !Array.isArray(value)) {
+export function stripOptionalNulls(value: unknown, schema: z.core.$ZodType): unknown {
+  let inner = schema;
+  while (
+    inner instanceof z.ZodOptional
+    || inner instanceof z.ZodNullable
+    || inner instanceof z.ZodDefault
+    || inner instanceof z.ZodReadonly
+  ) {
+    inner = inner.unwrap();
+  }
+  if (inner instanceof z.ZodObject && value !== null && typeof value === "object" && !Array.isArray(value)) {
     const result: Record<string, unknown> = { ...value };
-    for (const [key, field] of Object.entries(schema.shape)) {
+    for (const [key, field] of Object.entries(inner.shape)) {
       if (result[key] === null && field.isOptional()) {
         delete result[key];
       } else if (key in result) {
@@ -266,16 +275,16 @@ function stripOptionalNulls(value: unknown, schema: z.core.$ZodType): unknown {
     }
     return result;
   }
-  if (schema instanceof z.ZodArray && Array.isArray(value)) {
-    return value.map((item) => stripOptionalNulls(item, schema.element));
+  if (inner instanceof z.ZodArray && Array.isArray(value)) {
+    return value.map((item) => stripOptionalNulls(item, inner.element));
   }
-  if (schema instanceof z.ZodUnion || schema instanceof z.ZodDiscriminatedUnion) {
-    return schema.options.reduce(
+  if (inner instanceof z.ZodUnion || inner instanceof z.ZodDiscriminatedUnion) {
+    return inner.options.reduce(
       (current, option) => stripOptionalNulls(current, option),
       value,
     );
   }
-  if (schema instanceof z.ZodLazy) return stripOptionalNulls(value, schema.unwrap());
+  if (inner instanceof z.ZodLazy) return stripOptionalNulls(value, inner.unwrap());
   return value;
 }
 
