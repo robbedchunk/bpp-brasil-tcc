@@ -72,7 +72,7 @@ async function testAlertRunner(root: string): Promise<{
           return {
             exitCode: 0,
             stdout: `${JSON.stringify({
-              _SYSTEMD_INVOCATION_ID: invocationId,
+              USER_INVOCATION_ID: invocationId,
               MESSAGE: "Main process exited, code=killed, status=9/KILL",
             })}\n`,
             stderr: "",

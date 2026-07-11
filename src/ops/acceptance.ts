@@ -2714,7 +2714,8 @@ function m7Evaluation(
         try {
           const entry = JSON.parse(line) as Record<string, unknown>;
           return entry._SYSTEMD_INVOCATION_ID === alert.facts.invocationId
-            || entry.OBJECT_SYSTEMD_INVOCATION_ID === alert.facts.invocationId;
+            || entry.OBJECT_SYSTEMD_INVOCATION_ID === alert.facts.invocationId
+            || entry.USER_INVOCATION_ID === alert.facts.invocationId;
         } catch {
           return false;
         }

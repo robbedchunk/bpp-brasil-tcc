@@ -454,7 +454,8 @@ function journalMatchesInvocation(output: string, invocationId: string): boolean
     try {
       const entry = JSON.parse(line) as Record<string, unknown>;
       if (entry._SYSTEMD_INVOCATION_ID === invocationId
-        || entry.OBJECT_SYSTEMD_INVOCATION_ID === invocationId) matched = true;
+        || entry.OBJECT_SYSTEMD_INVOCATION_ID === invocationId
+        || entry.USER_INVOCATION_ID === invocationId) matched = true;
     } catch {
       return false;
     }
