@@ -226,15 +226,19 @@ export function inspectPlannedConfigs(root, plans, options = {}) {
       if (strategy.purpose !== plan.purpose) {
         throw new Error(`${relativePath} contains a mismatched ${plan.purpose} strategy`);
       }
-      if (versions[plan.purpose] !== plan.fromVersion) {
+      const version = versions[plan.purpose];
+      const allowedVersions = options.allowApplied === true
+        ? [plan.fromVersion, plan.toVersion]
+        : [plan.fromVersion];
+      if (!allowedVersions.includes(version)) {
         throw new Error(
-          `${relativePath} ${plan.purpose} must still be version ${plan.fromVersion}`,
+          `${relativePath} ${plan.purpose} must be version ${allowedVersions.join(" or ")}`,
         );
       }
       if (valueSha256(strategy) !== plan.strategySha256) {
         throw new Error(`${relativePath} ${plan.purpose} strategy hash differs from its plan`);
       }
-      const currentReceipt = `data/validation/${retailerId}-${plan.purpose}-v${plan.fromVersion}.json`;
+      const currentReceipt = `data/validation/${retailerId}-${plan.purpose}-v${version}.json`;
       if (metadata.receiptPath !== currentReceipt) {
         throw new Error(`${relativePath} is not bound to current receipt ${currentReceipt}`);
       }

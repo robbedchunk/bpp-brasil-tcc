@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -15,7 +15,15 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { verifyCleanBuild } from "../../scripts/successor-tooling.mjs";
+import {
+  parseArguments,
+  validatePlannedReceipt,
+} from "../../scripts/apply-validation-successors.mjs";
+import {
+  inspectPlannedConfigs,
+  verifyCleanBuild,
+} from "../../scripts/successor-tooling.mjs";
+import * as evidenceTools from "../../src/strategies/validation-evidence.js";
 
 const roots: string[] = [];
 const projectRoot = resolve(".");
@@ -84,6 +92,13 @@ function fixture(): string {
 }
 
 describe("validation successor preparation", () => {
+  it("requires an explicit flag before enabling partial application", () => {
+    expect(parseArguments(["--root", projectRoot])).toMatchObject({ allowPartial: false });
+    expect(parseArguments(["--allow-partial", "--root", projectRoot])).toMatchObject({
+      allowPartial: true,
+    });
+  });
+
   it("verifies a clean dist while excluding its build manifest from the artifact walk", () => {
     const root = mkdtempSync(join(tmpdir(), "validation-successor-build-"));
     roots.push(root);
@@ -208,5 +223,89 @@ describe("validation successor preparation", () => {
     expect(apply.status).not.toBe(0);
     expect(apply.stderr).toMatch(/clean trusted implementation surface/u);
     expect(apply.stderr).toContain("src/injected.ts");
+  });
+
+  it("accepts an already-applied config state only in partial inspection mode", () => {
+    const root = fixture();
+    const entry = plan.plans.find((candidate) =>
+      candidate.retailerId === "carrefour" && candidate.purpose === "discovery");
+    expect(entry).toBeDefined();
+    const configPath = join(root, "retailers/carrefour.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.strategyVersions.discovery = entry!.toVersion;
+    config.validation.discovery.receiptPath =
+      `data/validation/carrefour-discovery-v${entry!.toVersion}.json`;
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    expect(() => inspectPlannedConfigs(root, plan.plans, { requireTracked: false }))
+      .toThrow(/must be version/iu);
+    expect(inspectPlannedConfigs(root, plan.plans, {
+      allowApplied: true,
+      requireTracked: false,
+    }).find(({ retailerId }) => retailerId === "carrefour")?.config.strategyVersions.discovery)
+      .toBe(entry!.toVersion);
+  });
+
+  it("requires an exact signed below-gate manifest entry for every partial skip", () => {
+    const entry = plan.plans.find((candidate) =>
+      candidate.retailerId === "carrefour" && candidate.purpose === "extraction");
+    expect(entry).toBeDefined();
+    const receiptName = `carrefour-extraction-v${entry!.toVersion}.json`;
+    const sourceReceipt = join(projectRoot, "data/validation/attempts", receiptName);
+    const evidence = JSON.parse(readFileSync(sourceReceipt, "utf8"));
+    const sourceManifest = JSON.parse(readFileSync(
+      join(projectRoot, "data/validation/attempts/manifest.json"),
+      "utf8",
+    ));
+    const manifestEntry = sourceManifest.attempts.find((candidate: { path: string }) =>
+      candidate.path === `data/validation/attempts/${receiptName}`);
+    expect(manifestEntry).toBeDefined();
+    const root = mkdtempSync(join(tmpdir(), "validation-partial-receipt-"));
+    roots.push(root);
+    mkdirSync(join(root, "data/validation/attempts"), { recursive: true });
+    copyFileSync(sourceReceipt, join(root, "data/validation/attempts", receiptName));
+    writeFileSync(join(root, "data/validation/attempts/manifest.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      attempts: [manifestEntry],
+    }, null, 2)}\n`);
+    const strategy = JSON.parse(readFileSync(
+      join(projectRoot, "retailers/carrefour.json"),
+      "utf8",
+    )).extraction;
+    const trackedPublicKey = createPublicKey(readFileSync(
+      join(projectRoot, "ops/validation-attestation-public.pem"),
+    ));
+    const input = {
+      root,
+      plan: entry,
+      strategy,
+      challenge: evidence.samples.map((sample: { ref: unknown }) => sample.ref),
+      trackedPublicKey,
+      evidenceTools,
+      sourceCommit: evidence.executor.sourceCommit,
+      expectedValidator: evidence.executor.artifactSha256,
+      outcome: "failure",
+      now: Date.parse(evidence.validatedAt) + 1,
+    } as const;
+    expect(validatePlannedReceipt(input).evidence).toMatchObject({
+      attempted: 30,
+      valid: 26,
+      activatable: false,
+    });
+
+    const tampered = JSON.parse(readFileSync(
+      join(root, "data/validation/attempts/manifest.json"),
+      "utf8",
+    ));
+    tampered.attempts[0].fileSha256 = "0".repeat(64);
+    writeFileSync(
+      join(root, "data/validation/attempts/manifest.json"),
+      `${JSON.stringify(tampered)}\n`,
+    );
+    expect(() => validatePlannedReceipt(input)).toThrow(/exactly preserved/iu);
+
+    copyFileSync(sourceReceipt, join(root, "data/validation", receiptName));
+    expect(() => validatePlannedReceipt({ ...input, outcome: "success" }))
+      .toThrow(/trusted rollout/iu);
   });
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createPublicKey } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -18,6 +18,7 @@ import {
   assertTrustedImplementationClean,
   canonicalJson,
   formattedJson,
+  git,
   inspectPlannedConfigs,
   parseSuccessorPlan,
   readJsonFile,
@@ -30,22 +31,30 @@ import {
 
 const CHALLENGE_ALGORITHM = "active-in-scope-category-url-bucket-round-robin-v1";
 
-function parseArguments(arguments_) {
+export function parseArguments(arguments_) {
   const options = {
     root: resolve(fileURLToPath(new URL("..", import.meta.url))),
     database: undefined,
+    allowPartial: false,
   };
-  for (let index = 0; index < arguments_.length; index += 2) {
+  for (let index = 0; index < arguments_.length;) {
     const name = arguments_[index];
+    if (name === "--allow-partial") {
+      options.allowPartial = true;
+      index += 1;
+      continue;
+    }
     const value = arguments_[index + 1];
     if (value === undefined) {
       throw new Error(
-        "Usage: node scripts/apply-validation-successors.mjs [--root <path>] [--database <path>]",
+        "Usage: node scripts/apply-validation-successors.mjs [--root <path>] "
+        + "[--database <path>] [--allow-partial]",
       );
     }
     if (name === "--root") options.root = resolve(value);
     else if (name === "--database") options.database = value;
     else throw new Error(`Unknown argument ${name}`);
+    index += 2;
   }
   options.root = assertProjectRoot(options.root);
   options.database = resolve(options.root, options.database ?? "data/precos.sqlite");
@@ -59,7 +68,7 @@ function assertRegularFile(path, label) {
   }
 }
 
-function activeStrategy(database, plan, strategy) {
+function activeStrategy(database, plan, strategy, configState, evidence, evidenceTools) {
   const rows = database.prepare(`
     SELECT strategy.id, strategy.version, strategy.strategy_json AS strategyJson,
            strategy.active, strategy.retired_at AS retiredAt
@@ -72,26 +81,82 @@ function activeStrategy(database, plan, strategy) {
     throw new Error(`${plan.retailerId}/${plan.purpose} must have exactly one active DB strategy`);
   }
   const row = rows[0];
-  if (
-    row.id !== `${plan.retailerId}-${plan.purpose}-v${plan.fromVersion}`
-    || row.version !== plan.fromVersion
-    || row.strategyJson !== JSON.stringify(strategy)
-    || row.active !== 1
-    || row.retiredAt !== null
-  ) {
+  const fromId = `${plan.retailerId}-${plan.purpose}-v${plan.fromVersion}`;
+  const targetId = `${plan.retailerId}-${plan.purpose}-v${plan.toVersion}`;
+  const target = database.prepare(`
+    SELECT strategy_json AS strategyJson, active, validated_at AS validatedAt,
+           validation_sample_size AS attempted, validation_successes AS valid,
+           validation_rate AS score, activated_at AS activatedAt, retired_at AS retiredAt
+    FROM strategies WHERE id = ?
+  `).get(targetId);
+  const targetEvidence = database.prepare(
+    "SELECT 1 FROM strategy_validation_evidence WHERE strategy_id = ?",
+  ).get(targetId);
+  if (row.id === fromId) {
+    if (
+      row.version !== plan.fromVersion
+      || row.strategyJson !== JSON.stringify(strategy)
+      || row.active !== 1
+      || row.retiredAt !== null
+      || (target !== undefined && (
+        target.strategyJson !== JSON.stringify(strategy)
+        || target.active !== 0
+        || target.validatedAt !== null
+        || target.attempted !== 0
+        || target.valid !== 0
+        || target.score !== null
+        || target.activatedAt !== null
+        || target.retiredAt !== null
+        || targetEvidence !== undefined
+      ))
+    ) {
+      throw new Error(`${plan.retailerId}/${plan.purpose} pending DB strategy differs from the plan`);
+    }
+    return "pending";
+  }
+  if (configState !== "applied" || row.id !== targetId || target === undefined) {
     throw new Error(`${plan.retailerId}/${plan.purpose} active DB strategy differs from the plan`);
   }
-  const target = database.prepare(`
-    SELECT strategy_json AS strategyJson, active, validated_at AS validatedAt
+  const immutable = database.prepare(`
+    SELECT receipt_path AS receiptPath, receipt_sha256 AS receiptSha256,
+           sample_set_sha256 AS sampleSetSha256, executor_json AS executorJson,
+           attestation_key_id AS keyId, attempted, valid, score,
+           validated_at AS validatedAt
+    FROM strategy_validation_evidence WHERE strategy_id = ?
+  `).get(targetId);
+  const predecessor = database.prepare(`
+    SELECT strategy_json AS strategyJson, active, retired_at AS retiredAt
     FROM strategies WHERE id = ?
-  `).get(`${plan.retailerId}-${plan.purpose}-v${plan.toVersion}`);
-  if (target !== undefined && (
+  `).get(fromId);
+  if (
     target.strategyJson !== JSON.stringify(strategy)
-    || target.active !== 0
-    || target.validatedAt !== null
-  )) {
-    throw new Error(`${plan.retailerId}/${plan.purpose} target DB identity is not pristine`);
+    || target.active !== 1
+    || target.validatedAt !== evidence.validatedAt
+    || target.attempted !== evidence.attempted
+    || target.valid !== evidence.valid
+    || target.score !== evidence.score
+    || target.activatedAt === null
+    || target.retiredAt !== null
+    || predecessor === undefined
+    || predecessor.strategyJson !== JSON.stringify(strategy)
+    || predecessor.active !== 0
+    || predecessor.retiredAt === null
+    || immutable === undefined
+    || canonicalJson(immutable) !== canonicalJson({
+      receiptPath: `data/validation/${plan.retailerId}-${plan.purpose}-v${plan.toVersion}.json`,
+      receiptSha256: evidenceTools.validationReceiptSha256(evidence),
+      sampleSetSha256: evidence.sampleSetSha256,
+      executorJson: JSON.stringify(evidence.executor),
+      keyId: evidence.attestation.keyId,
+      attempted: evidence.attempted,
+      valid: evidence.valid,
+      score: evidence.score,
+      validatedAt: evidence.validatedAt,
+    })
+  ) {
+    throw new Error(`${plan.retailerId}/${plan.purpose} active successor lacks exact evidence`);
   }
+  return "active";
 }
 
 function assertDatabaseHealthy(database) {
@@ -111,6 +176,13 @@ function receiptPath(root, plan) {
   );
 }
 
+function failedReceiptPath(root, plan) {
+  return resolve(
+    root,
+    `data/validation/attempts/${plan.retailerId}-${plan.purpose}-v${plan.toVersion}.json`,
+  );
+}
+
 function assertReceiptContained(root, path) {
   const parent = resolve(root, "data/validation");
   const candidate = resolve(path);
@@ -124,6 +196,19 @@ function assertReceiptContained(root, path) {
   assertRegularFile(candidate, `validation receipt ${basename(candidate)}`);
 }
 
+function assertFailedReceiptContained(root, path) {
+  const parent = resolve(root, "data/validation/attempts");
+  const candidate = resolve(path);
+  const child = relative(parent, candidate);
+  if (child === "" || child === ".." || child.startsWith(`..${sep}`) || dirname(candidate) !== parent) {
+    throw new Error("Failed validation receipt escaped its canonical directory");
+  }
+  if (realpathSync(parent) !== parent || realpathSync(candidate) !== candidate) {
+    throw new Error("Failed validation receipt path cannot traverse symbolic links");
+  }
+  assertRegularFile(candidate, `failed validation receipt ${basename(candidate)}`);
+}
+
 function comparePublicKeys(trackedPublicKey, evidence) {
   if (evidence.attestation.keyId === undefined) {
     throw new Error("Validation receipt lacks an attestation key identity");
@@ -134,12 +219,132 @@ function comparePublicKeys(trackedPublicKey, evidence) {
   }
 }
 
+function exactKeys(value, keys) {
+  return value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");
+}
+
+function assertFailedAttemptRegistered(root, path, evidence, evidenceTools, sourceCommit) {
+  const manifestPath = resolve(root, "data/validation/attempts/manifest.json");
+  assertRegularFile(manifestPath, "failed-attempt manifest");
+  if (realpathSync(manifestPath) !== manifestPath) {
+    throw new Error("Failed-attempt manifest path cannot traverse symbolic links");
+  }
+  const manifest = readJsonFile(manifestPath, "failed-attempt manifest");
+  if (!exactKeys(manifest, ["schemaVersion", "attempts"])
+    || manifest.schemaVersion !== 1
+    || !Array.isArray(manifest.attempts)) {
+    throw new Error("Failed-attempt manifest is malformed");
+  }
+  const relativePath = relative(root, path).split(sep).join("/");
+  const entries = manifest.attempts.map((entry) => {
+    if (!exactKeys(entry, ["fileSha256", "path", "receiptSha256", "strategySourceCommit"])
+      || typeof entry.path !== "string"
+      || !/^data\/validation\/attempts\/[a-z0-9-]+\.json$/u.test(entry.path)
+      || typeof entry.fileSha256 !== "string"
+      || !/^[a-f0-9]{64}$/u.test(entry.fileSha256)
+      || typeof entry.receiptSha256 !== "string"
+      || !/^[a-f0-9]{64}$/u.test(entry.receiptSha256)
+      || typeof entry.strategySourceCommit !== "string"
+      || !/^[a-f0-9]{40}$/u.test(entry.strategySourceCommit)) {
+      throw new Error("Failed-attempt manifest contains a malformed entry");
+    }
+    return entry;
+  });
+  if (new Set(entries.map(({ path: entryPath }) => entryPath)).size !== entries.length) {
+    throw new Error("Failed-attempt manifest contains duplicate paths");
+  }
+  const actualFiles = readdirSync(dirname(manifestPath))
+    .filter((name) => name !== "manifest.json" && name.endsWith(".json"))
+    .map((name) => `data/validation/attempts/${name}`)
+    .sort();
+  if (canonicalJson(actualFiles) !== canonicalJson(entries.map(({ path: entryPath }) => entryPath).sort())) {
+    throw new Error("Failed-attempt manifest does not cover the exact preserved receipt set");
+  }
+  const entry = entries.find(({ path: entryPath }) => entryPath === relativePath);
+  const expected = {
+    path: relativePath,
+    fileSha256: sha256(readFileSync(path)),
+    receiptSha256: evidenceTools.validationReceiptSha256(evidence),
+    strategySourceCommit: sourceCommit,
+  };
+  if (entry === undefined || canonicalJson(entry) !== canonicalJson(expected)) {
+    throw new Error("Failed validation receipt is not exactly preserved in its manifest");
+  }
+}
+
+export function validatePlannedReceipt(input) {
+  const path = input.outcome === "success"
+    ? receiptPath(input.root, input.plan)
+    : failedReceiptPath(input.root, input.plan);
+  if (input.outcome === "success") assertReceiptContained(input.root, path);
+  else assertFailedReceiptContained(input.root, path);
+  const evidence = input.evidenceTools.validateStrategyEvidence(
+    JSON.parse(readFileSync(path, "utf8")),
+    {
+      retailerId: input.plan.retailerId,
+      purpose: input.plan.purpose,
+      strategyVersion: input.plan.toVersion,
+      strategy: input.strategy,
+      verificationPublicKey: input.trackedPublicKey,
+      authoritativeRefs: input.challenge,
+    },
+  );
+  comparePublicKeys(input.trackedPublicKey, evidence);
+  const expectedOutcome = input.outcome === "success"
+    ? evidence.valid >= 27 && evidence.activatable === true
+    : evidence.valid < 27 && evidence.activatable === false;
+  if (
+    evidence.executor.mode !== "trusted-live-host"
+    || evidence.executor.sourceCommit !== input.sourceCommit
+    || evidence.executor.artifactSha256 !== input.expectedValidator
+    || evidence.executor.challengeAlgorithm !== CHALLENGE_ALGORITHM
+    || evidence.attempted !== 30
+    || !expectedOutcome
+    || canonicalJson(evidence.samples.map(({ ref }) => ref)) !== canonicalJson(input.challenge)
+  ) {
+    throw new Error(
+      `${input.plan.retailerId}/${input.plan.purpose} ${input.outcome} receipt `
+      + "is not bound to the trusted rollout",
+    );
+  }
+  if (Date.parse(evidence.validatedAt) > (input.now ?? Date.now())) {
+    throw new Error(`${input.plan.retailerId}/${input.plan.purpose} receipt is future-dated`);
+  }
+  if (input.outcome === "failure") {
+    assertFailedAttemptRegistered(
+      input.root,
+      path,
+      evidence,
+      input.evidenceTools,
+      input.sourceCommit,
+    );
+  }
+  return { path, evidence };
+}
+
+function appliedMetadata(plan, source, evidence, evidenceTools) {
+  return {
+    ...source,
+    externallyValidated: true,
+    validatedAt: evidence.validatedAt,
+    sampleSize: evidence.attempted,
+    successes: evidence.valid,
+    score: evidence.score,
+    receiptPath: `data/validation/${plan.retailerId}-${plan.purpose}-v${plan.toVersion}.json`,
+    receiptSha256: evidenceTools.validationReceiptSha256(evidence),
+  };
+}
+
 export async function applyValidationSuccessors(options) {
   const root = assertProjectRoot(options.root);
   assertTrustedImplementationClean(root);
+  const allowPartial = options.allowPartial === true;
   const databasePath = resolve(options.database ?? resolve(root, "data/precos.sqlite"));
   const plans = parseSuccessorPlan(readJsonFile(resolve(root, PLAN_PATH), "successor plan"));
-  const configs = inspectPlannedConfigs(root, plans);
+  const configs = inspectPlannedConfigs(root, plans, { allowApplied: allowPartial });
   assertTrackedUnmodified(root, [
     PLAN_PATH,
     PUBLIC_KEY_PATH,
@@ -147,17 +352,25 @@ export async function applyValidationSuccessors(options) {
     VALIDATOR_DIGEST_PATH,
     ...configs.map(({ path }) => path),
   ]);
-  verifyOverlay(root, configs, resolve(root, OVERLAY_PATH));
   const declaredBuild = readJsonFile(
     resolve(root, "dist/build-manifest.json"),
     "dist build manifest",
   );
+  if (typeof declaredBuild.sourceCommit !== "string"
+    || !/^[a-f0-9]{40}$/u.test(declaredBuild.sourceCommit)) {
+    throw new Error("dist build manifest source commit is malformed");
+  }
+  const sourceConfigs = configs.map((entry) => ({
+    ...entry,
+    config: JSON.parse(git(root, ["show", `${declaredBuild.sourceCommit}:${entry.path}`])),
+  }));
   const sourceCommit = verifyCommittedPlan(
     root,
     plans,
-    configs,
+    sourceConfigs,
     declaredBuild.sourceCommit,
   );
+  verifyOverlay(root, sourceConfigs, resolve(root, OVERLAY_PATH));
   const build = verifyCleanBuild(root, sourceCommit);
   const publicKeyPath = resolve(root, PUBLIC_KEY_PATH);
   assertRegularFile(publicKeyPath, "tracked validation public key");
@@ -190,17 +403,26 @@ export async function applyValidationSuccessors(options) {
     throw new Error("Authoritative database path cannot traverse symbolic links");
   }
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
-  const desiredByRetailer = new Map(
-    configs.map((entry) => [entry.retailerId, structuredClone(entry.config)]),
+  const sourceByRetailer = new Map(
+    sourceConfigs.map((entry) => [entry.retailerId, structuredClone(entry.config)]),
   );
-  const receipts = [];
+  const desiredByRetailer = new Map(
+    sourceConfigs.map((entry) => [entry.retailerId, structuredClone(entry.config)]),
+  );
+  const currentExpectedByRetailer = new Map(
+    sourceConfigs.map((entry) => [entry.retailerId, structuredClone(entry.config)]),
+  );
+  const applied = [];
+  const skipped = [];
   try {
     assertDatabaseHealthy(database);
     for (const plan of plans) {
       const configEntry = configs.find(({ retailerId }) => retailerId === plan.retailerId);
       if (configEntry === undefined) throw new Error(`Missing config for ${plan.retailerId}`);
       const strategy = configEntry.config[plan.purpose];
-      activeStrategy(database, plan, strategy);
+      const configState = configEntry.config.strategyVersions[plan.purpose] === plan.toVersion
+        ? "applied"
+        : "pending";
       const challenge = challengeTools.selectStrategyValidationChallenge(
         database,
         plan.retailerId,
@@ -209,53 +431,71 @@ export async function applyValidationSuccessors(options) {
       if (challenge.length !== 30) {
         throw new Error(`${plan.retailerId} has ${challenge.length}/30 authoritative references`);
       }
-      const path = receiptPath(root, plan);
-      assertReceiptContained(root, path);
-      const evidence = evidenceTools.validateStrategyEvidence(
-        JSON.parse(readFileSync(path, "utf8")),
-        {
-          retailerId: plan.retailerId,
-          purpose: plan.purpose,
-          strategyVersion: plan.toVersion,
-          strategy,
-          verificationPublicKey: trackedPublicKey,
-          authoritativeRefs: challenge,
-        },
-      );
-      comparePublicKeys(trackedPublicKey, evidence);
-      if (
-        evidence.executor.mode !== "trusted-live-host"
-        || evidence.executor.sourceCommit !== sourceCommit
-        || evidence.executor.artifactSha256 !== build.expectedValidator
-        || evidence.executor.challengeAlgorithm !== CHALLENGE_ALGORITHM
-        || evidence.attempted !== 30
-        || evidence.valid < 27
-        || evidence.activatable !== true
-        || canonicalJson(evidence.samples.map(({ ref }) => ref)) !== canonicalJson(challenge)
-      ) {
+      const canonicalExists = existsSync(receiptPath(root, plan));
+      if (!canonicalExists && !allowPartial) {
         throw new Error(
-          `${plan.retailerId}/${plan.purpose} receipt is not bound to the trusted rollout`,
+          `${plan.retailerId}/${plan.purpose} canonical activatable receipt is required; `
+          + "use --allow-partial only with a preserved signed failed attempt",
         );
       }
-      if (Date.parse(evidence.validatedAt) > Date.now()) {
-        throw new Error(`${plan.retailerId}/${plan.purpose} receipt is future-dated`);
+      if (!canonicalExists && configState === "applied") {
+        throw new Error(`${plan.retailerId}/${plan.purpose} applied config lacks its canonical receipt`);
+      }
+      const outcome = canonicalExists ? "success" : "failure";
+      const { evidence } = validatePlannedReceipt({
+        root,
+        plan,
+        strategy,
+        challenge,
+        trackedPublicKey,
+        evidenceTools,
+        sourceCommit,
+        expectedValidator: build.expectedValidator,
+        outcome,
+      });
+      activeStrategy(database, plan, strategy, configState, evidence, evidenceTools);
+      if (outcome === "failure") {
+        skipped.push({
+          retailerId: plan.retailerId,
+          purpose: plan.purpose,
+          fromVersion: plan.fromVersion,
+          toVersion: plan.toVersion,
+          valid: evidence.valid,
+          attempted: evidence.attempted,
+          receiptSha256: evidenceTools.validationReceiptSha256(evidence),
+        });
+        continue;
       }
       const desired = desiredByRetailer.get(plan.retailerId);
+      const source = sourceByRetailer.get(plan.retailerId);
       if (desired === undefined) throw new Error(`Missing desired config for ${plan.retailerId}`);
+      if (source === undefined) throw new Error(`Missing source config for ${plan.retailerId}`);
       desired.strategyVersions[plan.purpose] = plan.toVersion;
-      desired.validation[plan.purpose] = {
-        ...desired.validation[plan.purpose],
-        externallyValidated: true,
-        validatedAt: evidence.validatedAt,
-        sampleSize: evidence.attempted,
-        successes: evidence.valid,
-        score: evidence.score,
-        receiptPath: `data/validation/${plan.retailerId}-${plan.purpose}-v${plan.toVersion}.json`,
-        receiptSha256: evidenceTools.validationReceiptSha256(evidence),
-      };
-      receipts.push({
+      desired.validation[plan.purpose] = appliedMetadata(
+        plan,
+        source.validation[plan.purpose],
+        evidence,
+        evidenceTools,
+      );
+      if (configState === "applied") {
+        const expected = currentExpectedByRetailer.get(plan.retailerId);
+        if (expected === undefined) throw new Error(`Missing current config for ${plan.retailerId}`);
+        expected.strategyVersions[plan.purpose] = plan.toVersion;
+        expected.validation[plan.purpose] = appliedMetadata(
+          plan,
+          source.validation[plan.purpose],
+          evidence,
+          evidenceTools,
+        );
+      }
+      applied.push({
         retailerId: plan.retailerId,
         purpose: plan.purpose,
+        fromVersion: plan.fromVersion,
+        toVersion: plan.toVersion,
+        state: configState === "applied" ? "already-applied" : "newly-applied",
+        valid: evidence.valid,
+        attempted: evidence.attempted,
         receiptSha256: evidenceTools.validationReceiptSha256(evidence),
         sampleSetSha256: evidence.sampleSetSha256,
       });
@@ -264,13 +504,25 @@ export async function applyValidationSuccessors(options) {
     database.close();
   }
 
-  for (const [retailerId, desired] of desiredByRetailer) {
+  for (const configEntry of configs) {
+    const retailerId = configEntry.retailerId;
+    const desired = desiredByRetailer.get(retailerId);
+    const currentExpected = currentExpectedByRetailer.get(retailerId);
+    if (desired === undefined || currentExpected === undefined) {
+      throw new Error(`Missing derived config for ${retailerId}`);
+    }
     configTools.RetailerConfigSchema.parse(desired);
+    configTools.RetailerConfigSchema.parse(currentExpected);
+    if (canonicalJson(configEntry.config) !== canonicalJson(currentExpected)) {
+      throw new Error(`${retailerId} config differs from exact applied receipt metadata`);
+    }
     const overlayConfig = readJsonFile(
       resolve(root, OVERLAY_PATH, `${retailerId}.json`),
       `prepared overlay ${retailerId}`,
     );
-    for (const purpose of ["discovery", "extraction"]) {
+    for (const purpose of applied
+      .filter((entry) => entry.retailerId === retailerId)
+      .map((entry) => entry.purpose)) {
       if (
         overlayConfig.strategyVersions[purpose] !== desired.strategyVersions[purpose]
         || canonicalJson(overlayConfig[purpose]) !== canonicalJson(desired[purpose])
@@ -280,13 +532,24 @@ export async function applyValidationSuccessors(options) {
     }
   }
 
-  const updates = configs.map((entry) => ({
-    path: entry.path,
-    originalSha256: sha256(readFileSync(resolve(root, entry.path))),
-    content: formattedJson(desiredByRetailer.get(entry.retailerId)),
-  }));
-  writeConfigBatchAtomically(root, updates);
-  return { root, sourceCommit, receipts, configs: configs.map(({ path }) => path) };
+  const updates = configs.flatMap((entry) => {
+    const desired = desiredByRetailer.get(entry.retailerId);
+    const content = formattedJson(desired);
+    const current = readFileSync(resolve(root, entry.path));
+    return sha256(current) === sha256(content)
+      ? []
+      : [{ path: entry.path, originalSha256: sha256(current), content }];
+  });
+  if (updates.length > 0) writeConfigBatchAtomically(root, updates);
+  return {
+    root,
+    sourceCommit,
+    receipts: applied,
+    applied,
+    skipped,
+    configs: updates.map(({ path }) => path),
+    allowPartial,
+  };
 }
 
 async function main() {
@@ -295,6 +558,9 @@ async function main() {
     event: "validation-successors-applied",
     sourceCommit: result.sourceCommit,
     strategies: result.receipts.length,
+    partialMode: result.allowPartial,
+    applied: result.applied,
+    skipped: result.skipped,
     configs: result.configs,
     databaseMutation: false,
     activationPerformed: false,
