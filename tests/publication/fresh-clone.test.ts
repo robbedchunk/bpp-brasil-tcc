@@ -7,6 +7,8 @@ describe("fresh-clone verifier", () => {
     const script = await readFile(new URL("../../ops/verify-fresh-clone.sh", import.meta.url), "utf8");
 
     expect(script).toContain("git clone --no-local");
+    expect(script.indexOf('export HOME="$home_root"')).toBeLessThan(script.indexOf("git clone --no-local"));
+    expect(script).toMatch(/npm.*11/u);
     expect(script).toContain("unset OPENAI_API_KEY CODEX_API_KEY NTFY_TOPIC LIVE_OPENAI");
     expect(script).toContain("DATABASE_PATH=var/acceptance/precos.sqlite");
     expect(script).toContain("npm run audit:publication -- --json");
@@ -15,6 +17,10 @@ describe("fresh-clone verifier", () => {
     expect(script).toContain("PRAGMA wal_checkpoint(TRUNCATE)");
     expect(script).toContain("*.sqlite-wal");
     expect(script).toContain("*.sqlite-shm");
+    expect(script).toContain("browser-profile");
+    expect(script).toContain("var/acceptance");
+    expect(script).toContain("manifest.json");
+    expect(script).not.toContain('analysis_latest="analysis/output/latest.json"');
     expect(script).not.toContain("systemctl --user enable");
   });
 });

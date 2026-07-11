@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
 
@@ -30,6 +31,107 @@ export interface PublicDrillReceipt {
   implementationSha256: string;
   reasonCodes: string[];
   facts: Record<string, string | number | boolean | null>;
+}
+
+const RECEIPT_KEYS = [
+  "drill", "evaluatedCommit", "facts", "implementationSha256",
+  "observedAt", "reasonCodes", "schemaVersion", "status",
+] as const;
+const ALERT_FACT_KEYS = [
+  "accepted", "appendedLineSha256", "channel", "drillIdMatched",
+  "drillIdSha256", "fallbackFileMode", "heartbeatRowsAfter",
+  "heartbeatRowsBefore", "heartbeatRowsUnchanged", "httpStatus",
+  "latestHeartbeatIdUnchanged", "simulatedStale",
+] as const;
+const BACKUP_FACT_KEYS = [
+  "backupPath", "backupSha256", "contentFingerprint", "countsMatched",
+  "criticalTableCount", "criticalTableCountsSha256", "fileMode",
+  "foreignKeyViolations", "integrityCheck", "restoreIntegrityCheck",
+  "restoreTargetWasSource", "retentionSelfTestPassed", "sourceDatabaseSha256",
+  "sourceFingerprintMatchesBackup", "sourceUnchangedAfterBackup",
+] as const;
+const HEX_64 = /^[a-f0-9]{64}$/u;
+const HEX_40 = /^[a-f0-9]{40}$/u;
+
+function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
+}
+
+export function validatePublicDrillReceipt(
+  input: unknown,
+  expectedDrill?: "alert" | "backup",
+): PublicDrillReceipt {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new TypeError("Public drill receipt must be an object");
+  }
+  const value = input as Record<string, unknown>;
+  if (!exactKeys(value, RECEIPT_KEYS)
+    || value.schemaVersion !== 1
+    || (value.drill !== "alert" && value.drill !== "backup")
+    || (expectedDrill !== undefined && value.drill !== expectedDrill)
+    || !["pass", "pending", "fail"].includes(String(value.status))
+    || typeof value.observedAt !== "string" || !Number.isFinite(Date.parse(value.observedAt))
+    || typeof value.evaluatedCommit !== "string" || !HEX_40.test(value.evaluatedCommit)
+    || typeof value.implementationSha256 !== "string" || !HEX_64.test(value.implementationSha256)
+    || !Array.isArray(value.reasonCodes) || value.reasonCodes.some((code) => typeof code !== "string")
+    || typeof value.facts !== "object" || value.facts === null || Array.isArray(value.facts)) {
+    throw new TypeError("Public drill receipt has an invalid shape or drill kind");
+  }
+  const facts = value.facts as Record<string, unknown>;
+  const factKeys = value.drill === "alert" ? ALERT_FACT_KEYS : BACKUP_FACT_KEYS;
+  if (!exactKeys(facts, factKeys)) throw new TypeError("Public drill receipt facts are not exactly allowlisted");
+  if (value.drill === "alert") {
+    if (!["ntfy", "local", "local-after-ntfy-failure"].includes(String(facts.channel))
+      || typeof facts.accepted !== "boolean"
+      || (facts.httpStatus !== null && !Number.isInteger(facts.httpStatus))
+      || (facts.fallbackFileMode !== null && facts.fallbackFileMode !== "0600")
+      || (facts.appendedLineSha256 !== null && (typeof facts.appendedLineSha256 !== "string" || !HEX_64.test(facts.appendedLineSha256)))
+      || typeof facts.heartbeatRowsBefore !== "number"
+      || typeof facts.heartbeatRowsAfter !== "number"
+      || ![facts.simulatedStale, facts.heartbeatRowsUnchanged, facts.latestHeartbeatIdUnchanged, facts.drillIdMatched].every((item) => typeof item === "boolean")
+      || typeof facts.drillIdSha256 !== "string" || !HEX_64.test(facts.drillIdSha256)) {
+      throw new TypeError("Public alert receipt facts are invalid");
+    }
+  } else if (typeof facts.backupPath !== "string"
+    || isAbsolute(facts.backupPath) || facts.backupPath.split("/").includes("..")
+    || !facts.backupPath.startsWith("var/backups/precos-drill-")
+    || ![facts.backupSha256, facts.contentFingerprint, facts.criticalTableCountsSha256, facts.sourceDatabaseSha256]
+      .every((item) => typeof item === "string" && HEX_64.test(item))
+    || facts.fileMode !== "0600"
+    || facts.integrityCheck !== "ok" || facts.restoreIntegrityCheck !== "ok"
+    || !Number.isInteger(facts.foreignKeyViolations) || !Number.isInteger(facts.criticalTableCount)
+    || ![facts.countsMatched, facts.restoreTargetWasSource, facts.retentionSelfTestPassed,
+      facts.sourceFingerprintMatchesBackup, facts.sourceUnchangedAfterBackup]
+      .every((item) => typeof item === "boolean")) {
+    throw new TypeError("Public backup receipt facts are invalid");
+  }
+  if (value.status === "pass") {
+    if ((value.reasonCodes as unknown[]).length !== 0) throw new TypeError("Passing drill receipt cannot contain reason codes");
+    if (value.drill === "alert") {
+      const local = facts.channel === "local" || facts.channel === "local-after-ntfy-failure";
+      const ntfy = facts.channel === "ntfy";
+      if (facts.accepted !== true || facts.simulatedStale !== true
+        || facts.heartbeatRowsUnchanged !== true || facts.latestHeartbeatIdUnchanged !== true
+        || facts.drillIdMatched !== true
+        || (ntfy && (!(typeof facts.httpStatus === "number") || facts.httpStatus < 200 || facts.httpStatus >= 300
+          || facts.fallbackFileMode !== null || facts.appendedLineSha256 !== null))
+        || (local && (facts.fallbackFileMode !== "0600"
+          || typeof facts.appendedLineSha256 !== "string" || !HEX_64.test(facts.appendedLineSha256)
+          || (facts.channel === "local" && facts.httpStatus !== null)
+          || (facts.channel === "local-after-ntfy-failure" && typeof facts.httpStatus === "number"
+            && facts.httpStatus >= 200 && facts.httpStatus < 300)))) {
+        throw new TypeError("Passing alert receipt contradicts its delivery facts");
+      }
+    } else if (facts.integrityCheck !== "ok" || facts.restoreIntegrityCheck !== "ok"
+      || facts.foreignKeyViolations !== 0 || facts.fileMode !== "0600"
+      || facts.countsMatched !== true || facts.restoreTargetWasSource !== false
+      || facts.retentionSelfTestPassed !== true || facts.sourceFingerprintMatchesBackup !== true
+      || facts.sourceUnchangedAfterBackup !== true
+      || typeof facts.criticalTableCount !== "number" || facts.criticalTableCount <= 0) {
+      throw new TypeError("Passing backup receipt contradicts its integrity/restore facts");
+    }
+  }
+  return input as PublicDrillReceipt;
 }
 
 interface ReceiptPaths {
@@ -56,6 +158,7 @@ export interface BackupDrillOptions extends ReceiptPaths {
 }
 
 const IMPLEMENTATION_PATH = new URL(import.meta.url);
+const BACKUP_SCRIPT_PATH = fileURLToPath(new URL("../../ops/backup.sh", import.meta.url));
 const CRITICAL_TABLES = [
   "schema_migrations",
   "runs",
@@ -112,6 +215,7 @@ function writeReceipts(receipt: PublicDrillReceipt, paths: ReceiptPaths): void {
     chmodSync(paths.privateReceiptPath, 0o600);
   }
   if (paths.publicReceiptPath !== undefined && receipt.status === "pass") {
+    validatePublicDrillReceipt(receipt, receipt.drill);
     mkdirSync(resolve(paths.publicReceiptPath, ".."), { recursive: true, mode: 0o755 });
     writeFileSync(paths.publicReceiptPath, body, { mode: 0o644 });
   }
@@ -214,6 +318,32 @@ function tableCounts(database: Database.Database): Record<string, number> {
   return result;
 }
 
+function semanticFingerprint(database: Database.Database): string {
+  const digest = createHash("sha256");
+  const schema = database.prepare(`
+    SELECT type, name, tbl_name, sql FROM sqlite_schema
+    WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
+  `).all() as Array<Record<string, unknown>>;
+  digest.update(JSON.stringify(schema));
+  const tables = database.prepare(`
+    SELECT name FROM sqlite_schema
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name
+  `).all() as Array<{ name: string }>;
+  for (const { name } of tables) {
+    digest.update(`\0${name}\0`);
+    const rows = database.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`).iterate() as Iterable<Record<string, unknown>>;
+    for (const row of rows) {
+      const normalized = Object.fromEntries(Object.entries(row).map(([key, value]) => [
+        key,
+        Buffer.isBuffer(value) ? { base64: value.toString("base64") } : value,
+      ]));
+      digest.update(JSON.stringify(normalized));
+      digest.update("\n");
+    }
+  }
+  return digest.digest("hex");
+}
+
 function databaseFacts(database: Database.Database): {
   integrity: string;
   foreignKeyViolations: number;
@@ -228,8 +358,20 @@ function databaseFacts(database: Database.Database): {
     integrity,
     foreignKeyViolations: foreignKeys.length,
     counts,
-    fingerprint: sha256(database.serialize()),
+    fingerprint: semanticFingerprint(database),
   };
+}
+
+function retentionSelfTest(now: Date): boolean {
+  try {
+    execFileSync("bash", [BACKUP_SCRIPT_PATH, "--retention-self-test"], {
+      env: { ...process.env, RETENTION_NOW_EPOCH: String(Math.floor(now.getTime() / 1_000)) },
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function runBackupDrill(options: BackupDrillOptions): Promise<PublicDrillReceipt> {
@@ -279,6 +421,17 @@ export async function runBackupDrill(options: BackupDrillOptions): Promise<Publi
 
   const fileMode = (statSync(backupPath).mode & 0o777).toString(8).padStart(4, "0");
   const countsJson = JSON.stringify(sourceFacts.counts);
+  const sourceAfterDatabase = new Database(sourcePath, { readonly: true, fileMustExist: true });
+  let sourceAfterFacts;
+  try {
+    sourceAfterFacts = databaseFacts(sourceAfterDatabase);
+  } finally {
+    sourceAfterDatabase.close();
+  }
+  const sourceUnchanged = sourceAfterFacts.fingerprint === sourceFacts.fingerprint
+    && JSON.stringify(sourceAfterFacts.counts) === countsJson;
+  const sourceFingerprintMatchesBackup = sourceFacts.fingerprint === backupFacts.fingerprint;
+  const retentionPassed = retentionSelfTest(now);
   const coherent = sourceFacts.integrity === "ok"
     && backupFacts.integrity === "ok"
     && restoredFacts.integrity === "ok"
@@ -286,17 +439,20 @@ export async function runBackupDrill(options: BackupDrillOptions): Promise<Publi
     && restoredFacts.foreignKeyViolations === 0
     && JSON.stringify(backupFacts.counts) === countsJson
     && JSON.stringify(restoredFacts.counts) === countsJson
+    && sourceFingerprintMatchesBackup
     && backupFacts.fingerprint === restoredFacts.fingerprint
+    && sourceUnchanged
+    && retentionPassed
     && fileMode === "0600"
     && resolve(restorePath) !== sourcePath;
   const receipt: PublicDrillReceipt = {
     schemaVersion: 1,
     drill: "backup",
-    status: coherent ? "pass" : "fail",
+    status: coherent ? "pass" : sourceUnchanged ? "fail" : "pending",
     observedAt: now.toISOString(),
     evaluatedCommit: commit(root),
     implementationSha256: implementationSha256(),
-    reasonCodes: coherent ? [] : ["DATABASE_INTEGRITY_FAILED"],
+    reasonCodes: coherent ? [] : [sourceUnchanged ? "DATABASE_INTEGRITY_FAILED" : "SCHEDULED_RUN_NOT_YET_DUE"],
     facts: {
       backupPath: relative(root, backupPath).split(sep).join("/"),
       integrityCheck: backupFacts.integrity,
@@ -311,6 +467,9 @@ export async function runBackupDrill(options: BackupDrillOptions): Promise<Publi
       criticalTableCountsSha256: sha256(countsJson),
       countsMatched: JSON.stringify(backupFacts.counts) === countsJson
         && JSON.stringify(restoredFacts.counts) === countsJson,
+      sourceFingerprintMatchesBackup,
+      sourceUnchangedAfterBackup: sourceUnchanged,
+      retentionSelfTestPassed: retentionPassed,
     },
   };
   writeReceipts(receipt, options);

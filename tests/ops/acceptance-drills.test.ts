@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
-import { runAlertDrill, runBackupDrill } from "../../src/ops/acceptance-drills.js";
+import { runAlertDrill, runBackupDrill, validatePublicDrillReceipt } from "../../src/ops/acceptance-drills.js";
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map((path) =>
@@ -56,6 +56,10 @@ describe("safe acceptance drills", () => {
       "drill", "evaluatedCommit", "facts", "implementationSha256",
       "observedAt", "reasonCodes", "schemaVersion", "status",
     ].sort());
+    expect(() => validatePublicDrillReceipt({
+      ...receipt,
+      facts: { ...receipt.facts, heartbeatRowsUnchanged: false },
+    }, "alert")).toThrow(/contradict/i);
   });
 
   it("uses an online backup and restore-read copy without replacing the source", async () => {
@@ -69,8 +73,17 @@ describe("safe acceptance drills", () => {
     });
     expect(receipt).toMatchObject({ drill: "backup", status: "pass" });
     expect(receipt.facts).toMatchObject({ integrityCheck: "ok", foreignKeyViolations: 0, fileMode: "0600" });
+    expect(receipt.facts).toMatchObject({
+      sourceFingerprintMatchesBackup: true,
+      sourceUnchangedAfterBackup: true,
+      retentionSelfTestPassed: true,
+    });
     expect(await readFile(fixture.path)).toEqual(before);
     expect(String(receipt.facts.backupPath ?? "")).not.toMatch(/^\//u);
+    expect(() => validatePublicDrillReceipt({
+      ...receipt,
+      facts: { ...receipt.facts, sourceFingerprintMatchesBackup: false },
+    }, "backup")).toThrow(/contradict/i);
   });
 
   it("fails closed when the database resolves outside the project root", async () => {

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -36,9 +37,10 @@ async function writeDocs(root: string): Promise<void> {
     "Raw HTML is excluded from publication.",
     "Out of scope: other regions, dashboards, hedonic adjustment, proxies.",
     "Run `npm run acceptance -- --json` for current evidence.",
+    "See docs/acceptance-report.md for the generated report.",
   ].join("\n"));
-  await writeFile(join(root, "LICENSE"), "MIT License\nCopyright (c) 2026 RobbedChunk\n");
-  await writeFile(join(root, "SECURITY.md"), "Report security issues privately.\n");
+  await writeFile(join(root, "LICENSE"), "MIT License\nCopyright (c) 2026 RobbedChunk\nPermission is hereby granted, free of charge, to any person obtaining a copy.\n");
+  await writeFile(join(root, "SECURITY.md"), "Report security issues privately. Rotate exposed credentials; never attach raw retailer pages.\n");
   for (const name of [
     "methodology.md",
     "ethics-and-tos.md",
@@ -46,7 +48,10 @@ async function writeDocs(root: string): Promise<void> {
     "operations.md",
     "sources.md",
   ]) {
-    await writeFile(join(root, "docs", name), `# ${name}\nPublication-safe research documentation.\n`);
+    const body = name === "sources.md"
+      ? "IBGE POF 2017-2018, SIDRA table 7060, BCB EE069, DOI 10.1257/jep.30.2.151.\n"
+      : "Publication-safe research documentation.\n";
+    await writeFile(join(root, "docs", name), `# ${name}\n${body}`);
   }
 }
 
@@ -110,6 +115,22 @@ describe("publication audit", () => {
     expect(report.status).toBe("fail");
   });
 
+  it("audits staged index bytes even when the worktree hides them", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const credential = ["sk", "proj", "B".repeat(32)].join("-");
+    await writeFile(join(root, "staged.txt"), credential);
+    git(root, "add", "staged.txt");
+    await writeFile(join(root, "staged.txt"), "safe worktree text\n");
+
+    const report = await auditPublication(options(root));
+
+    expect(report.trackedSecrets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "SECRET_OPENAI_KEY", location: "staged.txt:1" }),
+    ]));
+    expect(JSON.stringify(report)).not.toContain(credential);
+  });
+
   it("allows blank example credentials and rejects configured tracked credentials", async () => {
     const root = await temporaryRoot();
     await initializeRepository(root);
@@ -146,6 +167,46 @@ describe("publication audit", () => {
     ]);
     expect(report.trackedRawHtml).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ location: "tests/fixtures/product.html" }),
+    ]));
+  });
+
+  it("does not allowlist configured credentials merely because they are test sentinels", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await mkdir(join(root, "tests"), { recursive: true });
+    await writeFile(join(root, "tests", "unsafe-env.txt"), "OPENAI_API_KEY=test-secret-value-123456789\n");
+    git(root, "add", "tests/unsafe-env.txt");
+
+    const report = await auditPublication(options(root));
+
+    expect(report.trackedSecrets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "SECRET_CONFIGURED_ENV" }),
+    ]));
+  });
+
+  it("detects long Basic authorization material without returning it", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const encoded = Buffer.from("operator:private-password").toString("base64");
+    await writeFile(join(root, "request.txt"), `Authorization: Basic ${encoded}\n`);
+
+    const report = await auditPublication(options(root));
+    expect(report.trackedSecrets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "SECRET_BASIC", location: "request.txt:1" }),
+    ]));
+    expect(JSON.stringify(report)).not.toContain(encoded);
+  });
+
+  it("rejects sensitive state even inside sanitized fixture HTML", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await mkdir(join(root, "tests", "fixtures"), { recursive: true });
+    await writeFile(join(root, "tests", "fixtures", "leak.html"), "<main data-session-id=\"abc\">Set-Cookie: cart=abc; address: private</main>\n");
+    git(root, "add", "tests/fixtures/leak.html");
+
+    const report = await auditPublication(options(root));
+    expect(report.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "FIXTURE_PRIVATE_DATA" }),
     ]));
   });
 
@@ -193,6 +254,90 @@ describe("publication audit", () => {
     ]));
   });
 
+  it("rejects malformed manifest entries and non-UTF-8 public CSV bytes", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const snapshot = join(root, "data", "exports", "snapshots", "unsafe");
+    await mkdir(snapshot, { recursive: true });
+    await writeFile(join(snapshot, "bad.csv"), Uint8Array.from([0xff, 0xfe, 0x0a]));
+    await writeFile(join(snapshot, "manifest.json"), JSON.stringify({ files: [
+      { path: "bad.csv" },
+      null,
+    ] }));
+    git(root, "add", "data");
+
+    const report = await auditPublication(options(root));
+    expect(report.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "PUBLIC_CSV_UTF8" }),
+      expect.objectContaining({ ruleId: "PUBLIC_MANIFEST_ENTRY" }),
+    ]));
+  });
+
+  it("audits a divergent unstaged manifest instead of trusting only the index", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const snapshot = join(root, "data", "exports", "snapshots", "safe");
+    await mkdir(snapshot, { recursive: true });
+    await writeFile(join(snapshot, "rows.csv"), "id\n1\n");
+    const digest = createHash("sha256").update("id\n1\n").digest("hex");
+    await writeFile(join(snapshot, "manifest.json"), JSON.stringify({ files: [{ path: "rows.csv", sha256: digest }] }));
+    git(root, "add", "data");
+    git(root, "commit", "-qm", "safe manifest");
+    await writeFile(join(snapshot, "manifest.json"), JSON.stringify({ files: [{ path: "rows.csv" }] }));
+
+    const report = await auditPublication(options(root));
+    expect(report.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "PUBLIC_MANIFEST_ENTRY" }),
+    ]));
+  });
+
+  it("rejects a deleted symlink that remains in reachable history", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await symlink("README.md", join(root, "historical-link"));
+    git(root, "add", "historical-link");
+    git(root, "commit", "-qm", "historical symlink");
+    await rm(join(root, "historical-link"));
+    git(root, "add", "-u");
+    git(root, "commit", "-qm", "remove symlink");
+
+    const report = await auditPublication(options(root));
+    expect(report.unsafeLinksOrSubmodules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "HISTORICAL_SYMLINK", location: "historical-link" }),
+    ]));
+  });
+
+  it("audits every tracked SQLite file, private schema names, and sidecars", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    await mkdir(join(root, "data"), { recursive: true });
+    const secondPath = join(root, "data", "other.sqlite");
+    const second = new Database(secondPath);
+    second.exec("CREATE TABLE unsafe(cookie TEXT, public_value TEXT);");
+    second.close();
+    await writeFile(`${secondPath}-shm`, "runtime-sidecar");
+    git(root, "add", "-f", "data/other.sqlite", "data/other.sqlite-shm");
+
+    const report = await auditPublication(options(root));
+    expect(report.publicDataFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "PUBLIC_DATABASE_PRIVATE_SCHEMA" }),
+      expect.objectContaining({ ruleId: "PUBLIC_DATABASE_SIDECAR" }),
+    ]));
+  });
+
+  it("makes dynamic README acceptance claims mandatory", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const readme = await readFile(join(root, "README.md"), "utf8");
+    await writeFile(join(root, "README.md"), readme.replace("docs/acceptance-report.md", "evidence report"));
+
+    const report = await auditPublication(options(root));
+    expect(report.status).toBe("fail");
+    expect(report.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: "README_CLAIMS" }),
+    ]));
+  });
+
   it("validates strict fresh-clone receipts and rejects absolute paths", () => {
     const valid = {
       schemaVersion: 1,
@@ -200,14 +345,25 @@ describe("publication audit", () => {
       sourceCommit: "a".repeat(40),
       completedAt: "2026-07-10T12:00:00.000Z",
       runtimes: { node: "v24.18.0", npm: "11.16.0", python: "3.14.4" },
-      checks: [{ id: "smoke", exitCode: 0, outputSha256: "b".repeat(64) }],
-      artifacts: [{ path: "analysis/output/latest.json", sha256: "c".repeat(64) }],
+      checks: ["setup", "smoke", "publication", "analysis"].map((id) => ({
+        id,
+        exitCode: 0 as const,
+        outputSha256: "b".repeat(64),
+      })),
+      artifacts: [
+        { path: "analysis/output/snapshots/sample/manifest.json", sha256: "c".repeat(64) },
+        { path: "data/exports/snapshots/sample/manifest.json", sha256: "d".repeat(64) },
+      ],
     };
     expect(validateFreshCloneReceipt(valid)).toEqual(valid);
     expect(() => validateFreshCloneReceipt({
       ...valid,
       artifacts: [{ path: "/home/operator/private.json", sha256: "c".repeat(64) }],
     })).toThrow(/relative/i);
+    expect(() => validateFreshCloneReceipt({
+      ...valid,
+      checks: [valid.checks[0], valid.checks[0]],
+    })).toThrow(/unique|check/i);
   });
 
   it("passes against the prospective real publication tree", async () => {

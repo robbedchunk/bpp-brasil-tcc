@@ -3,13 +3,19 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import Database from "better-sqlite3";
 import { parse } from "csv-parse/sync";
+
+import { validatePublicDrillReceipt } from "../ops/acceptance-drills.js";
 
 export type PublicationAuditStatus = "pass" | "fail";
 
@@ -104,7 +110,8 @@ const PRIVATE_COLUMN = /^(?:raw_html|html|response_body|body|cookie|set_cookie|a
 const RAW_HTML_COLUMN = /^(?:raw_html|html|response_body|body)$/iu;
 const RAW_HTML_CONTENT = /<!doctype\s+html|<html(?:\s|>)/iu;
 const PRIVATE_ABSOLUTE_PATH = /(?:^|[\s"'])\/(?:home|root|Users|private|tmp)\//u;
-const SYNTHETIC_TEST_MARKER = /(?:fake-|test-|example-|should-never-|event-secret|bearer-secret|never-log|secret-value|\.test(?:[/:]|$))/iu;
+const FIXTURE_PRIVATE_CONTENT = /\b(?:set-cookie|cookie|session[_-]?id|customer[_-]?address|delivery[_-]?address|address\s*:|cpf|e-?mail|localstorage|authorization)\b/iu;
+const DATABASE_PRIVATE_SCHEMA = /^(?:raw_html|html|response_body|body|cookie|set_cookie|authorization|secret|token|browser_state|browser_profile)$/iu;
 
 interface SecretRule {
   id: string;
@@ -119,6 +126,7 @@ const SECRET_RULES: SecretRule[] = [
   },
   { id: "SECRET_PRIVATE_KEY", pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gu },
   { id: "SECRET_BEARER", pattern: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/giu },
+  { id: "SECRET_BASIC", pattern: /\bBasic\s+[A-Za-z0-9+/]{16,}={0,2}(?=[\s"']|$)/giu },
   { id: "SECRET_URI_CREDENTIALS", pattern: /https?:\/\/[^\s/:@]+:[^\s/@]+@[^\s/]+/giu },
 ];
 
@@ -203,7 +211,9 @@ function secretFindings(
     rule.pattern.lastIndex = 0;
     for (const match of text.matchAll(rule.pattern)) {
       const value = match[0];
-      if (path.startsWith("tests/") && SYNTHETIC_TEST_MARKER.test(value)) continue;
+      if (path.startsWith("tests/") && rule.id === "SECRET_URI_CREDENTIALS" && /@[^\s/]+\.test(?:[/:]|$)/iu.test(value)) continue;
+      if (path.startsWith("tests/") && rule.id === "SECRET_BEARER"
+        && /^Bearer\s+(?:fake-|test-|example-|should-never-|event-secret|bearer-secret)/iu.test(value)) continue;
       const line = text.slice(0, match.index).split("\n").length;
       results.push(finding(
         rule.id,
@@ -240,19 +250,53 @@ function historicalEntries(root: string): Map<string, Set<string>> {
   return entries;
 }
 
+function historicalUnsafeShapes(root: string): PublicationFinding[] {
+  const findings: PublicationFinding[] = [];
+  const revisions = safeGit(root, ["rev-list", "--all"]);
+  if (revisions === "") return findings;
+  for (const revision of revisions.split("\n")) {
+    const tree = git(root, ["ls-tree", "-r", "-z", revision], "buffer").toString("utf8");
+    for (const item of tree.split("\0").filter(Boolean)) {
+      const match = /^(\d+) (?:blob|commit) ([a-f0-9]+)\t([\s\S]+)$/u.exec(item);
+      if (match?.[1] === "120000" && match[2] !== undefined && match[3] !== undefined) {
+        findings.push(finding("HISTORICAL_SYMLINK", "git-history", match[3], "A tracked symbolic link remains in reachable Git history", match[2]));
+      } else if (match?.[1] === "160000" && match[2] !== undefined && match[3] !== undefined) {
+        findings.push(finding("HISTORICAL_SUBMODULE", "git-history", match[3], "A Git submodule remains in reachable Git history", match[2]));
+      }
+    }
+  }
+  return deduplicate(findings);
+}
+
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
-function auditDatabase(path: string, root: string): PublicationFinding[] {
+function auditDatabase(
+  path: string,
+  root: string,
+  locationOverride?: string,
+  sidecars: Array<{ suffix: "wal" | "shm"; bytes: number }> = [],
+): PublicationFinding[] {
   if (!existsSync(path)) return [];
   const results: PublicationFinding[] = [];
-  const location = normalizePath(relative(root, path));
+  const location = locationOverride ?? normalizePath(relative(root, path));
   const walPath = `${path}-wal`;
   if (existsSync(walPath) && lstatSync(walPath).size > 0) {
     results.push(finding("PUBLIC_DATABASE_WAL_DEPENDENCY", "public-database", `${location}-wal`, "Public SQLite data must not require an uncheckpointed WAL"));
   }
-  const database = new Database(path, { readonly: true, fileMustExist: true });
+  for (const sidecar of sidecars) {
+    if (sidecar.bytes > 0) {
+      results.push(finding(sidecar.suffix === "wal" ? "PUBLIC_DATABASE_WAL_DEPENDENCY" : "PUBLIC_DATABASE_SIDECAR", "public-database", `${location}-${sidecar.suffix}`, "A public SQLite snapshot must not require a WAL/SHM sidecar"));
+    }
+  }
+  let database: Database.Database;
+  try {
+    database = new Database(path, { readonly: true, fileMustExist: true });
+  } catch {
+    results.push(finding("PUBLIC_DATABASE_INTEGRITY", "public-database", location, "SQLite snapshot could not be opened read-only"));
+    return results;
+  }
   try {
     const quick = database.pragma("quick_check") as Array<Record<string, unknown>>;
     if (quick.length !== 1 || Object.values(quick[0] ?? {})[0] !== "ok") {
@@ -266,12 +310,18 @@ function auditDatabase(path: string, root: string): PublicationFinding[] {
       "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     ).all() as Array<{ name: string }>;
     for (const { name: table } of tables) {
+      if (DATABASE_PRIVATE_SCHEMA.test(table)) {
+        results.push(finding("PUBLIC_DATABASE_PRIVATE_SCHEMA", "public-database", `${location}:${table}`, "Public SQLite schema exposes a private runtime name"));
+      }
       const columns = database.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{
         name: string;
         type: string;
       }>;
       for (const column of columns) {
         const columnLocation = `${location}:${table}.${column.name}`;
+        if (DATABASE_PRIVATE_SCHEMA.test(column.name)) {
+          results.push(finding("PUBLIC_DATABASE_PRIVATE_SCHEMA", "public-database", columnLocation, "Public SQLite schema exposes a private runtime column"));
+        }
         if (RAW_HTML_COLUMN.test(column.name)) {
           results.push(finding("PUBLIC_DATABASE_RAW_HTML", "public-database", columnLocation, "Raw response body columns are not publishable"));
         }
@@ -313,17 +363,30 @@ function auditDatabase(path: string, root: string): PublicationFinding[] {
   return results;
 }
 
-function auditCsv(path: string, root: string): PublicationFinding[] {
-  const location = normalizePath(relative(root, path));
-  const content = readFileSync(path);
+function decodeUtf8(content: Uint8Array): string | null {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(content);
+  } catch {
+    return null;
+  }
+}
+
+function auditCsv(content: Uint8Array, location: string): PublicationFinding[] {
   const results = secretFindings(content, location, "public-export");
-  const text = content.toString("utf8");
+  const text = decodeUtf8(content);
+  if (text === null) {
+    results.push(finding("PUBLIC_CSV_UTF8", "public-export", location, "Public CSV is not valid UTF-8"));
+    return results;
+  }
   if (PRIVATE_ABSOLUTE_PATH.test(text)) {
     results.push(finding("PUBLIC_CSV_PRIVATE_PATH", "public-export", location, "Public CSV contains a private absolute path"));
   }
   try {
     const rows = parse(text, { bom: false, relax_column_count: false, skip_empty_lines: false }) as string[][];
     const header = rows[0] ?? [];
+    if (header.length === 0 || header.some((column) => column === "") || new Set(header).size !== header.length) {
+      results.push(finding("PUBLIC_CSV_HEADER", "public-export", location, "Public CSV header is missing, empty, or duplicated"));
+    }
     for (const column of header) {
       if (PRIVATE_COLUMN.test(column)) {
         results.push(finding("PUBLIC_CSV_PRIVATE_COLUMN", "public-export", `${location}:${column}`, "Public CSV exposes a private runtime column"));
@@ -335,9 +398,11 @@ function auditCsv(path: string, root: string): PublicationFinding[] {
   return results;
 }
 
-function parseJson(path: string): Record<string, unknown> | null {
+function parseJsonContent(content: Uint8Array): Record<string, unknown> | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const text = decodeUtf8(content);
+    if (text === null) return null;
+    const parsed: unknown = JSON.parse(text);
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : null;
@@ -346,37 +411,71 @@ function parseJson(path: string): Record<string, unknown> | null {
   }
 }
 
-function auditManifest(path: string, root: string): PublicationFinding[] {
-  const location = normalizePath(relative(root, path));
-  const document = parseJson(path);
+function parseJson(path: string): Record<string, unknown> | null {
+  return parseJsonContent(readFileSync(path));
+}
+
+function auditManifest(
+  content: Uint8Array,
+  location: string,
+  root: string,
+  prospectiveFiles: Map<string, Buffer>,
+): PublicationFinding[] {
+  const document = parseJsonContent(content);
   if (document === null) {
     return [finding("PUBLIC_MANIFEST_INVALID", "public-export", location, "Public manifest JSON is invalid")];
   }
-  const entries = Array.isArray(document.files)
-    ? document.files
-    : Array.isArray(document.outputs)
-      ? document.outputs
-      : [];
+  const groups: Array<{ entries: unknown[]; base: string }> = [];
+  if (Array.isArray(document.files)) groups.push({ entries: document.files, base: resolve(root, dirname(location)) });
+  if (Array.isArray(document.outputs)) groups.push({ entries: document.outputs, base: resolve(root, dirname(location)) });
+  if (Array.isArray(document.inputs)) {
+    const input = typeof document.input === "object" && document.input !== null
+      ? document.input as Record<string, unknown>
+      : null;
+    if (typeof input?.snapshotId !== "string" || input.snapshotId === "" || input.snapshotId.includes("/") || input.snapshotId.includes("..")) {
+      return [finding("PUBLIC_MANIFEST_ENTRY", "public-export", location, "Analysis manifest inputs lack a safe source snapshot identity")];
+    }
+    groups.push({ entries: document.inputs, base: resolve(root, "data/exports/snapshots", input.snapshotId) });
+  }
   const results: PublicationFinding[] = [];
-  for (const entry of entries) {
-    if (typeof entry !== "object" || entry === null) continue;
+  if (groups.length === 0) {
+    return [finding("PUBLIC_MANIFEST_ENTRY", "public-export", location, "Public manifest has no files/outputs array")];
+  }
+  for (const { entries, base } of groups) for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      results.push(finding("PUBLIC_MANIFEST_ENTRY", "public-export", location, "Public manifest contains a malformed entry"));
+      continue;
+    }
     const item = entry as Record<string, unknown>;
-    if (typeof item.path !== "string" || typeof item.sha256 !== "string") continue;
-    const candidate = resolve(dirname(path), item.path);
-    if (isAbsolute(item.path) || !inside(dirname(path), candidate)) {
+    if (typeof item.path !== "string" || item.path === "" || typeof item.sha256 !== "string" || !SHA256_PATTERN.test(item.sha256)) {
+      results.push(finding("PUBLIC_MANIFEST_ENTRY", "public-export", location, "Public manifest entry requires a relative path and SHA-256"));
+      continue;
+    }
+    const candidate = resolve(base, item.path);
+    if (isAbsolute(item.path) || !inside(base, candidate) || !inside(root, candidate)) {
       results.push(finding("PUBLIC_MANIFEST_PATH", "public-export", location, "Manifest path escapes its immutable snapshot"));
       continue;
     }
-    if (!existsSync(candidate) || !SHA256_PATTERN.test(item.sha256) || sha256(readFileSync(candidate)) !== item.sha256) {
+    const candidateLocation = normalizePath(relative(root, candidate));
+    const candidateContent = prospectiveFiles.get(candidateLocation);
+    if (candidateContent === undefined || sha256(candidateContent) !== item.sha256) {
       results.push(finding("PUBLIC_MANIFEST_HASH", "public-export", `${location}:${item.path}`, "Manifest file hash does not match"));
+      continue;
+    }
+    if (item.bytes !== undefined && (!Number.isSafeInteger(item.bytes) || item.bytes !== candidateContent.length)) {
+      results.push(finding("PUBLIC_MANIFEST_ENTRY", "public-export", `${location}:${item.path}`, "Manifest byte count does not match"));
     }
   }
   return results;
 }
 
-function auditLatest(path: string, root: string): PublicationFinding[] {
-  const location = normalizePath(relative(root, path));
-  const document = parseJson(path);
+function auditLatest(
+  content: Uint8Array,
+  location: string,
+  root: string,
+  prospectiveFiles: Map<string, Buffer>,
+): PublicationFinding[] {
+  const document = parseJsonContent(content);
   if (
     document === null
     || typeof document.snapshotDirectory !== "string"
@@ -384,21 +483,21 @@ function auditLatest(path: string, root: string): PublicationFinding[] {
   ) {
     return [finding("PUBLIC_LATEST_INVALID", "public-export", location, "Latest pointer JSON is invalid")];
   }
-  const base = dirname(path);
+  const base = resolve(root, dirname(location));
   const snapshot = resolve(base, document.snapshotDirectory);
   const manifest = resolve(snapshot, "manifest.json");
   if (isAbsolute(document.snapshotDirectory) || !inside(base, snapshot)) {
     return [finding("PUBLIC_MANIFEST_PATH", "public-export", location, "Latest pointer escapes its output root")];
   }
-  if (!existsSync(manifest) || !SHA256_PATTERN.test(document.manifestSha256) || sha256(readFileSync(manifest)) !== document.manifestSha256) {
+  const manifestLocation = normalizePath(relative(root, manifest));
+  const manifestContent = prospectiveFiles.get(manifestLocation);
+  if (manifestContent === undefined || !SHA256_PATTERN.test(document.manifestSha256) || sha256(manifestContent) !== document.manifestSha256) {
     return [finding("PUBLIC_MANIFEST_HASH", "public-export", location, "Latest pointer manifest hash does not match")];
   }
   return [];
 }
 
-function readmeClaims(root: string): ReadmeClaims {
-  const path = join(root, "README.md");
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+function readmeClaimsFromText(text: string): ReadmeClaims {
   return {
     researchPilot: /research pilot/iu.test(text),
     activeDevelopment: /active development/iu.test(text),
@@ -409,6 +508,108 @@ function readmeClaims(root: string): ReadmeClaims {
     acceptanceCommandDocumented: /npm run acceptance\s+--\s+--json/iu.test(text),
     acceptanceReportLinked: /docs\/acceptance-report\.md/iu.test(text),
   };
+}
+
+function auditFixtureHtml(content: Uint8Array, path: string): PublicationFinding[] {
+  if (!path.startsWith("tests/fixtures/") || !/\.html?$/iu.test(path)) return [];
+  const text = decodeUtf8(content);
+  if (text === null) {
+    return [finding("FIXTURE_UTF8", "public-export", path, "Sanitized HTML fixture is not valid UTF-8")];
+  }
+  if (FIXTURE_PRIVATE_CONTENT.test(text) || PRIVATE_ABSOLUTE_PATH.test(text)) {
+    return [finding("FIXTURE_PRIVATE_DATA", "public-export", path, "Sanitized HTML fixture contains cookie/session/address/private-path state")];
+  }
+  return [];
+}
+
+function documentationContentFindings(files: Map<string, Buffer>): PublicationFinding[] {
+  const findings: PublicationFinding[] = [];
+  const text = (path: string) => decodeUtf8(files.get(path) ?? Buffer.alloc(0)) ?? "";
+  const license = text("LICENSE");
+  if (!/MIT License/u.test(license)
+    || !/Copyright \(c\) 2026 RobbedChunk/u.test(license)
+    || !/Permission is hereby granted, free of charge/iu.test(license)) {
+    findings.push(finding("LICENSE_CONTENT", "documentation", "LICENSE", "MIT license text or author identity is incomplete"));
+  }
+  const security = text("SECURITY.md");
+  if (!/private/iu.test(security) || !/(?:rotate|revoke)/iu.test(security) || !/raw/iu.test(security)) {
+    findings.push(finding("SECURITY_CONTENT", "documentation", "SECURITY.md", "Security guidance must require private reporting, rotation, and no raw evidence"));
+  }
+  const sources = text("docs/sources.md");
+  if (!/BCB[\s\S]*EE069|EE069[\s\S]*BCB/iu.test(sources)
+    || !/IBGE[\s\S]*(?:POF|Pesquisa de Orçamentos Familiares)/iu.test(sources)
+    || !/SIDRA[\s\S]*7060/iu.test(sources)
+    || !/10\.1257\/jep\.30\.2\.151/iu.test(sources)) {
+    findings.push(finding("SOURCES_CONTENT", "documentation", "docs/sources.md", "Source documentation is missing a required official artifact or citation"));
+  }
+  return findings;
+}
+
+function auditAcceptanceArtifact(content: Uint8Array, path: string): PublicationFinding[] {
+  try {
+    const parsed: unknown = JSON.parse(decodeUtf8(content) ?? "");
+    if (path.endsWith("fresh-clone.json")) validateFreshCloneReceipt(parsed);
+    else if (path.endsWith("alert-drill.json")) validatePublicDrillReceipt(parsed, "alert");
+    else if (path.endsWith("backup-drill.json")) validatePublicDrillReceipt(parsed, "backup");
+    else if (path.endsWith("acceptance.json")) {
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("shape");
+      const report = parsed as Record<string, unknown>;
+      const milestones = report.milestones as Record<string, unknown> | undefined;
+      const topKeys = ["databaseSha256", "evaluatedCommit", "evidence", "generatedAt", "milestones", "overallStatus", "pendingGates", "publication", "schemaVersion", "timezone"];
+      if (Object.keys(report).sort().join("\0") !== topKeys.join("\0")
+        || report.schemaVersion !== 1
+        || typeof report.evaluatedCommit !== "string" || !COMMIT_PATTERN.test(report.evaluatedCommit)
+        || typeof report.databaseSha256 !== "string" || !SHA256_PATTERN.test(report.databaseSha256)
+        || report.timezone !== "America/Sao_Paulo"
+        || !["pass", "pending", "fail"].includes(String(report.overallStatus))
+        || typeof milestones !== "object" || milestones === null
+        || Object.keys(milestones).sort().join("\0") !== ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7"].join("\0")
+        || !Array.isArray(report.evidence) || !Array.isArray(report.pendingGates)
+        || typeof report.publication !== "object" || report.publication === null
+        || (report.publication as Record<string, unknown>).status !== "pass") {
+        throw new Error("shape");
+      }
+      const evidenceIds = new Set<string>();
+      for (const item of report.evidence) {
+        if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error("evidence");
+        const row = item as Record<string, unknown>;
+        if (typeof row.id !== "string" || evidenceIds.has(row.id)
+          || typeof row.source !== "string" || isAbsolute(row.source)
+          || typeof row.facts !== "object" || row.facts === null || Array.isArray(row.facts)
+          || Object.values(row.facts as Record<string, unknown>).some((fact) => fact !== null && !["string", "number", "boolean"].includes(typeof fact))) {
+          throw new Error("evidence");
+        }
+        evidenceIds.add(row.id);
+      }
+      const milestoneStatuses: string[] = [];
+      for (const id of ["M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7"]) {
+        const milestone = milestones[id] as Record<string, unknown> | undefined;
+        if (typeof milestone !== "object" || milestone === null
+          || !["pass", "pending", "fail"].includes(String(milestone.status))
+          || !Array.isArray(milestone.criteria) || milestone.criteria.length === 0) throw new Error("milestone");
+        for (const item of milestone.criteria) {
+          if (typeof item !== "object" || item === null || Array.isArray(item)) throw new Error("criterion");
+          const current = item as Record<string, unknown>;
+          if (typeof current.id !== "string" || !["pass", "pending", "fail"].includes(String(current.status))
+            || !Array.isArray(current.reasonCodes) || current.reasonCodes.some((code) => typeof code !== "string")
+            || !Array.isArray(current.evidenceIds) || current.evidenceIds.some((evidenceId) => typeof evidenceId !== "string" || !evidenceIds.has(evidenceId))) {
+            throw new Error("criterion");
+          }
+        }
+        milestoneStatuses.push(String(milestone.status));
+      }
+      const aggregate = milestoneStatuses.includes("fail") ? "fail" : milestoneStatuses.includes("pending") ? "pending" : "pass";
+      if (aggregate !== report.overallStatus) throw new Error("aggregation");
+    }
+    const serialized = JSON.stringify(parsed);
+    if (PRIVATE_ABSOLUTE_PATH.test(serialized)
+      || /"(?:stdout|stderr|ntfyTopic|rawHtml|rawOutput|topic|url)"\s*:/iu.test(serialized)) {
+      throw new Error("private field");
+    }
+    return [];
+  } catch {
+    return [finding("PUBLIC_ACCEPTANCE_SCHEMA", "public-export", path, "Public acceptance artifact has an invalid or non-sanitized schema")];
+  }
 }
 
 function deduplicate(findings: PublicationFinding[]): PublicationFinding[] {
@@ -446,6 +647,11 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
       throw new TypeError("Fresh-clone receipt runtime is invalid");
     }
   }
+  if (!/^v24\./u.test(String(runtimes.node)) || !/^11\./u.test(String(runtimes.npm))) {
+    throw new TypeError("Fresh-clone receipt runtime is outside the declared Node/npm range");
+  }
+  const expectedChecks = ["analysis", "publication", "setup", "smoke"];
+  const checkIds: string[] = [];
   for (const check of value.checks) {
     if (
       typeof check !== "object"
@@ -457,7 +663,13 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
     ) {
       throw new TypeError("Fresh-clone receipt check is invalid");
     }
+    checkIds.push((check as Record<string, unknown>).id as string);
   }
+  if (new Set(checkIds).size !== checkIds.length
+    || [...checkIds].sort().join("\0") !== expectedChecks.join("\0")) {
+    throw new TypeError("Fresh-clone receipt check IDs must be unique and complete");
+  }
+  const artifactPaths: string[] = [];
   for (const artifact of value.artifacts) {
     const item = artifact as Record<string, unknown>;
     if (
@@ -469,6 +681,13 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
     ) {
       throw new TypeError("Fresh-clone receipt artifact path must be relative and hashed");
     }
+    artifactPaths.push(item.path);
+  }
+  const analysisArtifacts = artifactPaths.filter((path) => /^analysis\/output\/snapshots\/[^/]+\/manifest\.json$/u.test(path));
+  const exportArtifacts = artifactPaths.filter((path) => /^data\/exports\/snapshots\/[^/]+\/manifest\.json$/u.test(path));
+  if (new Set(artifactPaths).size !== artifactPaths.length
+    || artifactPaths.length !== 2 || analysisArtifacts.length !== 1 || exportArtifacts.length !== 1) {
+    throw new TypeError("Fresh-clone receipt artifacts must be the unique generated manifests");
   }
   return input as FreshCloneReceipt;
 }
@@ -484,38 +703,80 @@ export async function auditPublication(
   const trackedRawHtml: PublicationFinding[] = [];
   const unsafeLinksOrSubmodules: PublicationFinding[] = [];
   const publicDataFindings: PublicationFinding[] = [];
+  const prospectiveFiles = new Map<string, Buffer>();
+  const worktreeFiles = new Map<string, Buffer>();
 
   for (const path of paths) {
     const absolute = resolve(root, path);
     if (!inside(root, absolute)) continue;
     const mode = modes.get(path);
-    let metadata;
-    try {
-      metadata = lstatSync(absolute);
-    } catch {
-      continue;
-    }
     if (mode === "160000") {
       unsafeLinksOrSubmodules.push(finding("TRACKED_SUBMODULE", "repository-shape", path, "Git submodules are outside the publication audit boundary"));
       continue;
     }
-    if (mode === "120000" || metadata.isSymbolicLink()) {
+    let metadata;
+    try {
+      metadata = lstatSync(absolute);
+    } catch {
+      metadata = undefined;
+    }
+    if (mode === "120000" || metadata?.isSymbolicLink() === true) {
       unsafeLinksOrSubmodules.push(finding("TRACKED_SYMLINK", "repository-shape", path, "Tracked symbolic links are not publication-safe"));
       continue;
     }
-    if (!metadata.isFile()) continue;
+    let content: Buffer;
+    if (mode !== undefined) {
+      try {
+        content = git(root, ["show", `:${path}`], "buffer");
+      } catch {
+        continue;
+      }
+    } else {
+      if (metadata?.isFile() !== true) continue;
+      content = readFileSync(absolute);
+    }
+    prospectiveFiles.set(path, content);
+    if (metadata?.isFile() === true) worktreeFiles.set(path, readFileSync(absolute));
     const kind = privatePathKind(path);
     if (kind === "raw") {
       trackedRawHtml.push(finding("TRACKED_RAW_HTML", "tracked-tree", path, "Runtime raw HTML/replay evidence must not be tracked"));
     } else if (kind === "private") {
       trackedPrivateArtifacts.push(finding("TRACKED_PRIVATE_ARTIFACT", "tracked-tree", path, "Private runtime material must not be tracked"));
     }
-    const content = readFileSync(absolute);
     trackedSecrets.push(...secretFindings(content, path, "tracked-tree"));
-    if (path.endsWith(".csv")) publicDataFindings.push(...auditCsv(absolute, root));
-    if (path.endsWith("/manifest.json")) publicDataFindings.push(...auditManifest(absolute, root));
+    publicDataFindings.push(...auditFixtureHtml(content, path));
+    if (path.endsWith(".csv")) publicDataFindings.push(...auditCsv(content, path));
+    if (mode !== undefined && metadata?.isFile() === true) {
+      const worktreeContent = worktreeFiles.get(path) ?? readFileSync(absolute);
+      if (!worktreeContent.equals(content)) {
+        trackedSecrets.push(...secretFindings(worktreeContent, path, "tracked-tree"));
+        publicDataFindings.push(...auditFixtureHtml(worktreeContent, path));
+        if (path.endsWith(".csv")) publicDataFindings.push(...auditCsv(worktreeContent, path));
+      }
+    }
+  }
+
+  for (const [path, content] of prospectiveFiles) {
+    if (path.endsWith("/manifest.json")) {
+      publicDataFindings.push(...auditManifest(content, path, root, prospectiveFiles));
+    }
     if (path === "data/exports/latest.json" || path === "analysis/output/latest.json") {
-      publicDataFindings.push(...auditLatest(absolute, root));
+      publicDataFindings.push(...auditLatest(content, path, root, prospectiveFiles));
+    }
+    if (/^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill)\.json)$/u.test(path)) {
+      publicDataFindings.push(...auditAcceptanceArtifact(content, path));
+    }
+  }
+  for (const [path, content] of worktreeFiles) {
+    if (prospectiveFiles.get(path)?.equals(content) === true) continue;
+    if (path.endsWith("/manifest.json")) {
+      publicDataFindings.push(...auditManifest(content, path, root, worktreeFiles));
+    }
+    if (path === "data/exports/latest.json" || path === "analysis/output/latest.json") {
+      publicDataFindings.push(...auditLatest(content, path, root, worktreeFiles));
+    }
+    if (/^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill)\.json)$/u.test(path)) {
+      publicDataFindings.push(...auditAcceptanceArtifact(content, path));
     }
   }
 
@@ -532,14 +793,45 @@ export async function auditPublication(
       }
     }
   }
+  unsafeLinksOrSubmodules.push(...historicalUnsafeShapes(root));
 
-  publicDataFindings.push(...auditDatabase(resolve(options.databasePath), root));
+  const temporaryDatabases = mkdtempSync(join(tmpdir(), "publication-sqlite-"));
+  try {
+    const auditedDatabasePaths = new Set<string>();
+    for (const [path, content] of prospectiveFiles) {
+      if (!/\.sqlite$/u.test(path)) continue;
+      const temporary = join(temporaryDatabases, `${sha256(path)}.sqlite`);
+      writeFileSync(temporary, content, { mode: 0o600 });
+      const sidecars = (["wal", "shm"] as const).map((suffix) => ({
+        suffix,
+        bytes: prospectiveFiles.get(`${path}-${suffix}`)?.length ?? 0,
+      }));
+      if (resolve(root, path) === resolve(options.databasePath)) {
+        const liveWal = `${resolve(options.databasePath)}-wal`;
+        if (existsSync(liveWal) && lstatSync(liveWal).size > 0) {
+          sidecars[0] = { suffix: "wal", bytes: lstatSync(liveWal).size };
+        }
+      }
+      publicDataFindings.push(...auditDatabase(temporary, root, path, sidecars));
+      auditedDatabasePaths.add(resolve(root, path));
+    }
+    for (const [path, content] of worktreeFiles) {
+      if (!/\.sqlite$/u.test(path) || prospectiveFiles.get(path)?.equals(content) === true) continue;
+      const temporary = join(temporaryDatabases, `${sha256(`worktree:${path}`)}.sqlite`);
+      writeFileSync(temporary, content, { mode: 0o600 });
+      const sidecars = (["wal", "shm"] as const).map((suffix) => ({ suffix, bytes: worktreeFiles.get(`${path}-${suffix}`)?.length ?? 0 }));
+      publicDataFindings.push(...auditDatabase(temporary, root, path, sidecars));
+    }
+    const configuredDatabase = resolve(options.databasePath);
+    if (existsSync(configuredDatabase)) {
+      publicDataFindings.push(...auditDatabase(configuredDatabase, root));
+    }
+  } finally {
+    rmSync(temporaryDatabases, { recursive: true, force: true });
+  }
 
-  const requiredDocsMissing = REQUIRED_DOCS.filter((path) => {
-    const absolute = join(root, path);
-    return !existsSync(absolute) || readFileSync(absolute).length === 0;
-  });
-  const claims = readmeClaims(root);
+  const requiredDocsMissing = REQUIRED_DOCS.filter((path) => (prospectiveFiles.get(path)?.length ?? 0) === 0);
+  const claims = readmeClaimsFromText(decodeUtf8(prospectiveFiles.get("README.md") ?? Buffer.alloc(0)) ?? "");
   const requiredClaims = [
     claims.researchPilot,
     claims.activeDevelopment,
@@ -547,10 +839,23 @@ export async function auditPublication(
     claims.noStatisticalValidationClaim,
     claims.rawHtmlExcluded,
     claims.outOfScopeExplicit,
+    claims.acceptanceCommandDocumented,
+    claims.acceptanceReportLinked,
   ];
-  const documentationFindings = requiredClaims.every(Boolean)
-    ? []
-    : [finding("README_CLAIMS", "documentation", "README.md", "README is missing one or more required research/limitation claims")];
+  const documentationFindings = [
+    ...(requiredClaims.every(Boolean)
+      ? []
+      : [finding("README_CLAIMS", "documentation", "README.md", "README is missing one or more required research/limitation/acceptance claims")]),
+    ...documentationContentFindings(prospectiveFiles),
+    ...documentationContentFindings(worktreeFiles),
+  ];
+  const worktreeReadme = join(root, "README.md");
+  if (existsSync(worktreeReadme)) {
+    const worktreeClaims = readmeClaimsFromText(readFileSync(worktreeReadme, "utf8"));
+    if (!Object.values(worktreeClaims).every(Boolean)) {
+      documentationFindings.push(finding("README_CLAIMS", "documentation", "README.md", "README worktree content is missing a required research/limitation/acceptance claim"));
+    }
+  }
   const porcelain = safeGit(root, ["status", "--porcelain=v1"]);
   const workingTreeClean = porcelain === "";
   const cleanlinessFindings = options.requireClean && !workingTreeClean
