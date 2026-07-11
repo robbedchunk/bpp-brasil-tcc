@@ -1239,12 +1239,17 @@ describe("acceptance status and evidence", () => {
       const path = join(root, "ops", "review-findings.json");
       await writeFile(path, JSON.stringify({
         schemaVersion: 1,
-        findings: [{ id: "open", milestone: "M5", severity: "critical", status: "open", fixCommit: null }],
+        findings: [
+          { id: "open", milestone: "M5", severity: "critical", status: "open", fixCommit: null },
+          { id: "earlier", milestone: "M3", severity: "important", status: "open", fixCommit: null },
+        ],
       }));
       execFileSync("git", ["add", "."], { cwd: root });
       execFileSync("git", ["commit", "-qm", "review state"], { cwd: root });
       const state = reviewFindingState(root, "M5", new Date("2026-07-10T12:00:00.000Z"));
       expect(state).toMatchObject({ valid: true, openCriticalOrImportant: 1 });
+      const publication = reviewFindingState(root, "M7", new Date("2026-07-10T12:00:00.000Z"));
+      expect(publication).toMatchObject({ valid: true, openCriticalOrImportant: 2 });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

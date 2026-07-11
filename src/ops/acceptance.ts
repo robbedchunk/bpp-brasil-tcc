@@ -1473,7 +1473,7 @@ export function reviewFindingState(
     if (typeof finding !== "object" || finding === null || Array.isArray(finding)
       || !exactObjectKeys(finding, ["fixCommit", "id", "milestone", "severity", "status"])
       || typeof finding.id !== "string" || finding.id === "" || ids.has(finding.id)
-      || !["M5", "M6", "M7"].includes(String(finding.milestone))
+      || !/^M[0-7]$/u.test(String(finding.milestone))
       || !["critical", "important", "minor"].includes(String(finding.severity))
       || !["open", "resolved"].includes(String(finding.status))
       || (resolved && (typeof finding.fixCommit !== "string" || !COMMIT.test(finding.fixCommit)
@@ -1483,7 +1483,12 @@ export function reviewFindingState(
     }
     if (typeof finding.id === "string") ids.add(finding.id);
   }
-  const scoped = findings.filter((finding) => finding.milestone === milestone);
+  // M7 is the final cross-milestone publication gate, so it also closes review
+  // findings discovered against earlier milestones. M5 and M6 retain their
+  // narrower local gates for faster diagnosis.
+  const scoped = milestone === "M7"
+    ? findings
+    : findings.filter((finding) => finding.milestone === milestone);
   const openCriticalOrImportant = scoped.filter((finding) => finding.status === "open"
     && (finding.severity === "critical" || finding.severity === "important")).length;
   const evidenceId = `file-${milestone.toLowerCase()}-review-findings`;
