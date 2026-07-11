@@ -21,7 +21,62 @@ import type {
 export const DEFAULT_EXPLORER_MODEL = "gpt-5.6-sol";
 
 const StrategyEnvelopeSchema = z.object({ strategy: StrategySchema }).strict();
-const STRATEGY_OUTPUT_SCHEMA = z.toJSONSchema(StrategyEnvelopeSchema);
+
+function nullableWireSchema(schema: unknown): unknown {
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
+    return { anyOf: [schema, { type: "null" }] };
+  }
+  const type = (schema as { type?: unknown }).type;
+  if (typeof type === "string") {
+    return {
+      ...schema,
+      type: type === "null" ? type : [type, "null"],
+    };
+  }
+  if (Array.isArray(type)) {
+    return {
+      ...schema,
+      type: type.includes("null") ? type : [...type, "null"],
+    };
+  }
+  return { anyOf: [schema, { type: "null" }] };
+}
+
+function codexWireSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(codexWireSchema);
+  if (value === null || typeof value !== "object") return value;
+
+  const schema = Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, codexWireSchema(child)]),
+  ) as Record<string, unknown>;
+  delete schema.propertyNames;
+  if ("oneOf" in schema) {
+    schema.anyOf = schema.oneOf;
+    delete schema.oneOf;
+  }
+  const objectType = schema.type === "object"
+    || (Array.isArray(schema.type) && schema.type.includes("object"));
+  const schemaAdditionalProperties = schema.additionalProperties !== null
+    && typeof schema.additionalProperties === "object"
+    && !Array.isArray(schema.additionalProperties);
+  if (objectType && schemaAdditionalProperties && !("properties" in schema)) {
+    schema.properties = {};
+    schema.required = [];
+  }
+  if (schema.properties !== null && typeof schema.properties === "object" && !Array.isArray(schema.properties)) {
+    const properties = schema.properties as Record<string, unknown>;
+    const previouslyRequired = new Set(
+      Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [],
+    );
+    for (const [key, property] of Object.entries(properties)) {
+      if (!previouslyRequired.has(key)) properties[key] = nullableWireSchema(property);
+    }
+    schema.required = Object.keys(properties);
+  }
+  return schema;
+}
+
+const STRATEGY_OUTPUT_SCHEMA = codexWireSchema(z.toJSONSchema(StrategyEnvelopeSchema));
 const MAX_ARTIFACT_BYTES = 1_000_000;
 const MAX_WORKSPACE_BYTES = 8_000_000;
 const MAX_WORKSPACE_ENTRIES = 128;
@@ -199,6 +254,31 @@ function codexConfigToml(
   return `${lines.join("\n")}\n`;
 }
 
+function stripOptionalNulls(value: unknown, schema: z.core.$ZodType): unknown {
+  if (schema instanceof z.ZodObject && value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const result: Record<string, unknown> = { ...value };
+    for (const [key, field] of Object.entries(schema.shape)) {
+      if (result[key] === null && field.isOptional() && !field.isNullable()) {
+        delete result[key];
+      } else if (key in result) {
+        result[key] = stripOptionalNulls(result[key], field);
+      }
+    }
+    return result;
+  }
+  if (schema instanceof z.ZodArray && Array.isArray(value)) {
+    return value.map((item) => stripOptionalNulls(item, schema.element));
+  }
+  if (schema instanceof z.ZodUnion || schema instanceof z.ZodDiscriminatedUnion) {
+    return schema.options.reduce(
+      (current, option) => stripOptionalNulls(current, option),
+      value,
+    );
+  }
+  if (schema instanceof z.ZodLazy) return stripOptionalNulls(value, schema.unwrap());
+  return value;
+}
+
 function parseEnvelope(text: string, source: string) {
   let parsed: unknown;
   try {
@@ -206,7 +286,7 @@ function parseEnvelope(text: string, source: string) {
   } catch {
     throw new Error(`${source} was not valid JSON`);
   }
-  return StrategyEnvelopeSchema.parse(parsed);
+  return StrategyEnvelopeSchema.parse(stripOptionalNulls(parsed, StrategyEnvelopeSchema));
 }
 
 function generationUsage(usage: CodexUsageLike) {
@@ -432,7 +512,12 @@ export class CodexStrategyGenerator implements StrategyGenerator {
             }
           }
         } catch (error) {
-          streamError = error instanceof Error ? error.message : String(error) || "Codex stream failed";
+          const thrownMessage = error instanceof Error
+            ? error.message
+            : String(error) || "Codex stream failed";
+          streamError = streamError === undefined
+            ? thrownMessage
+            : `${streamError}; ${thrownMessage}`;
         }
         const usage = completedUsage === null
           ? { inputTokens: 0, outputTokens: 0 }

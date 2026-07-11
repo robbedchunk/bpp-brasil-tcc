@@ -80,10 +80,66 @@ function streamed(
   };
 }
 
+function assertCodexWireSchema(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) assertCodexWireSchema(item);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+
+  const schema = value as Record<string, unknown>;
+  expect(schema).not.toHaveProperty("propertyNames");
+  expect(schema).not.toHaveProperty("oneOf");
+  const objectType = schema.type === "object"
+    || (Array.isArray(schema.type) && schema.type.includes("object"));
+  const schemaAdditionalProperties = schema.additionalProperties !== null
+    && typeof schema.additionalProperties === "object"
+    && !Array.isArray(schema.additionalProperties);
+  if (objectType && schemaAdditionalProperties) {
+    expect(schema).toHaveProperty("properties");
+    expect(schema).toHaveProperty("required");
+  }
+  if (schema.properties !== null && typeof schema.properties === "object" && !Array.isArray(schema.properties)) {
+    const properties = schema.properties as Record<string, unknown>;
+    expect(Array.isArray(schema.required)).toBe(true);
+    for (const key of Object.keys(properties)) {
+      expect(schema.required).toContain(key);
+    }
+  }
+  for (const child of Object.values(schema)) assertCodexWireSchema(child);
+}
+
 describe("Codex SDK strategy provider", () => {
   it("compares JSON semantically rather than by object property order", () => {
     expect(canonicalJson({ nested: { b: 2, a: 1 }, z: 0 }))
       .toBe(canonicalJson({ z: 0, nested: { a: 1, b: 2 } }));
+  });
+
+  it("derives a Codex-compatible wire schema from the Zod envelope", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-wire-schema-test-"));
+    roots.push(workspacePath);
+    let outputSchema: unknown;
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async (_prompt, turnOptions) => {
+            outputSchema = turnOptions?.outputSchema;
+            return streamed(JSON.stringify({ strategy }), usage(1, 1));
+          },
+        }),
+      }),
+    });
+
+    await provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    });
+
+    assertCodexWireSchema(outputSchema);
   });
 
   it("prefers the dedicated key and never consults cached authentication", () => {
@@ -491,6 +547,39 @@ describe("Codex SDK strategy provider", () => {
     });
   });
 
+  it("treats null optional fields in the final response as absent", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-null-fields-test-"));
+    roots.push(workspacePath);
+    const responseWithNullOptionalField = {
+      strategy: {
+        ...strategy,
+        selectors: {
+          ...strategy.selectors,
+          title: [{ selector: ".product-title", attribute: null }],
+        },
+      },
+    };
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => {
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
+            return streamed(JSON.stringify(responseWithNullOptionalField), usage(1, 1));
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({ status: "candidate", strategy });
+  });
+
   it("retains streamed usage when the SDK generator throws after turn completion", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-stream-error-"));
     roots.push(workspacePath);
@@ -522,6 +611,38 @@ describe("Codex SDK strategy provider", () => {
         reasoningOutputTokens: 9,
       },
       error: expect.stringMatching(/exited with code 1/iu),
+    });
+  });
+
+  it("prefers a captured stream failure over the SDK exit-code error", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-stream-failure-test-"));
+    roots.push(workspacePath);
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => ({
+            events: (async function* () {
+              yield { type: "turn.started" as const };
+              yield { type: "turn.failed" as const, error: { message: "OpenAI rejected the output schema" } };
+              yield { type: "turn.completed" as const, usage: usage(700, 80, 30, 9) };
+              throw new Error("Codex Exec exited with code 1: Reading prompt from stdin");
+            })(),
+          }),
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "failed",
+      usage: { inputTokens: 700, outputTokens: 80 },
+      error: "OpenAI rejected the output schema; Codex Exec exited with code 1: Reading prompt from stdin",
     });
   });
 
