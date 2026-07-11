@@ -1,0 +1,5 @@
+date,covered_weight_pct_total_ipca,total_food_at_home_weight_pct_total_ipca,coverage_fraction,covered_subitem_count,retailer_count,product_pair_count,unclassified_count,no_healthy_run_count,unavailable_count,carried_expired_count,no_denominator_count,invalid_price_count
+2026-04-30,8.0000,12.1181,0.660169496865,2,2,0,3,0,0,0,0,0
+2026-05-31,8.0000,12.1181,0.660169496865,2,2,40,3,0,1,0,2,0
+2026-06-15,6.0000,12.1181,0.495127537233,1,2,0,4,0,0,0,0,0
+2026-06-30,6.0000,12.1181,0.495127537233,1,2,20,4,1,0,0,1,0

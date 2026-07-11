@@ -13,6 +13,7 @@ if [[ "$(npm --version | cut -d. -f1)" != "11" ]]; then
 fi
 
 npm ci
+"$PROJECT_ROOT/ops/setup-analysis.sh"
 
 if ! node --input-type=module -e \
   'import { existsSync } from "node:fs"; import { chromium } from "playwright"; process.exit(existsSync(chromium.executablePath()) ? 0 : 1)'; then

@@ -89,6 +89,10 @@ describe("index missingness", () => {
     seedObservation(database, { id: "o2", productId: "p1", runId: "d2", day: "2026-06-02", price: 1_100 });
 
     expect(buildDailyIndex(database).productRelatives).toEqual([]);
+    expect(buildDailyIndex(database, { cutoffAt: "2026-01-01T12:00:00.000Z" }))
+      .toMatchObject({ productRelatives: expect.any(Array) });
+    expect(buildDailyIndex(database, { cutoffAt: "2026-01-01T12:00:00.000Z" }).productRelatives)
+      .toHaveLength(1);
     expect(buildDailyIndex(database, { classificationVersion: 1 }).productRelatives).toHaveLength(1);
     database.prepare("UPDATE products SET active = 0 WHERE id = 'p1'").run();
     expect(buildDailyIndex(database, { classificationVersion: 1 }).productRelatives).toHaveLength(1);

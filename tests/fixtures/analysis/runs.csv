@@ -1,0 +1,6 @@
+run_id,retailer_id,retailer_name,collection_day,stage,status,attempted,ok,failed,success_rate,strategy_id,strategy_version,started_at,finished_at,error_category
+run-1a,r1,Mercado Um,2026-05-30,collect,partial,10,5,5,0.5,s1,1,2026-05-30T06:00:00.000Z,2026-05-30T06:10:00.000Z,parse
+run-1b,r1,Mercado Um,2026-05-30,collect,completed,30,25,5,0.833333333333,s2,2,2026-05-30T07:00:00.000Z,2026-05-30T07:10:00.000Z,
+run-2,r2,Mercado Dois,2026-05-30,collect,completed,20,19,1,0.95,s3,1,2026-05-30T06:00:00.000Z,2026-05-30T06:10:00.000Z,
+run-3,r1,Mercado Um,2026-06-01,collect,completed,20,18,2,0.9,s2,2,2026-06-01T06:00:00.000Z,2026-06-01T06:10:00.000Z,
+run-4,r2,Mercado Dois,2026-06-02,collect,failed,20,0,20,0,s3,1,2026-06-02T06:00:00.000Z,2026-06-02T06:10:00.000Z,http-403

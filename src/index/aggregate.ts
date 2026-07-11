@@ -65,6 +65,8 @@ function aggregateRelatives(
       day: first.day,
       previousDay: first.previousDay,
       retailerId: first.retailerId,
+      retailerName: products.find((product) => product.productId === first.productId)
+        ?.retailerName ?? first.retailerId,
       ipcaItemId: first.ipcaItemId,
       ipcaCode: first.ipcaCode,
       relative: geometricMean(group.map((value) => value.relative)).toFixed(12),

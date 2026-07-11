@@ -1,0 +1,77 @@
+{
+  "caveats": [
+    "sem validação estatística",
+    "não é intervalo de confiança",
+    "índice experimental e faixa descritiva entre varejistas",
+    "preço promocional quando positivo; carregamento por produto limitado a sete dias",
+    "média igual entre varejistas e pesos POF renormalizados sobre subitens cobertos",
+    "painel por CEP e série oficial SNIPC São Paulo N7 têm definições geográficas distintas"
+  ],
+  "generatedAt": "2026-07-11T01:37:19.878Z",
+  "input": {
+    "manifestSha256": "9058c2a807bff2f79d902b1077377905fb3e8c27bab9babf1e4d53926ab4db87",
+    "snapshotId": "2026-W28-2026-07-11T01-37-19-878Z-e5967b853c38"
+  },
+  "methodVersion": "tcc-food-at-home-v1",
+  "outputs": [
+    {
+      "bytes": 55179,
+      "path": "success-rate.png",
+      "rows": null,
+      "sha256": "4275a3f1abab3ab15bd20610c13dd4ee3a508e4e6a8fe0095987c5dc40865dfb"
+    },
+    {
+      "bytes": 116,
+      "path": "healing-events.csv",
+      "rows": 0,
+      "sha256": "c66114d758d9cfad799f111c0389ec79adeabecb74403c3649e674a0f0163cef"
+    },
+    {
+      "bytes": 78842,
+      "path": "index-vs-ipca.png",
+      "rows": null,
+      "sha256": "5fc3ce006215d924f9dea917ea0a2c426546e3fa212cccfbc2654e3d181a9732"
+    },
+    {
+      "bytes": 134,
+      "path": "index-coverage-and-dispersion.csv",
+      "rows": 0,
+      "sha256": "4cd246caf9c2e3b48cd5c51f6145c9a7e1270b3a10df69ca4e08dd531df28f54"
+    }
+  ],
+  "plotting": {
+    "backend": "Agg",
+    "font": "DejaVu Sans",
+    "indexComparisonPixels": [
+      1600,
+      1200
+    ],
+    "successRateDateLimits": [
+      "2026-07-09",
+      "2026-07-11"
+    ],
+    "successRateDateLocator": "daily",
+    "successRatePixels": [
+      1600,
+      900
+    ]
+  },
+  "schemaVersion": 1,
+  "snapshotId": "2026-W28-2026-07-11T01-37-19-878Z-e5967b853c38",
+  "statuses": {
+    "noIndexData": true,
+    "noOfficialOverlap": true
+  },
+  "summaries": {
+    "dailySuccessRates": {
+      "extra-mercado:2026-07-10": 0.508196721311,
+      "pao-de-acucar:2026-07-10": 0.508196721311
+    }
+  },
+  "versions": {
+    "matplotlib": "3.11.0",
+    "numpy": "2.5.1",
+    "pandas": "3.0.3",
+    "python": "3.14.4"
+  }
+}

@@ -100,3 +100,19 @@
   315/category 7171, locality N7/3501. The official N7 São Paulo series and the
   retailer CEP panel have different geographic definitions; published figures
   must retain that caveat and never upsample monthly official values to daily.
+
+## 2026-07-10 — M6 reproducible analysis and weekly publication
+
+- Thesis figures and tables are generated only from a verified immutable CSV
+  snapshot. The Python worker checks the export manifest schemas and SHA-256
+  hashes before reading data; it never opens or mutates the evidence database.
+- The fully pinned analysis environment lives under ignored
+  `var/analysis-venv/` and is rebuilt whenever either the requirements digest or
+  Python major/minor version changes.
+- The weekly publication timer runs on Monday around 08:00
+  `America/Sao_Paulo`, after the daily collection window, with a persistent
+  randomized delay of up to 30 minutes. It preserves all five existing
+  production timers.
+- Success rates and healing counts are descriptive operational evidence.
+  Retailer dispersion is likewise descriptive; no plot or table represents it
+  as a confidence interval, statistical validation, or causal model result.

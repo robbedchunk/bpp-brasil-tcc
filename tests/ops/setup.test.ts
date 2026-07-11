@@ -217,4 +217,56 @@ exec "\${REAL_SQLITE3:?}" "\$@"
       stdout: `${node24}\n`,
     });
   });
+
+  it("installs the pinned analysis environment only when requirements change", async () => {
+    const directory = await temporaryDirectory("precos-analysis-setup-");
+    const fakePython = join(directory, "python3");
+    const venv = join(directory, "venv");
+    const logPath = join(directory, "pip.log");
+    await writeFile(fakePython, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  printf 'Python 3.14.4\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "-c" ]]; then
+  printf '3.14\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "-m" && "\${2:-}" == "venv" ]]; then
+  mkdir -p "\$3/bin"
+  cp -- "\$0" "\$3/bin/python"
+  chmod 0755 "\$3/bin/python"
+  exit 0
+fi
+if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
+  printf '%s\n' "\$*" >> "\${ANALYSIS_SETUP_LOG:?}"
+  exit 0
+fi
+exit 1
+`);
+    await chmod(fakePython, 0o755);
+    const env = {
+      ...process.env,
+      ANALYSIS_PYTHON: fakePython,
+      ANALYSIS_VENV: venv,
+      ANALYSIS_SETUP_LOG: logPath,
+    };
+
+    expect(await run("bash", ["ops/setup-analysis.sh"], env))
+      .toEqual({ exitCode: 0, stderr: "", stdout: "analysis-setup: ready.\n" });
+    expect(await run("bash", ["ops/setup-analysis.sh"], env))
+      .toEqual({ exitCode: 0, stderr: "", stdout: "analysis-setup: ready.\n" });
+    expect((await readFile(logPath, "utf8")).trim().split("\n")).toHaveLength(1);
+    await writeFile(
+      fakePython,
+      (await readFile(fakePython, "utf8"))
+        .replaceAll("3.14", "3.15"),
+    );
+    expect(await run("bash", ["ops/setup-analysis.sh"], env))
+      .toEqual({ exitCode: 0, stderr: "", stdout: "analysis-setup: ready.\n" });
+    expect((await readFile(logPath, "utf8")).trim().split("\n")).toHaveLength(2);
+    expect(await readFile(join(venv, ".environment-version"), "utf8"))
+      .toMatch(/^requirements_sha256=[0-9a-f]{64}\npython_version=3\.15\n$/u);
+  });
 });

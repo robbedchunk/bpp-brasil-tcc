@@ -7,7 +7,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { exportResearchData } from "../../src/index/export.js";
 import type { SidraClient } from "../../src/index/types.js";
-import { indexDatabase, seedItem, seedRetailer } from "./helpers.js";
+import {
+  indexDatabase,
+  seedItem,
+  seedObservation,
+  seedProduct,
+  seedRetailer,
+  seedRun,
+} from "./helpers.js";
 
 const databases: ReturnType<typeof indexDatabase>[] = [];
 const directories: string[] = [];
@@ -84,5 +91,49 @@ describe("research snapshot export", () => {
     })).rejects.toThrow(/SIDRA unavailable/);
     expect(await readFile(join(outputRoot, "latest.json"), "utf8")).toBe(before);
     expect(first.snapshotId).toBeTruthy();
+  });
+
+  it("materializes one coherent database view before the SIDRA network boundary", async () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedRetailer(database, "r1");
+    const outputRoot = await mkdtemp(join(tmpdir(), "precos-export-coherent-"));
+    directories.push(outputRoot);
+    const manifest = await exportResearchData(database, {
+      outputRoot,
+      now: () => new Date("2026-07-13T11:00:00.000Z"),
+      sidraClient: {
+        async fetchSeries() {
+          seedRun(database, { id: "arrived-during-network", retailerId: "r1", day: "2026-07-13" });
+          return emptySidra.fetchSeries("2026-07", "2026-07");
+        },
+      },
+    });
+    expect(manifest.sources.database.counts.runs).toBe(0);
+    const runsEvidence = manifest.files.find((file) => file.path === "runs.csv");
+    expect(runsEvidence?.rows).toBe(0);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM runs").get()).toEqual({ count: 1 });
+  });
+
+  it("exports the registered retailer name for retailer/subitem rows", async () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedRetailer(database, "r1");
+    seedItem(database, "item-a", "1101002", "Arroz", "0.4030");
+    seedProduct(database, { id: "p1", retailerId: "r1", itemId: "item-a" });
+    seedRun(database, { id: "d1", retailerId: "r1", day: "2026-06-01" });
+    seedRun(database, { id: "d2", retailerId: "r1", day: "2026-06-02" });
+    seedObservation(database, { id: "o1", productId: "p1", runId: "d1", day: "2026-06-01", price: 1_000 });
+    seedObservation(database, { id: "o2", productId: "p1", runId: "d2", day: "2026-06-02", price: 1_100 });
+    const outputRoot = await mkdtemp(join(tmpdir(), "precos-export-name-"));
+    directories.push(outputRoot);
+    const manifest = await exportResearchData(database, {
+      outputRoot, sidraClient: emptySidra, now: () => new Date("2026-07-13T11:00:00.000Z"),
+    });
+    const csv = await readFile(
+      join(outputRoot, manifest.snapshotDirectory, "retailer_subitem_daily.csv"),
+      "utf8",
+    );
+    expect(csv).toContain("r1,Retailer r1,item-a");
   });
 });

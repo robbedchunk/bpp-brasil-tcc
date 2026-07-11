@@ -8,6 +8,7 @@ export const TOTAL_FOOD_AT_HOME_WEIGHT = "12.1181" as const;
 export interface BuildDailyIndexOptions {
   throughDay?: string;
   classificationVersion?: number;
+  cutoffAt?: string;
 }
 
 export interface ProductRelative {
@@ -32,6 +33,7 @@ export interface RetailerSubitemPoint {
   day: string;
   previousDay: string;
   retailerId: string;
+  retailerName: string;
   ipcaItemId: string;
   ipcaCode: string;
   relative: string;

@@ -260,8 +260,6 @@ function indexCsv(
   sidra: SidraFetchResult | null,
   currentMonth: string,
 ): CsvDefinition[] {
-  const names = new Map<string, string>();
-  for (const row of series.retailerSubitems) names.set(row.retailerId, row.retailerId);
   return [
     {
       name: "product_relatives.csv",
@@ -271,7 +269,7 @@ function indexCsv(
     {
       name: "retailer_subitem_daily.csv",
       columns: ["date", "previous_date", "retailer_id", "retailer_name", "ipca_item_id", "ipca_code", "relative", "product_pair_count"],
-      rows: series.retailerSubitems.map((point) => [point.day, point.previousDay, point.retailerId, names.get(point.retailerId) ?? point.retailerId, point.ipcaItemId, point.ipcaCode, point.relative, point.productPairCount]),
+      rows: series.retailerSubitems.map((point) => [point.day, point.previousDay, point.retailerId, point.retailerName, point.ipcaItemId, point.ipcaCode, point.relative, point.productPairCount]),
     },
     {
       name: "subitem_daily.csv",
@@ -319,8 +317,25 @@ export async function exportResearchData(
   const outputRoot = resolve(options.outputRoot);
   const snapshotsRoot = join(outputRoot, "snapshots");
   ensureInside(outputRoot, snapshotsRoot);
-  const range = observationRange(database);
   const currentMonth = monthFromDay(saoPauloDay(now));
+  const databaseSnapshot = database.transaction(() => {
+    const range = observationRange(database);
+    const series = buildDailyIndex(database, {
+      cutoffAt: now.toISOString(),
+      ...(options.throughDay === undefined ? {} : { throughDay: options.throughDay }),
+      ...(options.classificationVersion === undefined
+        ? {}
+        : { classificationVersion: options.classificationVersion }),
+    });
+    return {
+      range,
+      series,
+      operational: operationalCsv(database),
+      ipca: ipcaEvidence(database),
+      database: databaseEvidence(database),
+    };
+  }).deferred();
+  const range = databaseSnapshot.range;
   const startMonth = range.first_day === null ? currentMonth : monthFromDay(range.first_day);
   const endMonth = range.last_day === null ? currentMonth : monthFromDay(range.last_day);
   const sidraClient = options.sidraClient ?? new OfficialSidraClient();
@@ -339,15 +354,10 @@ export async function exportResearchData(
     });
   }
 
-  const series = buildDailyIndex(database, {
-    ...(options.throughDay === undefined ? {} : { throughDay: options.throughDay }),
-    ...(options.classificationVersion === undefined
-      ? {}
-      : { classificationVersion: options.classificationVersion }),
-  });
+  const series = databaseSnapshot.series;
   const definitions = [
     ...indexCsv(series, sidra, currentMonth),
-    ...operationalCsv(database),
+    ...databaseSnapshot.operational,
   ].sort((left, right) => left.name.localeCompare(right.name));
   const encoded = definitions.map((definition) => ({ definition, bytes: csvBytes(definition) }));
   const digest = sha256(Buffer.concat(encoded.map(({ bytes }) => bytes))).slice(0, 12);
@@ -406,9 +416,9 @@ export async function exportResearchData(
       snapshotDirectory,
       files,
       sources: {
-        ipcaWeights: ipcaEvidence(database),
+        ipcaWeights: databaseSnapshot.ipca,
         sidra: sourceEvidence,
-        database: databaseEvidence(database),
+        database: databaseSnapshot.database,
       },
       parameters: {
         promoPreferred: true,

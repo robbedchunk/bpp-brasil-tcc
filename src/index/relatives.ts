@@ -78,6 +78,10 @@ export function loadIndexInput(
   options: BuildDailyIndexOptions = {},
 ): IndexInput {
   const throughDay = options.throughDay === undefined ? undefined : strictDay(options.throughDay);
+  const cutoffAt = options.cutoffAt;
+  if (cutoffAt !== undefined && (
+    !Number.isFinite(Date.parse(cutoffAt)) || new Date(cutoffAt).toISOString() !== cutoffAt
+  )) throw new Error("cutoffAt must be a canonical ISO timestamp");
   if (options.classificationVersion !== undefined && (
     !Number.isSafeInteger(options.classificationVersion) || options.classificationVersion <= 0
   )) throw new Error("classificationVersion must be a positive safe integer");
@@ -98,6 +102,9 @@ export function loadIndexInput(
     const versionClause = options.classificationVersion === undefined
       ? ""
       : "AND candidate.version = @classificationVersion";
+    const cutoffClause = cutoffAt === undefined
+      ? ""
+      : "AND candidate.created_at <= @cutoffAt";
     const productRows = database.prepare(`
       SELECT p.id AS product_id, p.retailer_id, retailer.name AS retailer_name,
              c.id AS classification_id, c.version AS classification_version,
@@ -108,14 +115,17 @@ export function loadIndexInput(
       JOIN classifications c ON c.id = (
         SELECT candidate.id
         FROM classifications candidate
-        WHERE candidate.product_id = p.id ${versionClause}
+        WHERE candidate.product_id = p.id ${versionClause} ${cutoffClause}
         ORDER BY candidate.version DESC, candidate.created_at DESC, candidate.id DESC
         LIMIT 1
       )
       JOIN ipca_items item ON item.id = c.ipca_item_id AND item.in_scope = 1
       WHERE p.in_scope = 1
       ORDER BY p.retailer_id, p.id
-    `).all({ classificationVersion: options.classificationVersion ?? null }) as Array<{
+    `).all({
+      classificationVersion: options.classificationVersion ?? null,
+      cutoffAt: cutoffAt ?? null,
+    }) as Array<{
       product_id: string;
       retailer_id: string;
       retailer_name: string;
@@ -190,13 +200,16 @@ export function loadIndexInput(
         SELECT 1 FROM classifications c
         WHERE c.id = (
           SELECT candidate.id FROM classifications candidate
-          WHERE candidate.product_id = p.id ${versionClause}
+          WHERE candidate.product_id = p.id ${versionClause} ${cutoffClause}
           ORDER BY candidate.version DESC, candidate.created_at DESC, candidate.id DESC
           LIMIT 1
         ) AND c.ipca_item_id IS NOT NULL
       )
       GROUP BY p.retailer_id
-    `).all({ classificationVersion: options.classificationVersion ?? null }) as Array<{
+    `).all({
+      classificationVersion: options.classificationVersion ?? null,
+      cutoffAt: cutoffAt ?? null,
+    }) as Array<{
       retailer_id: string;
       count: number;
     }>;

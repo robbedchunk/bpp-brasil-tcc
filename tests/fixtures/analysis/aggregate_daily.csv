@@ -1,0 +1,5 @@
+date,previous_date,chain_segment,daily_relative,index_level,covered_weight_pct_total_ipca,total_food_at_home_weight_pct_total_ipca,coverage_fraction,covered_subitem_count,retailer_count,product_pair_count,descriptive_low_relative,descriptive_high_relative,method_version
+2026-04-30,,1,,100.000000000000,8.0000,12.1181,0.660169496865,2,2,0,,,tcc-food-at-home-v1
+2026-05-31,2026-04-30,1,1.020000000000,102.000000000000,8.0000,12.1181,0.660169496865,2,2,40,1.010000000000,1.030000000000,tcc-food-at-home-v1
+2026-06-15,,2,,100.000000000000,6.0000,12.1181,0.495127537233,1,2,0,,,tcc-food-at-home-v1
+2026-06-30,2026-06-15,2,1.040000000000,104.000000000000,6.0000,12.1181,0.495127537233,1,2,20,1.020000000000,1.060000000000,tcc-food-at-home-v1

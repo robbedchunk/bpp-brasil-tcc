@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "snapshotId": "fixture-snapshot",
+  "generatedAt": "2026-07-10T12:00:00.000Z",
+  "timezone": "America/Sao_Paulo",
+  "methodVersion": "tcc-food-at-home-v1",
+  "status": "complete",
+  "snapshotDirectory": "snapshots/fixture-snapshot",
+  "files": [
+    {
+      "path": "runs.csv",
+      "sha256": "8621ed7460a24092a9fa90a3fee19793b9047c1df3db92a1efde384a9386bb16",
+      "bytes": 769,
+      "rows": 5,
+      "columns": [
+        "run_id",
+        "retailer_id",
+        "retailer_name",
+        "collection_day",
+        "stage",
+        "status",
+        "attempted",
+        "ok",
+        "failed",
+        "success_rate",
+        "strategy_id",
+        "strategy_version",
+        "started_at",
+        "finished_at",
+        "error_category"
+      ]
+    },
+    {
+      "path": "healing_events.csv",
+      "sha256": "e93bd5924f4df57ad04c80b3474193fe760935bc2309921cfc3c8c3545be005c",
+      "bytes": 439,
+      "rows": 2,
+      "columns": [
+        "event_id",
+        "retailer_id",
+        "retailer_name",
+        "purpose",
+        "status",
+        "onset_run_id",
+        "previous_strategy_id",
+        "successor_strategy_id",
+        "attempts",
+        "tier_from",
+        "tier_to",
+        "drift_started_at",
+        "detected_at",
+        "recovered_at",
+        "duration_seconds"
+      ]
+    },
+    {
+      "path": "aggregate_daily.csv",
+      "sha256": "9a349d79cb052da74f90deff266b49f93de11ebe29c9ce718b75d41cec383626",
+      "bytes": 737,
+      "rows": 4,
+      "columns": [
+        "date",
+        "previous_date",
+        "chain_segment",
+        "daily_relative",
+        "index_level",
+        "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca",
+        "coverage_fraction",
+        "covered_subitem_count",
+        "retailer_count",
+        "product_pair_count",
+        "descriptive_low_relative",
+        "descriptive_high_relative",
+        "method_version"
+      ]
+    },
+    {
+      "path": "coverage_daily.csv",
+      "sha256": "c9c613d002bdfaa1d923e4f5f4432237fcfc08e73f8ed656881e73d0d50cf1ce",
+      "bytes": 509,
+      "rows": 4,
+      "columns": [
+        "date",
+        "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca",
+        "coverage_fraction",
+        "covered_subitem_count",
+        "retailer_count",
+        "product_pair_count",
+        "unclassified_count",
+        "no_healthy_run_count",
+        "unavailable_count",
+        "carried_expired_count",
+        "no_denominator_count",
+        "invalid_price_count"
+      ]
+    },
+    {
+      "path": "monthly_comparison.csv",
+      "sha256": "69e3f715d5f24ef888b41a14957db41bc03337020f39a1280994432e60101363",
+      "bytes": 155,
+      "rows": 2,
+      "columns": [
+        "month",
+        "experimental_variation_pct",
+        "official_variation_pct",
+        "status",
+        "experimental_chain_segment"
+      ]
+    }
+  ]
+}

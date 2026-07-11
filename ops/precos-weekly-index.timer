@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot the experimental index every Monday
+After=precos-daily.timer precos-weekly-discovery.timer
+
+[Timer]
+OnCalendar=Mon *-*-* 08:00:00 America/Sao_Paulo
+RandomizedDelaySec=30m
+Persistent=true
+Unit=precos-weekly-index.service
+
+[Install]
+WantedBy=timers.target
