@@ -25,6 +25,7 @@ import {
   readStrategyValidationEvidence,
   readValidationVerificationPublicKey,
   validationReceiptSha256,
+  type StrategyValidationEvidence,
 } from "../strategies/validation-evidence.js";
 import type {
   CandidateValidationContext,
@@ -128,6 +129,18 @@ async function publishImmutableReceipt(source: string, destination: string): Pro
   return created;
 }
 
+function boundReceiptSha256(
+  database: Database.Database,
+  receiptPath: string,
+): string | null {
+  const row = database.prepare(
+    `SELECT receipt_sha256
+     FROM strategy_validation_evidence
+     WHERE receipt_path = ?`,
+  ).get(receiptPath) as { receipt_sha256: string } | undefined;
+  return row?.receipt_sha256 ?? null;
+}
+
 function databaseFile(database: Database.Database): string {
   const name = database.name;
   if (name === "" || name === ":memory:") {
@@ -153,6 +166,57 @@ export function createTrustedCandidateValidator(
       .find((candidate) => candidate.id === context.retailerId);
     if (config === undefined) {
       throw new Error(`Retailer config ${context.retailerId} is unavailable for trusted validation`);
+    }
+    const relativePath = canonicalReceiptPath(context);
+    const destination = resolve(projectRoot, relativePath);
+    const resolvedRelative = relative(projectRoot, destination).split(sep).join("/");
+    if (resolvedRelative !== relativePath) {
+      throw new Error("Trusted validation receipt escaped its canonical project path");
+    }
+    const publicKey = readValidationVerificationPublicKey(
+      join(projectRoot, "ops/validation-attestation-public.pem"),
+    );
+    const readCanonical = (): StrategyValidationEvidence =>
+      readStrategyValidationEvidence(destination, {
+        retailerId: context.retailerId,
+        purpose: context.purpose,
+        strategyVersion: context.strategyVersion,
+        strategy,
+        verificationPublicKey: publicKey,
+        authoritativeRefs: refs,
+      });
+    try {
+      const recovered = readCanonical();
+      if (recovered.activatable !== true) {
+        throw new Error("Canonical candidate receipt is not activatable");
+      }
+      const recoveredSha256 = validationReceiptSha256(recovered);
+      const boundSha256 = boundReceiptSha256(options.database, relativePath);
+      if (boundSha256 !== null && boundSha256 !== recoveredSha256) {
+        throw new Error("Canonical candidate receipt differs from its immutable database binding");
+      }
+      return {
+        attempted: recovered.attempted,
+        valid: recovered.valid,
+        score: recovered.score,
+        activatable: true,
+        receipt: {
+          path: relativePath,
+          sha256: recoveredSha256,
+          evidence: recovered,
+        },
+      };
+    } catch (error) {
+      const bound = boundReceiptSha256(options.database, relativePath);
+      if (bound !== null) {
+        throw new Error(
+          `Bound validation receipt ${relativePath} cannot be recovered for this candidate`,
+          { cause: error },
+        );
+      }
+      await unlink(destination).catch((unlinkError: unknown) => {
+        if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") throw unlinkError;
+      });
     }
     const scratchRoot = join(projectRoot, "var/validation-candidates");
     await mkdir(scratchRoot, { recursive: true, mode: 0o700 });
@@ -203,11 +267,7 @@ export function createTrustedCandidateValidator(
       if (typeof summary.path !== "string") {
         throw new Error("Trusted validation runner returned an invalid receipt path");
       }
-      const publicKey = readValidationVerificationPublicKey(resolve(
-        options.verificationPublicKeyPath
-          ?? join(projectRoot, "ops/validation-attestation-public.pem"),
-      ));
-      const evidence = readStrategyValidationEvidence(resolve(summary.path), {
+      let evidence = readStrategyValidationEvidence(resolve(summary.path), {
         retailerId: context.retailerId,
         purpose: context.purpose,
         strategyVersion: context.strategyVersion,
@@ -215,14 +275,16 @@ export function createTrustedCandidateValidator(
         verificationPublicKey: publicKey,
         authoritativeRefs: refs,
       });
-      const relativePath = canonicalReceiptPath(context);
-      const destination = resolve(projectRoot, relativePath);
-      const receiptCreated = evidence.activatable
-        ? await publishImmutableReceipt(resolve(summary.path), destination)
-        : false;
-      const resolvedRelative = relative(projectRoot, destination).split(sep).join("/");
-      if (resolvedRelative !== relativePath) {
-        throw new Error("Trusted validation receipt escaped its canonical project path");
+      if (evidence.activatable) {
+        try {
+          await publishImmutableReceipt(resolve(summary.path), destination);
+        } catch (error) {
+          try {
+            evidence = readCanonical();
+          } catch {
+            throw error;
+          }
+        }
       }
       return {
         attempted: evidence.attempted,
@@ -235,10 +297,6 @@ export function createTrustedCandidateValidator(
                 path: relativePath,
                 sha256: validationReceiptSha256(evidence),
                 evidence,
-                verificationPublicKey: publicKey,
-                ...(receiptCreated
-                  ? { cleanup: async () => unlink(destination).catch(() => undefined) }
-                  : {}),
               },
             }
           : {}),

@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 
-import { createHash, createPublicKey, randomUUID, type KeyObject } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  randomUUID,
+  sign,
+  verify,
+  type KeyObject,
+} from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { link, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { link, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import Database from "better-sqlite3";
 import { Command } from "commander";
 import { chromium, type Browser } from "playwright";
+import { z } from "zod";
 
 import { executeExtraction } from "../src/collection/executor.js";
 import {
@@ -20,14 +29,12 @@ import {
 } from "../src/collection/http.js";
 import { executeDiscovery } from "../src/discovery/executor.js";
 import { openDatabase } from "../src/db/database.js";
-import { runDiscovery } from "../src/pipeline/discover.js";
 import { DiscoveryFailureError } from "../src/discovery/failure.js";
 import { RobotsPolicy } from "../src/discovery/robots.js";
 import { redact } from "../src/ops/logger.js";
 import {
   loadRetailerConfigs,
   registerRetailerConfigs,
-  stageRetailerConfigStrategy,
   type RetailerConfig,
 } from "../src/retailers/config.js";
 import type {
@@ -39,14 +46,20 @@ import type {
   ExtractionResult,
   ProductRef,
 } from "../src/strategies/types.js";
+import {
+  selectStrategyValidationChallenge,
+  VALIDATION_CHALLENGE_ALGORITHM,
+} from "../src/strategies/validation-challenge.js";
 import { extractionValidationFailureReason } from "../src/strategies/validate.js";
 import {
   attestStrategyValidationEvidence,
   canonicalEvidenceJson,
   evidenceValueSha256,
   readValidationSigningPrivateKey,
+  readTrustedValidatorArtifactSha256,
   strategyEvidenceSha256,
   validateStrategyEvidence,
+  validationAttestationKeyId,
   validationReceiptSha256,
   validationRefSha256,
   validationSampleSetSha256,
@@ -55,6 +68,10 @@ import {
 
 const SAMPLE_SIZE = 30;
 const MINIMUM_PACING_MS = 500;
+const DISCOVERY_VALIDATION_TIMEOUT_MS = 3 * 60 * 1_000;
+const EXECUTING_ARTIFACT_SHA256 = createHash("sha256")
+  .update(readFileSync(fileURLToPath(import.meta.url)))
+  .digest("hex");
 type Purpose = "discovery" | "extraction";
 type ValidationSample = StrategyValidationEvidence["samples"][number];
 type ResponseEvidence = NonNullable<ValidationSample["response"]>;
@@ -72,7 +89,6 @@ export interface ValidationRunDependencies {
   database: Database.Database;
   outputDirectory: string;
   signingPrivateKey: KeyObject;
-  discoveryChallengeRunId?: string;
   fetch?: FetchLike;
   browser?: Browser;
   now?: () => Date;
@@ -89,17 +105,27 @@ export interface ValidationRunResult {
   evidence: StrategyValidationEvidence;
 }
 
-function clockNow(dependencies: ValidationRunDependencies): number {
-  return dependencies.clock?.() ?? performance.now();
-}
-
-function executorIdentity(dependencies: ValidationRunDependencies): {
+interface ValidatorExecutorIdentity {
   mode: "trusted-live-host" | "test";
   runtime: string;
   sourceCommit: string;
   playwrightVersion: string;
   chromiumVersion: string;
-} {
+  artifactSha256: string;
+}
+
+interface ValidatorExecutorInspection {
+  identity: ValidatorExecutorIdentity;
+  dirtyPaths: string[];
+}
+
+function clockNow(dependencies: ValidationRunDependencies): number {
+  return dependencies.clock?.() ?? performance.now();
+}
+
+function executorIdentity(
+  dependencies: ValidationRunDependencies,
+): ValidatorExecutorInspection {
   const injected = dependencies.fetch !== undefined
     || dependencies.browser !== undefined
     || dependencies.now !== undefined
@@ -108,34 +134,77 @@ function executorIdentity(dependencies: ValidationRunDependencies): {
     || dependencies.runtime !== undefined;
   if (injected) {
     return {
-      mode: "test",
-      runtime: dependencies.runtime ?? `node-v${process.versions.node}`,
-      sourceCommit: "f".repeat(40),
-      playwrightVersion: "test",
-      chromiumVersion: "test",
+      identity: {
+        mode: "test",
+        runtime: dependencies.runtime ?? `node-v${process.versions.node}`,
+        sourceCommit: "f".repeat(40),
+        playwrightVersion: "test",
+        chromiumVersion: "test",
+        artifactSha256: EXECUTING_ARTIFACT_SHA256,
+      },
+      dirtyPaths: [],
     };
   }
   const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: process.cwd(),
     encoding: "utf8",
   }).trim();
-  const dirty = execFileSync(
+  const dirtyOutput = execFileSync(
     "git",
     [
       "status",
-      "--porcelain",
+      "--porcelain=v1",
       "--untracked-files=all",
+      "-z",
       "--",
       "scripts",
       "src",
       "retailers",
+      "ops/validator-bundle.sha256",
       "package.json",
       "package-lock.json",
     ],
     { cwd: process.cwd(), encoding: "utf8" },
-  ).trim();
-  if (dirty !== "") {
-    throw new Error("Trusted validation requires a clean committed implementation tree");
+  );
+  const dirtyPaths = dirtyOutput === ""
+    ? []
+    : dirtyOutput.split("\0").filter((entry) => entry !== "").map((entry) => {
+        // Porcelain v1 records a two-column status, one space, then the path.
+        // Rename/copy entries are rejected below rather than trying to accept
+        // either side of an ambiguous mutation.
+        if (entry.length < 4 || entry[2] !== " ") {
+          throw new Error("Trusted validation could not parse implementation-tree status");
+        }
+        return entry.slice(3);
+      });
+  const buildManifestPath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../build-manifest.json",
+  );
+  const buildManifest = JSON.parse(readFileSync(buildManifestPath, "utf8")) as {
+    schemaVersion?: unknown;
+    sourceCommit?: unknown;
+    sourceClean?: unknown;
+    files?: unknown;
+  };
+  const artifact = Array.isArray(buildManifest.files)
+    ? buildManifest.files.find((candidate) =>
+      typeof candidate === "object"
+      && candidate !== null
+      && (candidate as { path?: unknown }).path === "scripts/validate-strategies.js")
+    : undefined;
+  if (
+    buildManifest.schemaVersion !== 1
+    || buildManifest.sourceCommit !== sourceCommit
+    || buildManifest.sourceClean !== true
+    || typeof artifact !== "object"
+    || artifact === null
+    || (artifact as { sha256?: unknown }).sha256 !== EXECUTING_ARTIFACT_SHA256
+    || readTrustedValidatorArtifactSha256(
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../ops/validator-bundle.sha256"),
+    ) !== EXECUTING_ARTIFACT_SHA256
+  ) {
+    throw new Error("Trusted validation executable is not bound to the clean source commit");
   }
   const require = createRequire(import.meta.url);
   const playwrightPackage = require("playwright/package.json") as { version?: unknown };
@@ -143,13 +212,17 @@ function executorIdentity(dependencies: ValidationRunDependencies): {
     throw new Error("Playwright version could not be resolved");
   }
   return {
-    mode: "trusted-live-host",
-    runtime: `node-v${process.versions.node}`,
-    sourceCommit,
-    playwrightVersion: playwrightPackage.version,
-    chromiumVersion: execFileSync(chromium.executablePath(), ["--version"], {
-      encoding: "utf8",
-    }).trim(),
+    identity: {
+      mode: "trusted-live-host",
+      runtime: `node-v${process.versions.node}`,
+      sourceCommit,
+      playwrightVersion: playwrightPackage.version,
+      chromiumVersion: execFileSync(chromium.executablePath(), ["--version"], {
+        encoding: "utf8",
+      }).trim(),
+      artifactSha256: EXECUTING_ARTIFACT_SHA256,
+    },
+    dirtyPaths,
   };
 }
 
@@ -369,49 +442,8 @@ class ExchangeRecorder {
 function authoritativeRefs(
   database: Database.Database,
   retailerId: string,
-  discoveryChallengeRunId?: string,
 ): ProductRef[] {
-  if (discoveryChallengeRunId !== undefined) {
-    return (database.prepare(
-      `WITH challenge AS (
-         SELECT canonical_url, MIN(day_ordinal) AS ordinal
-         FROM discovery_reference_admissions
-         WHERE run_id = ? AND canonical_url IS NOT NULL
-         GROUP BY canonical_url
-       )
-       SELECT product.canonical_url, product.retailer_product_id,
-              product.source_category
-       FROM challenge
-       JOIN products AS product
-         ON product.retailer_id = ?
-        AND product.canonical_url = challenge.canonical_url
-       WHERE product.active = 1 AND product.in_scope = 1
-       ORDER BY challenge.ordinal, product.canonical_url`,
-    ).all(discoveryChallengeRunId, retailerId) as Array<{
-      canonical_url: string;
-      retailer_product_id: string | null;
-      source_category: string | null;
-    }>).map((row) => ({
-      canonicalUrl: row.canonical_url,
-      externalId: row.retailer_product_id,
-      sourceCategory: row.source_category,
-    }));
-  }
-  return (database.prepare(
-    `SELECT canonical_url, retailer_product_id, source_category
-     FROM products
-     WHERE retailer_id = ? AND active = 1 AND in_scope = 1
-     GROUP BY canonical_url
-     ORDER BY last_seen DESC, canonical_url`,
-  ).all(retailerId) as Array<{
-    canonical_url: string;
-    retailer_product_id: string | null;
-    source_category: string | null;
-  }>).map((row) => ({
-    canonicalUrl: row.canonical_url,
-    externalId: row.retailer_product_id,
-    sourceCategory: row.source_category,
-  }));
+  return selectStrategyValidationChallenge(database, retailerId, SAMPLE_SIZE);
 }
 
 function refKey(ref: ProductRef): string {
@@ -669,10 +701,12 @@ async function discoverySamples(
     fetch: recorder.fetch,
     ...(dependencies.browser === undefined ? {} : { browser: dependencies.browser }),
     timeoutMs,
-    totalTimeoutMs: timeoutMs,
+    totalTimeoutMs: Math.max(timeoutMs, DISCOVERY_VALIDATION_TIMEOUT_MS),
     maxBodyBytes,
-    stopAfterProducts: SAMPLE_SIZE,
-    beforeRequest: () => recorder.pace(),
+    stopAfterProducts: 3_000,
+    beforeRequest: async () => {
+      await recorder.pace();
+    },
     onMainDocumentResponse: (evidence) => recorder.markMainDocument(evidence),
     reportRefDocument: (ref, documentUrl) => {
       const exchange = recorder.mainDocumentFor(documentUrl);
@@ -699,7 +733,7 @@ async function discoverySamples(
       matches.set(key, exchange);
     }
   } finally {
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   }
   const fallbackExchange = selectExchange(recorder, config.discovery);
   if (fallbackExchange === undefined || fallbackExchange.response === null) {
@@ -848,48 +882,221 @@ async function writeConfigAtomic(path: string, value: unknown): Promise<void> {
   }
 }
 
-export async function validateConfiguredStrategy(
+function canonicalReceiptPath(
+  outputDirectory: string,
+  config: RetailerConfig,
+  purpose: Purpose,
+): string {
+  return resolve(
+    outputDirectory,
+    `${config.id}-${purpose}-v${config.strategyVersions[purpose]}.json`,
+  );
+}
+
+function failedAttemptPath(
+  outputDirectory: string,
+  config: RetailerConfig,
+  purpose: Purpose,
+): string {
+  return resolve(
+    outputDirectory,
+    "attempts",
+    `${config.id}-${purpose}-v${config.strategyVersions[purpose]}.json`,
+  );
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function validatedReceiptBinding(input: {
+  evidence: unknown;
+  path: string;
+  config: RetailerConfig;
+  purpose: Purpose;
+  refs: readonly ProductRef[];
+  identity: ValidatorExecutorIdentity;
+  verificationPublicKey: KeyObject;
+}): StrategyValidationEvidence {
+  let evidence: StrategyValidationEvidence;
+  try {
+    evidence = validateStrategyEvidence(input.evidence, {
+      retailerId: input.config.id,
+      purpose: input.purpose,
+      strategyVersion: input.config.strategyVersions[input.purpose],
+      strategy: input.config[input.purpose],
+      verificationPublicKey: input.verificationPublicKey,
+      authoritativeRefs: input.refs,
+    });
+  } catch (error) {
+    throw new Error(
+      `Validation receipt ${input.path} does not match the immutable rollout`,
+      { cause: error },
+    );
+  }
+  if (
+    evidence.executor.mode !== input.identity.mode
+    || evidence.executor.sourceCommit !== input.identity.sourceCommit
+    || evidence.executor.artifactSha256 !== input.identity.artifactSha256
+    || evidence.executor.challengeAlgorithm !== VALIDATION_CHALLENGE_ALGORITHM
+    || canonicalEvidenceJson(evidence.samples.map(({ ref }) => ref))
+      !== canonicalEvidenceJson(input.refs)
+  ) {
+    throw new Error(
+      `Validation receipt ${input.path} is bound to a different source, `
+      + "validator artifact, or independent challenge",
+    );
+  }
+  return evidence;
+}
+
+async function reusableValidationReceipt(input: {
+  path: string;
+  config: RetailerConfig;
+  purpose: Purpose;
+  refs: readonly ProductRef[];
+  identity: ValidatorExecutorIdentity;
+  verificationPublicKey: KeyObject;
+}): Promise<ValidationRunResult | null> {
+  let raw: string;
+  try {
+    const status = await lstat(input.path);
+    if (!status.isFile()) {
+      throw new Error(`Validation receipt ${input.path} is not a regular file`);
+    }
+    raw = await readFile(input.path, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) return null;
+    throw error;
+  }
+  const evidence = validatedReceiptBinding({ ...input, evidence: JSON.parse(raw) });
+  return { path: input.path, evidence };
+}
+
+interface FailedAttemptManifestEntry {
+  path: string;
+  fileSha256: string;
+  receiptSha256: string;
+  strategySourceCommit: string;
+}
+
+async function registerFailedValidationAttempt(input: {
+  outputDirectory: string;
+  path: string;
+  evidence: StrategyValidationEvidence;
+}): Promise<void> {
+  if (
+    input.evidence.executor.mode !== "trusted-live-host"
+    || input.evidence.activatable
+  ) {
+    return;
+  }
+  const attemptsDirectory = resolve(input.outputDirectory, "attempts");
+  const manifestPath = join(attemptsDirectory, "manifest.json");
+  const projectPath = relative(process.cwd(), input.path).split(sep).join("/");
+  if (projectPath.startsWith("../") || projectPath === "..") {
+    throw new Error("Failed-attempt evidence must remain inside the project tree");
+  }
+  const raw = await readFile(input.path);
+  const entry: FailedAttemptManifestEntry = {
+    path: projectPath,
+    fileSha256: sha256(raw),
+    receiptSha256: validationReceiptSha256(input.evidence),
+    strategySourceCommit: input.evidence.executor.sourceCommit,
+  };
+  let attempts: FailedAttemptManifestEntry[] = [];
+  try {
+    const status = await lstat(manifestPath);
+    if (!status.isFile()) throw new Error("Failed-attempt manifest is not a regular file");
+    const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      schemaVersion?: unknown;
+      attempts?: unknown;
+    };
+    if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.attempts)) {
+      throw new Error("Failed-attempt manifest is malformed");
+    }
+    attempts = parsed.attempts.map((candidate) => {
+      if (
+        candidate === null
+        || typeof candidate !== "object"
+        || Object.keys(candidate).sort().join("\0")
+          !== ["fileSha256", "path", "receiptSha256", "strategySourceCommit"]
+            .sort().join("\0")
+      ) {
+        throw new Error("Failed-attempt manifest contains a malformed entry");
+      }
+      const value = candidate as Record<string, unknown>;
+      if (
+        typeof value.path !== "string"
+        || typeof value.fileSha256 !== "string"
+        || typeof value.receiptSha256 !== "string"
+        || typeof value.strategySourceCommit !== "string"
+      ) {
+        throw new Error("Failed-attempt manifest contains a malformed entry");
+      }
+      return value as unknown as FailedAttemptManifestEntry;
+    });
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+  const existing = attempts.find((candidate) => candidate.path === entry.path);
+  if (existing !== undefined && canonicalEvidenceJson(existing) !== canonicalEvidenceJson(entry)) {
+    throw new Error(
+      `Failed validation attempt ${entry.path} already binds different immutable evidence; `
+      + "create a successor strategy version",
+    );
+  }
+  if (existing === undefined) attempts.push(entry);
+  attempts.sort((left, right) => left.path.localeCompare(right.path));
+  await writeConfigAtomic(manifestPath, { schemaVersion: 1, attempts });
+}
+
+async function validateConfiguredStrategyWithIdentity(
   config: RetailerConfig,
   purpose: Purpose,
   dependencies: ValidationRunDependencies,
+  identity: ValidatorExecutorIdentity,
+  selectedRefs?: readonly ProductRef[],
 ): Promise<ValidationRunResult> {
   if (!config.active) throw new Error(`Retailer ${config.id} is not active`);
-  if (dependencies.discoveryChallengeRunId !== undefined) {
-    if (purpose !== "discovery") {
-      throw new Error("A discovery challenge run cannot select extraction references");
-    }
-    const challengeRun = dependencies.database.prepare(
-      `SELECT retailer_id AS retailerId, stage, strategy_id AS strategyId,
-              status, finished_at AS finishedAt
-       FROM runs WHERE id = ?`,
-    ).get(dependencies.discoveryChallengeRunId) as {
-      retailerId: string;
-      stage: string;
-      strategyId: string | null;
-      status: string;
-      finishedAt: string | null;
-    } | undefined;
-    const expectedStrategyId = `${config.id}-discovery-v${config.strategyVersions.discovery}`;
-    if (
-      challengeRun === undefined
-      || challengeRun.retailerId !== config.id
-      || challengeRun.stage !== "discover"
-      || challengeRun.strategyId !== expectedStrategyId
-      || challengeRun.status === "running"
-      || challengeRun.finishedAt === null
-    ) {
-      throw new Error("Discovery validation requires a terminal matching candidate preflight run");
-    }
-  }
-  const refs = authoritativeRefs(
-    dependencies.database,
-    config.id,
-    dependencies.discoveryChallengeRunId,
-  );
+  const refs = selectedRefs ?? authoritativeRefs(dependencies.database, config.id);
   if (refs.length < SAMPLE_SIZE) {
     throw new Error(
       `${config.id} has ${refs.length}/${SAMPLE_SIZE} authoritative in-scope product references`,
     );
+  }
+  const verificationPublicKey = createPublicKey(dependencies.signingPrivateKey);
+  const canonicalPath = canonicalReceiptPath(dependencies.outputDirectory, config, purpose);
+  const existingCanonical = await reusableValidationReceipt({
+    path: canonicalPath,
+    config,
+    purpose,
+    refs,
+    identity,
+    verificationPublicKey,
+  });
+  if (existingCanonical !== null) return existingCanonical;
+  if (identity.mode === "trusted-live-host") {
+    const attemptPath = failedAttemptPath(dependencies.outputDirectory, config, purpose);
+    const existingAttempt = await reusableValidationReceipt({
+      path: attemptPath,
+      config,
+      purpose,
+      refs,
+      identity,
+      verificationPublicKey,
+    });
+    if (existingAttempt !== null) {
+      if (existingAttempt.evidence.activatable) {
+        throw new Error(`Activatable evidence is forbidden in failed-attempt path ${attemptPath}`);
+      }
+      await registerFailedValidationAttempt({
+        outputDirectory: dependencies.outputDirectory,
+        path: attemptPath,
+        evidence: existingAttempt.evidence,
+      });
+      return existingAttempt;
+    }
   }
   const timeoutMs = dependencies.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
   const maxBodyBytes = dependencies.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -897,12 +1104,11 @@ export async function validateConfiguredStrategy(
     MINIMUM_PACING_MS,
     dependencies.pacingMs ?? config.politeDelayMs.min,
   );
-  const identity = executorIdentity(dependencies);
   const now = dependencies.now ?? (() => new Date());
   const executionStartedAt = now();
   const monotonicStartedAt = clockNow(dependencies);
   const recorder = new ExchangeRecorder({
-    fetch: dependencies.fetch,
+    ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
     sleep: dependencies.sleep ?? ((milliseconds) =>
       new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
     clock: dependencies.clock ?? (() => performance.now()),
@@ -947,6 +1153,8 @@ export async function validateConfiguredStrategy(
       sourceCommit: identity.sourceCommit,
       playwrightVersion: identity.playwrightVersion,
       chromiumVersion: identity.chromiumVersion,
+      artifactSha256: identity.artifactSha256,
+      challengeAlgorithm: VALIDATION_CHALLENGE_ALGORITHM,
       sequentialPacingMs: pacingMs,
       timeoutMs,
       maxBodyBytes,
@@ -967,15 +1175,584 @@ export async function validateConfiguredStrategy(
     purpose,
     strategyVersion: config.strategyVersions[purpose],
     strategy: config[purpose],
-    verificationPublicKey: createPublicKey(dependencies.signingPrivateKey),
+    verificationPublicKey,
     authoritativeRefs: refs,
   });
-  const path = resolve(
-    dependencies.outputDirectory,
-    `${config.id}-${purpose}-v${config.strategyVersions[purpose]}.json`,
-  );
+  const path = identity.mode === "trusted-live-host" && !evidence.activatable
+    ? failedAttemptPath(dependencies.outputDirectory, config, purpose)
+    : canonicalPath;
   await writeCanonicalAtomic(path, evidence);
+  await registerFailedValidationAttempt({
+    outputDirectory: dependencies.outputDirectory,
+    path,
+    evidence,
+  });
   return { path, evidence };
+}
+
+export async function validateConfiguredStrategy(
+  config: RetailerConfig,
+  purpose: Purpose,
+  dependencies: ValidationRunDependencies,
+): Promise<ValidationRunResult> {
+  const inspection = executorIdentity(dependencies);
+  if (inspection.dirtyPaths.length > 0) {
+    throw new Error("Trusted validation requires a clean committed implementation tree");
+  }
+  return validateConfiguredStrategyWithIdentity(
+    config,
+    purpose,
+    dependencies,
+    inspection.identity,
+  );
+}
+
+const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const CommitSchema = z.string().regex(/^[a-f0-9]{40}$/u);
+const RolloutEntryCoreSchema = z.object({
+  retailerId: z.string().min(1),
+  purpose: z.enum(["discovery", "extraction"]),
+  strategyVersion: z.number().int().positive(),
+  strategySha256: Sha256Schema,
+  challengeSha256: Sha256Schema,
+  configCoreSha256: Sha256Schema,
+  configPath: z.string().min(1),
+  receiptPath: z.string().min(1),
+  configReceiptPath: z.string().min(1),
+}).strict();
+const RolloutCoreSchema = z.object({
+  schemaVersion: z.literal(1),
+  sourceCommit: CommitSchema,
+  validatorArtifactSha256: Sha256Schema,
+  validatorKeyId: Sha256Schema,
+  challengeAlgorithm: z.literal(VALIDATION_CHALLENGE_ALGORITHM),
+  entries: z.array(RolloutEntryCoreSchema).min(1),
+}).strict();
+const RolloutStateSchema = z.object({
+  retailerId: z.string().min(1),
+  purpose: z.enum(["discovery", "extraction"]),
+  phase: z.enum(["pending", "receipt-published", "config-bound", "activated", "failed"]),
+  receiptPath: z.string().min(1).nullable(),
+  receiptSha256: Sha256Schema.nullable(),
+}).strict();
+const RolloutJournalPayloadSchema = z.object({
+  schemaVersion: z.literal(1),
+  rolloutId: Sha256Schema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  core: RolloutCoreSchema,
+  states: z.array(RolloutStateSchema).min(1),
+}).strict();
+const RolloutJournalSchema = z.object({
+  payload: RolloutJournalPayloadSchema,
+  attestation: z.object({
+    algorithm: z.literal("ed25519"),
+    keyId: Sha256Schema,
+    payloadSha256: Sha256Schema,
+    signature: z.string().min(1),
+  }).strict(),
+}).strict();
+
+type RolloutCore = z.infer<typeof RolloutCoreSchema>;
+type RolloutJournal = z.infer<typeof RolloutJournalSchema>;
+type RolloutState = z.infer<typeof RolloutStateSchema>;
+export type ValidationRolloutPhase = "receipt" | "config" | "activation";
+
+function rolloutStateKey(input: { retailerId: string; purpose: Purpose }): string {
+  return `${input.retailerId}/${input.purpose}`;
+}
+
+function normalizedConfigCoreSha256(
+  config: RetailerConfig,
+  selectedPurposes: readonly Purpose[],
+): string {
+  const normalized = JSON.parse(JSON.stringify(config)) as {
+    validation: Record<Purpose, Record<string, unknown>>;
+  };
+  for (const purpose of selectedPurposes) {
+    normalized.validation[purpose] = {
+      ...normalized.validation[purpose],
+      externallyValidated: false,
+      validatedAt: null,
+      sampleSize: 0,
+      successes: 0,
+      score: 0,
+      receiptSha256: null,
+    };
+  }
+  return evidenceValueSha256(normalized);
+}
+
+function attestRolloutJournal(
+  payload: z.infer<typeof RolloutJournalPayloadSchema>,
+  privateKey: KeyObject,
+): RolloutJournal {
+  const canonical = canonicalEvidenceJson(payload);
+  return RolloutJournalSchema.parse({
+    payload,
+    attestation: {
+      algorithm: "ed25519",
+      keyId: validationAttestationKeyId(privateKey),
+      payloadSha256: sha256(canonical),
+      signature: sign(null, Buffer.from(canonical), privateKey).toString("base64"),
+    },
+  });
+}
+
+function verifyRolloutJournal(
+  input: unknown,
+  expectedCore: RolloutCore,
+  verificationPublicKey: KeyObject,
+): RolloutJournal {
+  const journal = RolloutJournalSchema.parse(input);
+  const canonical = canonicalEvidenceJson(journal.payload);
+  if (
+    journal.payload.rolloutId !== evidenceValueSha256(expectedCore)
+    || canonicalEvidenceJson(journal.payload.core) !== canonicalEvidenceJson(expectedCore)
+    || journal.attestation.keyId !== validationAttestationKeyId(verificationPublicKey)
+    || journal.attestation.payloadSha256 !== sha256(canonical)
+    || !verify(
+      null,
+      Buffer.from(canonical),
+      verificationPublicKey,
+      Buffer.from(journal.attestation.signature, "base64"),
+    )
+  ) {
+    throw new Error("Validation rollout journal is not bound to the selected immutable rollout");
+  }
+  const expectedKeys = expectedCore.entries.map(rolloutStateKey).sort();
+  const stateKeys = journal.payload.states.map(rolloutStateKey).sort();
+  if (
+    new Set(stateKeys).size !== stateKeys.length
+    || canonicalEvidenceJson(stateKeys) !== canonicalEvidenceJson(expectedKeys)
+  ) {
+    throw new Error("Validation rollout journal has incomplete or duplicate state coverage");
+  }
+  return journal;
+}
+
+async function readRolloutJournal(
+  path: string,
+  core: RolloutCore,
+  verificationPublicKey: KeyObject,
+): Promise<RolloutJournal | null> {
+  try {
+    const status = await lstat(path);
+    if (!status.isFile()) throw new Error("Validation rollout journal is not a regular file");
+    return verifyRolloutJournal(
+      JSON.parse(await readFile(path, "utf8")),
+      core,
+      verificationPublicKey,
+    );
+  } catch (error) {
+    if (isMissingFile(error)) return null;
+    throw error;
+  }
+}
+
+async function writeRolloutJournal(
+  path: string,
+  journal: RolloutJournal,
+): Promise<void> {
+  await writeConfigAtomic(path, journal);
+}
+
+function updateRolloutState(
+  journal: RolloutJournal,
+  identity: { retailerId: string; purpose: Purpose },
+  update: Pick<RolloutState, "phase" | "receiptPath" | "receiptSha256">,
+  privateKey: KeyObject,
+): RolloutJournal {
+  const key = rolloutStateKey(identity);
+  const existing = journal.payload.states.find((state) => rolloutStateKey(state) === key);
+  if (existing === undefined) throw new Error(`Rollout journal is missing ${key}`);
+  const order: Record<Exclude<RolloutState["phase"], "failed">, number> = {
+    pending: 0,
+    "receipt-published": 1,
+    "config-bound": 2,
+    activated: 3,
+  };
+  if (existing.phase === "failed" && update.phase !== "failed") {
+    throw new Error(`Failed validation rollout entry ${key} requires a successor version`);
+  }
+  if (
+    update.phase !== "failed"
+    && existing.phase !== "failed"
+    && order[update.phase] < order[existing.phase]
+  ) {
+    return journal;
+  }
+  return attestRolloutJournal({
+    ...journal.payload,
+    updatedAt: new Date().toISOString(),
+    states: journal.payload.states.map((state) => rolloutStateKey(state) === key
+      ? { ...state, ...update }
+      : state),
+  }, privateKey);
+}
+
+function configReceiptPath(config: RetailerConfig, purpose: Purpose): string {
+  return `data/validation/${config.id}-${purpose}-v${config.strategyVersions[purpose]}.json`;
+}
+
+function activationMatches(
+  database: Database.Database,
+  completed: ReadonlyArray<{
+    config: RetailerConfig;
+    purpose: Purpose;
+    result: ValidationRunResult;
+  }>,
+): boolean {
+  return completed.every(({ config, purpose, result }) => {
+    const row = database.prepare(`
+      SELECT strategy.retailer_id AS retailerId,
+             strategy.purpose,
+             strategy.version,
+             strategy.strategy_json AS strategyJson,
+             strategy.active,
+             strategy.validation_sample_size AS sampleSize,
+             strategy.validation_successes AS successes,
+             strategy.validation_rate AS score,
+             strategy.validated_at AS validatedAt,
+             evidence.receipt_path AS receiptPath,
+             evidence.receipt_sha256 AS receiptSha256,
+             evidence.sample_set_sha256 AS sampleSetSha256,
+             evidence.attestation_key_id AS attestationKeyId
+      FROM strategies AS strategy
+      LEFT JOIN strategy_validation_evidence AS evidence
+        ON evidence.strategy_id = strategy.id
+      WHERE strategy.id = ?
+    `).get(`${config.id}-${purpose}-v${config.strategyVersions[purpose]}`) as {
+      retailerId: string;
+      purpose: string;
+      version: number;
+      strategyJson: string;
+      active: number;
+      sampleSize: number;
+      successes: number;
+      score: number | null;
+      validatedAt: string | null;
+      receiptPath: string | null;
+      receiptSha256: string | null;
+      sampleSetSha256: string | null;
+      attestationKeyId: string | null;
+    } | undefined;
+    return row !== undefined
+      && row.retailerId === config.id
+      && row.purpose === purpose
+      && row.version === config.strategyVersions[purpose]
+      && row.strategyJson === JSON.stringify(config[purpose])
+      && row.active === 1
+      && row.sampleSize === result.evidence.attempted
+      && row.successes === result.evidence.valid
+      && row.score === result.evidence.score
+      && row.validatedAt === result.evidence.validatedAt
+      && row.receiptPath === configReceiptPath(config, purpose)
+      && row.receiptSha256 === validationReceiptSha256(result.evidence)
+      && row.sampleSetSha256 === result.evidence.sampleSetSha256
+      && row.attestationKeyId === result.evidence.attestation.keyId;
+  });
+}
+
+export interface ValidationRolloutOptions {
+  configs: readonly RetailerConfig[];
+  purposes: readonly Purpose[];
+  configsDirectory: string;
+  databasePath?: string;
+  updateConfig: boolean;
+  activate: boolean;
+  validation: ValidationRunDependencies;
+  /** Test-only seam for deterministic trusted-host crash recovery fixtures. */
+  testExecutorIdentity?: ValidatorExecutorIdentity;
+  /** Test-only seam; production always invokes the bundled validator. */
+  testValidateStrategy?: (
+    config: RetailerConfig,
+    purpose: Purpose,
+    refs: readonly ProductRef[],
+  ) => Promise<ValidationRunResult>;
+  /** Test-only seam; production uses registerRetailerConfigs itself. */
+  testActivateConfigs?: (configs: readonly RetailerConfig[]) => void;
+  phaseHook?: (input: {
+    phase: ValidationRolloutPhase;
+    retailerId: string | null;
+    purpose: Purpose | null;
+  }) => void | Promise<void>;
+}
+
+export async function executeValidationRollout(
+  options: ValidationRolloutOptions,
+): Promise<Array<{
+  config: RetailerConfig;
+  purpose: Purpose;
+  result: ValidationRunResult;
+}>> {
+  if (options.activate && !options.updateConfig) {
+    throw new Error("Activation requires config binding");
+  }
+  if (options.configs.length === 0 || options.purposes.length === 0) {
+    throw new Error("A validation rollout requires at least one selected strategy");
+  }
+  const hasTestSeam = options.testExecutorIdentity !== undefined
+    || options.testValidateStrategy !== undefined
+    || options.testActivateConfigs !== undefined;
+  if (
+    hasTestSeam
+    && (process.env.VITEST !== "true" || options.validation.database.name !== ":memory:")
+  ) {
+    throw new Error("Validation rollout test seams require an in-memory Vitest database");
+  }
+  const inspection: ValidatorExecutorInspection = options.testExecutorIdentity === undefined
+    ? executorIdentity(options.validation)
+    : { identity: options.testExecutorIdentity, dirtyPaths: [] };
+  const verificationPublicKey = createPublicKey(options.validation.signingPrivateKey);
+  const purposesByRetailer = new Map<string, Purpose[]>();
+  for (const config of options.configs) purposesByRetailer.set(config.id, []);
+  for (const config of options.configs) {
+    const selected = purposesByRetailer.get(config.id);
+    if (selected === undefined) throw new Error(`Missing rollout purpose set for ${config.id}`);
+    selected.push(...options.purposes);
+  }
+  const refsByEntry = new Map<string, ProductRef[]>();
+  const coreEntries: Array<z.infer<typeof RolloutEntryCoreSchema>> = [];
+  for (const config of options.configs) {
+    const selectedPurposes = purposesByRetailer.get(config.id) ?? [];
+    const configPath = resolve(options.configsDirectory, `${config.id}.json`);
+    for (const purpose of options.purposes) {
+      const refs = authoritativeRefs(options.validation.database, config.id);
+      if (refs.length !== SAMPLE_SIZE) {
+        throw new Error(
+          `${config.id} has ${refs.length}/${SAMPLE_SIZE} authoritative in-scope product references`,
+        );
+      }
+      refsByEntry.set(rolloutStateKey({ retailerId: config.id, purpose }), refs);
+      coreEntries.push({
+        retailerId: config.id,
+        purpose,
+        strategyVersion: config.strategyVersions[purpose],
+        strategySha256: strategyEvidenceSha256(config[purpose]),
+        challengeSha256: evidenceValueSha256(refs),
+        configCoreSha256: normalizedConfigCoreSha256(config, selectedPurposes),
+        configPath,
+        receiptPath: canonicalReceiptPath(options.validation.outputDirectory, config, purpose),
+        configReceiptPath: configReceiptPath(config, purpose),
+      });
+    }
+  }
+  coreEntries.sort((left, right) => rolloutStateKey(left).localeCompare(rolloutStateKey(right)));
+  const core = RolloutCoreSchema.parse({
+    schemaVersion: 1,
+    sourceCommit: inspection.identity.sourceCommit,
+    validatorArtifactSha256: inspection.identity.artifactSha256,
+    validatorKeyId: validationAttestationKeyId(verificationPublicKey),
+    challengeAlgorithm: VALIDATION_CHALLENGE_ALGORITHM,
+    entries: coreEntries,
+  });
+  const rolloutId = evidenceValueSha256(core);
+  const journalPath = resolve(
+    options.validation.outputDirectory,
+    "rollouts",
+    `${rolloutId}.json`,
+  );
+  let journal = await readRolloutJournal(journalPath, core, verificationPublicKey);
+  const allowedDirtyPaths = new Set(core.entries.map(({ configPath }) =>
+    relative(process.cwd(), configPath).split(sep).join("/")));
+  if (
+    inspection.dirtyPaths.some((path) => !allowedDirtyPaths.has(path))
+    || (inspection.dirtyPaths.length > 0 && journal === null)
+  ) {
+    throw new Error(
+      "Trusted validation requires a clean implementation tree or an exact signed rollout resume",
+    );
+  }
+  if (journal === null) {
+    const now = new Date().toISOString();
+    journal = attestRolloutJournal({
+      schemaVersion: 1,
+      rolloutId,
+      createdAt: now,
+      updatedAt: now,
+      core,
+      states: core.entries.map(({ retailerId, purpose }) => ({
+        retailerId,
+        purpose,
+        phase: "pending" as const,
+        receiptPath: null,
+        receiptSha256: null,
+      })),
+    }, options.validation.signingPrivateKey);
+    await writeRolloutJournal(journalPath, journal);
+  }
+
+  const completed: Array<{
+    config: RetailerConfig;
+    purpose: Purpose;
+    result: ValidationRunResult;
+  }> = [];
+  for (const config of options.configs) {
+    for (const purpose of options.purposes) {
+      const key = rolloutStateKey({ retailerId: config.id, purpose });
+      const refs = refsByEntry.get(key);
+      const coreEntry = core.entries.find((entry) => rolloutStateKey(entry) === key);
+      const state = journal.payload.states.find((candidate) => rolloutStateKey(candidate) === key);
+      if (refs === undefined || coreEntry === undefined || state === undefined) {
+        throw new Error(`Rollout journal lost selected entry ${key}`);
+      }
+      let result = await reusableValidationReceipt({
+        path: coreEntry.receiptPath,
+        config,
+        purpose,
+        refs,
+        identity: inspection.identity,
+        verificationPublicKey,
+      });
+      if (result === null && state.phase === "failed" && state.receiptPath !== null) {
+        result = await reusableValidationReceipt({
+          path: state.receiptPath,
+          config,
+          purpose,
+          refs,
+          identity: inspection.identity,
+          verificationPublicKey,
+        });
+      }
+      if (result === null && state.phase !== "pending") {
+        throw new Error(`Rollout journal claims ${key} evidence that is missing from disk`);
+      }
+      if (result === null) {
+        result = options.testValidateStrategy === undefined
+          ? await validateConfiguredStrategyWithIdentity(
+              config,
+              purpose,
+              options.validation,
+              inspection.identity,
+              refs,
+            )
+          : await options.testValidateStrategy(config, purpose, refs);
+        const validated = validatedReceiptBinding({
+          evidence: result.evidence,
+          path: result.path,
+          config,
+          purpose,
+          refs,
+          identity: inspection.identity,
+          verificationPublicKey,
+        });
+        const expectedPath = validated.activatable
+          ? coreEntry.receiptPath
+          : failedAttemptPath(options.validation.outputDirectory, config, purpose);
+        if (resolve(result.path) !== expectedPath) {
+          throw new Error(`Validator returned noncanonical evidence path for ${key}`);
+        }
+        await writeCanonicalAtomic(expectedPath, validated);
+        await registerFailedValidationAttempt({
+          outputDirectory: options.validation.outputDirectory,
+          path: expectedPath,
+          evidence: validated,
+        });
+        result = { path: expectedPath, evidence: validated };
+      }
+      if (!result.evidence.activatable) {
+        await registerFailedValidationAttempt({
+          outputDirectory: options.validation.outputDirectory,
+          path: result.path,
+          evidence: result.evidence,
+        });
+      }
+      const phase = result.evidence.activatable ? "receipt-published" : "failed";
+      journal = updateRolloutState(journal, { retailerId: config.id, purpose }, {
+        phase,
+        receiptPath: result.path,
+        receiptSha256: validationReceiptSha256(result.evidence),
+      }, options.validation.signingPrivateKey);
+      await writeRolloutJournal(journalPath, journal);
+      completed.push({ config, purpose, result });
+      await options.phaseHook?.({ phase: "receipt", retailerId: config.id, purpose });
+    }
+  }
+  if (completed.some(({ result }) => !result.evidence.activatable)) {
+    throw new Error(
+      "Refusing to bind non-activatable validation evidence; create a successor strategy version",
+    );
+  }
+  if (!options.updateConfig) return completed;
+
+  for (const config of options.configs) {
+    const items = completed.filter((candidate) => candidate.config.id === config.id);
+    const validation = { ...config.validation };
+    for (const item of items) {
+      validation[item.purpose] = {
+        ...validation[item.purpose],
+        externallyValidated: true,
+        validatedAt: item.result.evidence.validatedAt,
+        sampleSize: item.result.evidence.attempted,
+        successes: item.result.evidence.valid,
+        score: item.result.evidence.score,
+        receiptPath: configReceiptPath(config, item.purpose),
+        receiptSha256: validationReceiptSha256(item.result.evidence),
+      };
+    }
+    const desired = { ...config, validation };
+    const configPath = resolve(options.configsDirectory, `${config.id}.json`);
+    let current: unknown = null;
+    try {
+      current = JSON.parse(await readFile(configPath, "utf8"));
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    if (canonicalEvidenceJson(current) !== canonicalEvidenceJson(desired)) {
+      await writeConfigAtomic(configPath, desired);
+    }
+    for (const item of items) {
+      journal = updateRolloutState(journal, {
+        retailerId: item.config.id,
+        purpose: item.purpose,
+      }, {
+        phase: "config-bound",
+        receiptPath: item.result.path,
+        receiptSha256: validationReceiptSha256(item.result.evidence),
+      }, options.validation.signingPrivateKey);
+    }
+    await writeRolloutJournal(journalPath, journal);
+    await options.phaseHook?.({ phase: "config", retailerId: config.id, purpose: null });
+  }
+  if (!options.activate) return completed;
+
+  if (!activationMatches(options.validation.database, completed)) {
+    const selectedRetailers = new Set(options.configs.map(({ id }) => id));
+    const boundConfigs = loadRetailerConfigs(resolve(options.configsDirectory))
+      .filter(({ id }) => selectedRetailers.has(id));
+    if (options.testActivateConfigs !== undefined) {
+      options.testActivateConfigs(boundConfigs);
+    } else {
+      if (options.databasePath === undefined) {
+        throw new Error("A database path is required for production activation");
+      }
+      const writable = openDatabase(resolve(options.databasePath));
+      try {
+        registerRetailerConfigs(writable, boundConfigs, {
+          projectRoot: dirname(resolve(options.configsDirectory)),
+        });
+      } finally {
+        writable.close();
+      }
+    }
+    if (!activationMatches(options.validation.database, completed)) {
+      throw new Error("Strategy activation did not persist the exact rollout evidence");
+    }
+  }
+  for (const item of completed) {
+    journal = updateRolloutState(journal, {
+      retailerId: item.config.id,
+      purpose: item.purpose,
+    }, {
+      phase: "activated",
+      receiptPath: item.result.path,
+      receiptSha256: validationReceiptSha256(item.result.evidence),
+    }, options.validation.signingPrivateKey);
+  }
+  await writeRolloutJournal(journalPath, journal);
+  await options.phaseHook?.({ phase: "activation", retailerId: null, purpose: null });
+  return completed;
 }
 
 interface CliOptions {
@@ -1050,146 +1827,74 @@ async function main(): Promise<void> {
   }
   const databasePath = resolve(options.database);
   const configsDirectory = resolve(options.configs);
-  const discoveryChallengeRuns = new Map<string, string>();
-  if (options.prepareDiscoveryChallenge === true && purposes.includes("discovery")) {
-    const writable = openDatabase(databasePath);
-    try {
-      for (const config of configs) {
-        const staged = stageRetailerConfigStrategy(writable, config, "discovery");
-        const summary = await runDiscovery(config.id, {
-          database: writable,
-          strategyOverride: {
-            ...staged,
-            purpose: "discovery",
-            strategy: config.discovery,
-          },
-          preserveCatalog: true,
-          limit: 120,
-          politeDelayMs: config.politeDelayMs,
-          logDirectory: resolve("var/log/precos"),
-        });
-        if (summary.ok < SAMPLE_SIZE || summary.inScope < SAMPLE_SIZE) {
-          throw new Error(
-            `${config.id} candidate preflight produced ${summary.ok} references, `
-            + `${summary.inScope} in scope; ${SAMPLE_SIZE} are required`,
-          );
-        }
-        discoveryChallengeRuns.set(config.id, summary.id);
-        process.stdout.write(`${JSON.stringify({
-          event: "discovery-challenge-prepared",
-          retailerId: config.id,
-          strategyId: staged.id,
-          runId: summary.id,
-          attempted: summary.attempted,
-          ok: summary.ok,
-          inScope: summary.inScope,
-          snapshotComplete: summary.snapshotComplete,
-          catalogPreserved: true,
-        })}\n`);
-      }
-    } finally {
-      writable.close();
-    }
-  }
   const database = new Database(databasePath, {
     readonly: true,
     fileMustExist: true,
   });
-  const completed: Array<{
-    config: RetailerConfig;
-    purpose: Purpose;
-    result: ValidationRunResult;
-  }> = [];
   try {
-    for (const config of configs) {
-      for (const purpose of purposes) {
-        const result = await validateConfiguredStrategy(config, purpose, {
-          database,
-          outputDirectory: resolve(options.outputDirectory),
-          signingPrivateKey,
-          ...(purpose === "discovery" && discoveryChallengeRuns.has(config.id)
-            ? { discoveryChallengeRunId: discoveryChallengeRuns.get(config.id) }
-            : {}),
-          ...(pacingMs === undefined ? {} : { pacingMs }),
-          timeoutMs,
-          maxBodyBytes,
-        });
-        completed.push({ config, purpose, result });
-        const sampleDurationMs = result.evidence.samples.reduce(
-          (total, sample) => total + sample.durationMs,
-          0,
-        );
+    if (options.prepareDiscoveryChallenge === true && purposes.includes("discovery")) {
+      for (const config of configs) {
+        const challenge = authoritativeRefs(database, config.id);
+        if (challenge.length !== SAMPLE_SIZE) {
+          throw new Error(
+            `${config.id} has ${challenge.length}/${SAMPLE_SIZE} independent challenge references`,
+          );
+        }
         process.stdout.write(`${JSON.stringify({
-          path: result.path,
+          event: "discovery-challenge-prepared",
           retailerId: config.id,
-          purpose,
-          attempted: result.evidence.attempted,
-          valid: result.evidence.valid,
-          score: result.evidence.score,
-          activatable: result.evidence.activatable,
-          validatedAt: result.evidence.validatedAt,
-          sampleDurationMs,
-          maximumSampleDurationMs: Math.max(
-            ...result.evidence.samples.map((sample) => sample.durationMs),
-          ),
-          sampleSetSha256: result.evidence.sampleSetSha256,
-          configPatch: {
-            validatedAt: result.evidence.validatedAt,
-            sampleSize: result.evidence.attempted,
-            successes: result.evidence.valid,
-            score: result.evidence.score,
-            receiptSha256: validationReceiptSha256(result.evidence),
-          },
+          source: "preexisting-active-in-scope-catalog",
+          attempted: challenge.length,
+          catalogPreserved: true,
         })}\n`);
       }
     }
+    const completed = await executeValidationRollout({
+      configs,
+      purposes,
+      configsDirectory,
+      databasePath,
+      updateConfig: options.updateConfig === true,
+      activate: options.activate === true,
+      validation: {
+        database,
+        outputDirectory: resolve(options.outputDirectory),
+        signingPrivateKey,
+        ...(pacingMs === undefined ? {} : { pacingMs }),
+        timeoutMs,
+        maxBodyBytes,
+      },
+    });
+    for (const { config, purpose, result } of completed) {
+      const sampleDurationMs = result.evidence.samples.reduce(
+        (total, sample) => total + sample.durationMs,
+        0,
+      );
+      process.stdout.write(`${JSON.stringify({
+        path: result.path,
+        retailerId: config.id,
+        purpose,
+        attempted: result.evidence.attempted,
+        valid: result.evidence.valid,
+        score: result.evidence.score,
+        activatable: result.evidence.activatable,
+        validatedAt: result.evidence.validatedAt,
+        sampleDurationMs,
+        maximumSampleDurationMs: Math.max(
+          ...result.evidence.samples.map((sample) => sample.durationMs),
+        ),
+        sampleSetSha256: result.evidence.sampleSetSha256,
+        configPatch: {
+          validatedAt: result.evidence.validatedAt,
+          sampleSize: result.evidence.attempted,
+          successes: result.evidence.valid,
+          score: result.evidence.score,
+          receiptSha256: validationReceiptSha256(result.evidence),
+        },
+      })}\n`);
+    }
   } finally {
     database.close();
-  }
-  if (
-    options.updateConfig === true
-    && completed.some(({ result }) => result.evidence.activatable !== true)
-  ) {
-    throw new Error(
-      "Refusing to bind non-activatable validation evidence; create a successor strategy version",
-    );
-  }
-  if (options.updateConfig === true) {
-    for (const config of configs) {
-      const validation = { ...config.validation };
-      for (const item of completed.filter((candidate) => candidate.config.id === config.id)) {
-        validation[item.purpose] = {
-          ...validation[item.purpose],
-          externallyValidated: true,
-          validatedAt: item.result.evidence.validatedAt,
-          sampleSize: item.result.evidence.attempted,
-          successes: item.result.evidence.valid,
-          score: item.result.evidence.score,
-          receiptSha256: validationReceiptSha256(item.result.evidence),
-        };
-      }
-      await writeConfigAtomic(join(configsDirectory, `${config.id}.json`), {
-        ...config,
-        validation,
-      });
-    }
-  }
-  if (options.activate === true) {
-    const writable = openDatabase(databasePath);
-    try {
-      const selectedRetailers = new Set(configs.map(({ id }) => id));
-      registerRetailerConfigs(
-        writable,
-        loadRetailerConfigs(configsDirectory)
-          .filter(({ id }) => selectedRetailers.has(id)),
-        {
-          projectRoot: dirname(configsDirectory),
-          verificationPublicKey: createPublicKey(signingPrivateKey),
-        },
-      );
-    } finally {
-      writable.close();
-    }
   }
 }
 

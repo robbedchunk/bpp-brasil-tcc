@@ -5,6 +5,7 @@ import {
   insertHeartbeat,
 } from "../db/repositories.js";
 import { redact } from "../ops/logger.js";
+import type { ScheduledDailyInvocation } from "../ops/systemd-provenance.js";
 import { runCollection, type CollectionPipelineDependencies } from "./collect.js";
 import type { RunSummary } from "./discover.js";
 
@@ -35,12 +36,8 @@ export interface DailySummary {
 export interface DailyPipelineDependencies
   extends Omit<CollectionPipelineDependencies, "database"> {
   database: Database.Database;
-  /**
-   * Immutable invocation provenance recorded with the completion heartbeat.
-   * Only the installed timer service is allowed to supply `systemd-timer`;
-   * ordinary CLI/API calls deliberately default to `manual`.
-   */
-  trigger?: "manual" | "systemd-timer";
+  /** Process-scoped systemd credentials verified by the CLI before network work. */
+  scheduledInvocation?: ScheduledDailyInvocation;
   collect?: (retailerId: string) => Promise<RunSummary>;
   retailerOptions?: (
     retailerId: string,
@@ -120,10 +117,13 @@ export async function runDaily(
   const terminal = runs.filter((run) =>
     run.status === "completed" || run.status === "partial" || run.status === "failed"
   ).length;
+  const failedRuns = runs.filter((run) => run.status === "failed").length;
   const finishedAt = now().toISOString();
   const status: DailySummary["status"] = retailerFailures.length > 0
     ? (runs.length === 0 ? "failed" : "partial")
-    : monitorFailedRunIds.length > 0 || terminal !== retailerIds.length
+    : failedRuns === retailerIds.length && retailerIds.length > 0
+      ? "failed"
+      : failedRuns > 0 || monitorFailedRunIds.length > 0 || terminal !== retailerIds.length
       ? "partial"
       : "completed";
   const heartbeatRecorded = dependencies.dryRun !== true;
@@ -134,10 +134,7 @@ export async function runDaily(
       completedAt: finishedAt,
       status,
       details: {
-        trigger: dependencies.trigger ?? "manual",
-        ...(dependencies.trigger === "systemd-timer"
-          ? { timerUnit: "precos-daily.timer" }
-          : {}),
+        ...(dependencies.scheduledInvocation ?? { trigger: "manual" as const }),
         retailerIds,
         runIds: runs.map((run) => run.id),
         monitorFailedRunIds,

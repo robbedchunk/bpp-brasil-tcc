@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import { redact } from "../ops/logger.js";
 import { isDescriptiveProductTitle } from "../normalize/title.js";
+import { VALIDATION_CHALLENGE_ALGORITHM } from "./validation-challenge.js";
 import type { Strategy } from "./schema.js";
 import type { ProductRef } from "./types.js";
 
@@ -131,6 +132,8 @@ const StrategyValidationEvidencePayloadSchema = z.object({
     sourceCommit: z.string().regex(/^[a-f0-9]{40}$/u),
     playwrightVersion: z.string().min(1),
     chromiumVersion: z.string().min(1),
+    artifactSha256: Sha256Schema.optional(),
+    challengeAlgorithm: z.literal(VALIDATION_CHALLENGE_ALGORITHM).optional(),
     sequentialPacingMs: z.number().int().min(500),
     timeoutMs: z.number().int().positive(),
     maxBodyBytes: z.number().int().positive(),
@@ -273,6 +276,20 @@ export function readValidationVerificationPublicKey(path: string): KeyObject {
     throw new Error("Validation verification key must be Ed25519");
   }
   return key;
+}
+
+export function readTrustedValidatorArtifactSha256(
+  path = new URL("../../ops/validator-bundle.sha256", import.meta.url).pathname,
+): string {
+  const stat = lstatSync(path);
+  if (!stat.isFile()) {
+    throw new Error("Trusted validator artifact digest must be a regular file");
+  }
+  const digest = readFileSync(path, "utf8").trim();
+  if (!/^[a-f0-9]{64}$/u.test(digest) || digest === "0".repeat(64)) {
+    throw new Error("Trusted validator artifact digest is malformed");
+  }
+  return digest;
 }
 
 export function strategyEvidenceSha256(strategy: Strategy): string {

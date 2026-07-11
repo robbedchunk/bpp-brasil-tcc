@@ -5,7 +5,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { exportResearchData } from "../../src/index/export.js";
+import {
+  databaseSourceSnapshotSha256,
+  exportResearchData,
+} from "../../src/index/export.js";
 import type { SidraClient } from "../../src/index/types.js";
 import {
   finalizeSeedRuns,
@@ -135,6 +138,44 @@ describe("research snapshot export", () => {
     const runsEvidence = manifest.files.find((file) => file.path === "runs.csv");
     expect(runsEvidence?.rows).toBe(0);
     expect(database.prepare("SELECT COUNT(*) AS count FROM runs").get()).toEqual({ count: 1 });
+  });
+
+  it("binds in-place source mutations even when row counts and timestamp maxima are unchanged", () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedRetailer(database, "r1");
+    seedProduct(database, { id: "p1", retailerId: "r1", itemId: null });
+    const before = databaseSourceSnapshotSha256(database);
+    const countsBefore = database.prepare("SELECT COUNT(*) AS count FROM products").get();
+
+    database.prepare("UPDATE products SET title = 'mutated without a new row' WHERE id = 'p1'").run();
+
+    expect(database.prepare("SELECT COUNT(*) AS count FROM products").get()).toEqual(countsBefore);
+    expect(databaseSourceSnapshotSha256(database)).not.toBe(before);
+  });
+
+  it("uses detected_at as the current maximum for an open healing event", async () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedAuthoritativeWeights(database);
+    seedRetailer(database, "r1");
+    database.prepare(`
+      INSERT INTO healing_events(
+        id, retailer_id, purpose, category, status, drift_started_at, detected_at
+      ) VALUES ('open-healing', 'r1', 'extraction', 'drift', 'detected',
+        '2026-07-10T03:00:00.000Z', '2026-07-10T03:10:00.000Z')
+    `).run();
+    const outputRoot = await mkdtemp(join(tmpdir(), "precos-export-open-healing-"));
+    directories.push(outputRoot);
+
+    const manifest = await exportResearchData(database, {
+      outputRoot,
+      sidraClient: emptySidra,
+      now: () => new Date("2026-07-13T11:00:00.000Z"),
+    });
+
+    expect(manifest.sources.database.maxima.healing_events)
+      .toBe("2026-07-10T03:10:00.000Z");
   });
 
   it("exports the registered retailer name for retailer/subitem rows", async () => {

@@ -20,12 +20,17 @@ import type {
   FailureCategory,
   ProductRef,
 } from "../strategies/types.js";
+import { selectStrategyValidationChallenge } from "../strategies/validation-challenge.js";
 import {
+  canonicalEvidenceJson,
+  readTrustedValidatorArtifactSha256,
+  readValidationVerificationPublicKey,
   strategyEvidenceSha256,
   validateStrategyEvidence,
   validationReceiptSha256,
   type StrategyValidationEvidence,
 } from "../strategies/validation-evidence.js";
+import { insertVerifiedStrategyValidationEvidence } from "./database.js";
 
 export interface ActiveStrategy<T> {
   id: string;
@@ -127,7 +132,7 @@ export interface GeneratedStrategyActivationInput {
     receiptPath: string;
     receiptSha256: string;
     evidence: StrategyValidationEvidence;
-    verificationPublicKey: KeyObject;
+    testVerificationPublicKey?: KeyObject;
   };
   activatedAt: string;
 }
@@ -257,9 +262,10 @@ export function attemptedForStageOnDay(
 
 export type RequestAdmissionStage = "discover" | "collect";
 
+export const DAILY_NETWORK_REQUEST_BUDGET = 2_000;
 export const REQUEST_BUDGET_BY_STAGE: Readonly<Record<RequestAdmissionStage, number>> = {
-  discover: 2_000,
-  collect: 2_000,
+  discover: DAILY_NETWORK_REQUEST_BUDGET,
+  collect: DAILY_NETWORK_REQUEST_BUDGET,
 };
 
 export interface RequestAdmissionResult {
@@ -283,16 +289,28 @@ export function requestAdmissionsForStageOnDay(
   return row.admitted;
 }
 
+export function requestAdmissionsForDay(
+  database: Database.Database,
+  retailerId: string,
+  collectionDay: string,
+): number {
+  return (database.prepare(`
+    SELECT COUNT(*) AS admitted
+    FROM request_admissions
+    WHERE retailer_id = ? AND collection_day = ?
+  `).get(retailerId, collectionDay) as { admitted: number }).admitted;
+}
+
 export function remainingRequestAdmissions(
   database: Database.Database,
   retailerId: string,
   collectionDay: string,
-  stage: RequestAdmissionStage,
+  _stage: RequestAdmissionStage,
 ): number {
   return Math.max(
     0,
-    REQUEST_BUDGET_BY_STAGE[stage]
-      - requestAdmissionsForStageOnDay(database, retailerId, collectionDay, stage),
+    DAILY_NETWORK_REQUEST_BUDGET
+      - requestAdmissionsForDay(database, retailerId, collectionDay),
   );
 }
 
@@ -334,16 +352,21 @@ export function admitRequest(
     ) {
       throw new Error("Request admission identity must match an existing run");
     }
-    const used = requestAdmissionsForStageOnDay(
+    const used = requestAdmissionsForDay(
+      database,
+      input.retailerId,
+      input.collectionDay,
+    );
+    const maximum = DAILY_NETWORK_REQUEST_BUDGET;
+    if (used >= maximum) {
+      return { admitted: false, used, remaining: 0, admissionId: null };
+    }
+    const stageOrdinal = requestAdmissionsForStageOnDay(
       database,
       input.retailerId,
       input.collectionDay,
       input.stage,
-    );
-    const maximum = REQUEST_BUDGET_BY_STAGE[input.stage];
-    if (used >= maximum) {
-      return { admitted: false, used, remaining: 0, admissionId: null };
-    }
+    ) + 1;
     const admissionId = input.id ?? randomUUID();
     database.prepare(`
       INSERT INTO request_admissions
@@ -355,7 +378,7 @@ export function admitRequest(
       input.retailerId,
       input.collectionDay,
       input.stage,
-      used + 1,
+      stageOrdinal,
       input.admittedAt,
     );
     return {
@@ -967,25 +990,7 @@ export function listStrategyValidationRefs(
   retailerId: string,
   limit = 30,
 ): ProductRef[] {
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    throw new RangeError("Validation reference limit must be positive");
-  }
-  return (database.prepare(
-    `SELECT canonical_url, retailer_product_id, source_category
-     FROM products
-     WHERE retailer_id = ? AND active = 1 AND in_scope = 1
-     GROUP BY canonical_url
-     ORDER BY last_seen DESC, canonical_url
-     LIMIT ?`,
-  ).all(retailerId, limit) as Array<{
-    canonical_url: string;
-    retailer_product_id: string | null;
-    source_category: string | null;
-  }>).map((row) => ({
-    canonicalUrl: row.canonical_url,
-    externalId: row.retailer_product_id,
-    sourceCategory: row.source_category,
-  }));
+  return selectStrategyValidationChallenge(database, retailerId, limit);
 }
 
 export function beginExplorationRun(
@@ -1148,20 +1153,28 @@ export function activateGeneratedStrategy(
       `SELECT COALESCE(MAX(version), 0) + 1 AS version
        FROM strategies WHERE retailer_id = ? AND purpose = ?`,
     ).get(input.retailerId, input.purpose) as { version: number };
-    const authoritativeRefs = (database.prepare(`
-      SELECT canonical_url, retailer_product_id, source_category
-      FROM products
-      WHERE retailer_id = ?
-      ORDER BY canonical_url
-    `).all(input.retailerId) as Array<{
-      canonical_url: string;
-      retailer_product_id: string | null;
-      source_category: string | null;
-    }>).map((row) => ({
-      canonicalUrl: row.canonical_url,
-      externalId: row.retailer_product_id,
-      sourceCategory: row.source_category,
-    }));
+    const authoritativeRefs = listStrategyValidationRefs(
+      database,
+      input.retailerId,
+      30,
+    );
+    if (authoritativeRefs.length < 30) {
+      throw new Error(
+        "Generated strategy activation requires at least 30 active in-scope catalog references",
+      );
+    }
+    const testVerificationPublicKey = input.validationEvidence.testVerificationPublicKey;
+    if (
+      testVerificationPublicKey !== undefined
+      && database.name !== ":memory:"
+      && database.name !== ""
+    ) {
+      throw new Error("A caller-supplied validation key is forbidden for file-backed activation");
+    }
+    const verificationPublicKey = testVerificationPublicKey
+      ?? readValidationVerificationPublicKey(
+        new URL("../../ops/validation-attestation-public.pem", import.meta.url).pathname,
+      );
     const evidence = validateStrategyEvidence(
       input.validationEvidence.evidence,
       {
@@ -1169,10 +1182,26 @@ export function activateGeneratedStrategy(
         purpose: input.purpose,
         strategyVersion: versionRow.version,
         strategy: input.strategy,
-        verificationPublicKey: input.validationEvidence.verificationPublicKey,
+        verificationPublicKey,
         authoritativeRefs,
       },
     );
+    if (
+      testVerificationPublicKey === undefined
+      && (
+        evidence.executor.artifactSha256 !== readTrustedValidatorArtifactSha256()
+        || evidence.executor.challengeAlgorithm
+          !== "active-in-scope-category-url-bucket-round-robin-v1"
+      )
+    ) {
+      throw new Error("Generated strategy receipt is not bound to the trusted validator artifact");
+    }
+    if (canonicalEvidenceJson(evidence.samples.map(({ ref }) => ref))
+      !== canonicalEvidenceJson(authoritativeRefs)) {
+      throw new Error(
+        "Generated strategy receipt does not match the independent validation challenge",
+      );
+    }
     const expectedReceiptPath = `data/validation/${input.retailerId}-${input.purpose}-v${versionRow.version}.json`;
     const receiptSha256 = validationReceiptSha256(evidence);
     if (
@@ -1213,24 +1242,15 @@ export function activateGeneratedStrategy(
       input.activatedAt,
       evidence.validatedAt,
     );
-    database.prepare(`
-      INSERT INTO strategy_validation_evidence
-        (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-         executor_json, attestation_key_id, attempted, valid, score,
-         validated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      expectedReceiptPath,
+    insertVerifiedStrategyValidationEvidence(database, {
+      strategyId: id,
+      receiptPath: expectedReceiptPath,
       receiptSha256,
-      evidence.sampleSetSha256,
-      JSON.stringify(evidence.executor),
-      evidence.attestation.keyId,
-      evidence.attempted,
-      evidence.valid,
-      evidence.score,
-      evidence.validatedAt,
-    );
+      evidence,
+      ...(testVerificationPublicKey === undefined
+        ? {}
+        : { testVerificationPublicKey }),
+    });
     if (current !== undefined) {
       const retired = database.prepare(
         `UPDATE strategies

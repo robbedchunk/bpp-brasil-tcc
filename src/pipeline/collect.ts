@@ -5,6 +5,10 @@ import type Database from "better-sqlite3";
 
 import { executeExtraction } from "../collection/executor.js";
 import {
+  NetworkRequestBoundaryError,
+  type ExtractionExecutionContext,
+} from "../collection/http.js";
+import {
   reservoirSample,
   writeReplayPayload,
   type ReplayPayload,
@@ -39,6 +43,7 @@ export interface CollectionPipelineDependencies {
   execute?: (
     strategy: ExtractionStrategy,
     ref: StoredProductRef,
+    context?: ExtractionExecutionContext,
   ) => Promise<ExtractionResult>;
   limit?: number;
   concurrency?: number;
@@ -398,11 +403,12 @@ export async function runCollection(
       sleep,
       clock,
     );
+    const transportManagedAdmissions = dependencies.execute === undefined;
     const blockingController = createBlockingController(
       dependencies.blockingPolicy,
       sleep,
       clock,
-      politeGate,
+      transportManagedAdmissions ? async () => {} : politeGate,
     );
     let requestBudgetExhausted = false;
 
@@ -470,28 +476,51 @@ export async function runCollection(
       async (product): Promise<void> => {
         if (requestBudgetExhausted) return;
         if (!await blockingController.beforeAttempt()) return;
-        let admitted = false;
-        try {
-          admitted = admitRequest(dependencies.database, {
-            runId,
-            retailerId,
-            collectionDay: day,
-            stage: "collect",
-            admittedAt: now().toISOString(),
-          }).admitted;
-        } catch (error) {
-          blockingController.cancelAttempt();
-          throw error;
-        }
-        if (!admitted) {
-          requestBudgetExhausted = true;
-          blockingController.cancelAttempt();
-          return;
+        if (!transportManagedAdmissions) {
+          let admitted = false;
+          try {
+            admitted = admitRequest(dependencies.database, {
+              runId,
+              retailerId,
+              collectionDay: day,
+              stage: "collect",
+              admittedAt: now().toISOString(),
+            }).admitted;
+          } catch (error) {
+            blockingController.cancelAttempt();
+            throw error;
+          }
+          if (!admitted) {
+            requestBudgetExhausted = true;
+            blockingController.cancelAttempt();
+            return;
+          }
         }
         counters.attempted += 1;
         let result: ExtractionResult;
         try {
-          result = await execute(active.strategy, product);
+          result = await execute(active.strategy, product, transportManagedAdmissions
+            ? {
+                beforeNetworkRequest: async () => {
+                  await politeGate();
+                  const admission = admitRequest(dependencies.database, {
+                    runId,
+                    retailerId,
+                    collectionDay: day,
+                    stage: "collect",
+                    admittedAt: now().toISOString(),
+                  });
+                  if (!admission.admitted) {
+                    requestBudgetExhausted = true;
+                    throw new NetworkRequestBoundaryError({
+                      category: "network",
+                      message: "Daily retailer network request budget is exhausted",
+                      responded: false,
+                    });
+                  }
+                },
+              }
+            : undefined);
         } catch (error) {
           result = rejected(error);
         }

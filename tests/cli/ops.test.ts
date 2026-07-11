@@ -8,6 +8,19 @@ import type { AlertEvent } from "../../src/ops/alerts.js";
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 afterEach(() => databases.splice(0).forEach((database) => database.close()));
 
+const scheduledDetails = {
+  provenanceVersion: 1,
+  trigger: "systemd-timer",
+  serviceUnit: "precos-daily.service",
+  timerUnit: "precos-daily.timer",
+  invocationId: "a".repeat(32),
+  cgroupSha256: "b".repeat(64),
+  releaseId: "c".repeat(32),
+  timerLastTriggerAt: "2026-07-10T06:00:00.000Z",
+  serviceStartedAt: "2026-07-10T06:00:00.000Z",
+  timerCausalitySha256: "b86ba89e8105bea1281932a48880f8dc3ca784e6100932b29db415977b575197",
+};
+
 async function run(
   dependencies: CliDependencies,
 ): Promise<{ stdout: string; stderr: string }> {
@@ -46,7 +59,7 @@ describe("heartbeat CLI", () => {
       pipeline: "collect",
       scheduledFor: "2026-07-10T06:00:00.000Z",
       completedAt: "2026-07-10T06:05:00.000Z",
-      details: { trigger: "systemd-timer", timerUnit: "precos-daily.timer" },
+      details: scheduledDetails,
     });
     const alerts: AlertEvent[] = [];
 
@@ -67,7 +80,7 @@ describe("heartbeat CLI", () => {
       pipeline: "collect",
       scheduledFor: "2026-07-09T06:00:00.000Z",
       completedAt: "2026-07-09T06:05:00.000Z",
-      details: { trigger: "systemd-timer", timerUnit: "precos-daily.timer" },
+      details: scheduledDetails,
     });
     recordHeartbeat(database, {
       pipeline: "collect",

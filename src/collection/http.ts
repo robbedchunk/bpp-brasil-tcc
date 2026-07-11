@@ -41,6 +41,9 @@ export interface ExtractionExecutionContext {
   maxDomMatches?: number;
   maxRedirects?: number;
   userAgent?: string;
+  /** Called immediately before every actual HTTP exchange, including redirect
+   * hops and browser-routed subrequests. Throwing prevents the exchange. */
+  beforeNetworkRequest?: (url: string) => Promise<void>;
   allowDocumentUrl?: (url: string) => boolean;
   onMainDocumentResponse?: (evidence: MainDocumentResponseEvidence) => void;
 }
@@ -57,6 +60,16 @@ export interface BoundedHttpRequest {
   method: "GET" | "POST";
   headers?: Record<string, string>;
   body?: Exclude<RequestInit["body"], undefined> | null;
+}
+
+export class NetworkRequestBoundaryError extends Error {
+  readonly failure: ExtractionFailure;
+
+  constructor(failure: ExtractionFailure) {
+    super(failure.message);
+    this.name = "NetworkRequestBoundaryError";
+    this.failure = failure;
+  }
 }
 
 export interface BoundedHttpResponse {
@@ -389,8 +402,12 @@ export async function fetchBounded(
 
     let response: Response;
     try {
+      await context.beforeNetworkRequest?.(currentUrl);
       response = await fetchImplementation(currentUrl, init);
     } catch (error) {
+      if (error instanceof NetworkRequestBoundaryError) {
+        return { ok: false, failure: error.failure };
+      }
       const timeout = isTimeoutError(error, signal);
       return {
         ok: false,

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -14,6 +14,10 @@ import {
   auditPublication,
   validateFreshCloneReceipt,
 } from "../../src/publication/audit.js";
+import {
+  canonicalEvidenceJson,
+  validationAttestationKeyId,
+} from "../../src/strategies/validation-evidence.js";
 import {
   extractionStrategy,
   seedRetailer,
@@ -301,7 +305,7 @@ describe("publication audit", () => {
     await initializeRepository(root);
     const databasePath = join(root, "data", "precos.sqlite");
     const replayRoot = join(root, "data", "raw-html");
-    const database = openDatabase(databasePath);
+    const database = openDatabase(":memory:");
     seedRetailer(database);
     const strategyId = seedStrategy(database, "extraction", extractionStrategy);
     database.prepare(`
@@ -349,6 +353,7 @@ describe("publication audit", () => {
       strategyVersion: 1,
       replay: { path: artifact.path, sha256: artifact.sha256 },
     });
+    await database.backup(databasePath);
     database.close();
 
     const safe = await auditPublication(options(root, databasePath));
@@ -491,11 +496,14 @@ describe("publication audit", () => {
   });
 
   it("validates strict fresh-clone receipts and rejects absolute paths", () => {
-    const valid = {
-      schemaVersion: 1,
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const payload = {
+      schemaVersion: 2,
       status: "pass",
       sourceCommit: "a".repeat(40),
+      cloneCommit: "a".repeat(40),
       completedAt: "2026-07-10T12:00:00.000Z",
+      verifierSha256: "e".repeat(64),
       runtimes: { node: "v24.18.0", npm: "11.16.0", python: "3.14.4" },
       checks: ["setup", "smoke", "publication", "analysis"].map((id) => ({
         id,
@@ -507,15 +515,29 @@ describe("publication audit", () => {
         { path: "data/exports/snapshots/sample/manifest.json", sha256: "d".repeat(64) },
       ],
     };
-    expect(validateFreshCloneReceipt(valid)).toEqual(valid);
+    const canonical = canonicalEvidenceJson(payload);
+    const valid = {
+      ...payload,
+      attestation: {
+        algorithm: "ed25519",
+        keyId: validationAttestationKeyId(publicKey),
+        payloadSha256: createHash("sha256").update(canonical).digest("hex"),
+        signature: sign(null, Buffer.from(canonical), privateKey).toString("base64"),
+      },
+    };
+    expect(validateFreshCloneReceipt(valid, publicKey)).toEqual(valid);
     expect(() => validateFreshCloneReceipt({
       ...valid,
       artifacts: [{ path: "/home/operator/private.json", sha256: "c".repeat(64) }],
-    })).toThrow(/relative/i);
+    }, publicKey)).toThrow(/relative/i);
     expect(() => validateFreshCloneReceipt({
       ...valid,
       checks: [valid.checks[0], valid.checks[0]],
-    })).toThrow(/unique|check/i);
+    }, publicKey)).toThrow(/unique|check/i);
+    expect(() => validateFreshCloneReceipt({
+      ...valid,
+      verifierSha256: "f".repeat(64),
+    }, publicKey)).toThrow(/attestation/i);
   });
 
   it("rejects malformed public acceptance timestamps, criteria, summaries, and evidence", async () => {

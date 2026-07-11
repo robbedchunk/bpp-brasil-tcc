@@ -55,7 +55,18 @@ describe("daily pipeline", () => {
 
     await runDaily({
       database,
-      trigger: "systemd-timer",
+      scheduledInvocation: {
+        provenanceVersion: 1,
+        trigger: "systemd-timer",
+        serviceUnit: "precos-daily.service",
+        timerUnit: "precos-daily.timer",
+        invocationId: "a".repeat(32),
+        cgroupSha256: "b".repeat(64),
+        releaseId: "c".repeat(32),
+        timerLastTriggerAt: "2026-07-10T09:47:00.000Z",
+        serviceStartedAt: "2026-07-10T09:47:00.000Z",
+        timerCausalitySha256: "8bf3f48c5477aa192b0654f82cee5e73879c97cea96cb2f26f25194ddbd40371",
+      },
       now: () => new Date("2026-07-10T09:47:00.000Z"),
       collect: async () => ({
         id: "run-a",
@@ -77,7 +88,14 @@ describe("daily pipeline", () => {
     };
     expect(JSON.parse(row.details_json)).toMatchObject({
       trigger: "systemd-timer",
+      serviceUnit: "precos-daily.service",
       timerUnit: "precos-daily.timer",
+      invocationId: "a".repeat(32),
+      cgroupSha256: "b".repeat(64),
+      releaseId: "c".repeat(32),
+      timerLastTriggerAt: "2026-07-10T09:47:00.000Z",
+      serviceStartedAt: "2026-07-10T09:47:00.000Z",
+      timerCausalitySha256: "8bf3f48c5477aa192b0654f82cee5e73879c97cea96cb2f26f25194ddbd40371",
       runIds: ["run-a"],
     });
   });

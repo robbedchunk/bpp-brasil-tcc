@@ -11,14 +11,10 @@ import {
   admitDiscoveryReference,
   admitReplaySlot,
   admitRequest,
-  createRun,
   requestAdmissionsForStageOnDay,
 } from "../../src/db/repositories.js";
 import {
-  discoveryStrategy,
-  extractionStrategy,
   seedRetailer,
-  seedStrategy,
 } from "../pipeline/helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
@@ -38,17 +34,13 @@ function createStrategyRun(
     day?: string;
   },
 ): void {
-  createRun(database, {
-    id: input.id,
-    retailerId: "retailer-1",
-    stage: input.stage,
-    collectionDay: input.day ?? "2026-07-10",
-    strategyId: input.stage === "discover"
-      ? "retailer-1-discovery-v1"
-      : "retailer-1-extraction-v1",
-    strategyVersion: 1,
-    startedAt: "2026-07-10T12:00:00.000Z",
-  });
+  database.prepare(`
+    INSERT INTO runs
+      (id, retailer_id, stage, collection_day, status, attempted, ok, failed,
+       started_at)
+    VALUES (?, 'retailer-1', ?, ?, 'running', 0, 0, 0,
+            '2026-07-10T12:00:00.000Z')
+  `).run(input.id, input.stage, input.day ?? "2026-07-10");
 }
 
 function fillAdmissions(
@@ -134,7 +126,6 @@ describe("durable request admissions", () => {
     const path = join(directory, "precos.sqlite");
     const database = openDatabase(path);
     seedRetailer(database);
-    seedStrategy(database, "extraction", extractionStrategy);
     for (let index = 0; index < 4; index += 1) {
       createStrategyRun(database, { id: `concurrent-${index}`, stage: "collect" });
     }
@@ -166,7 +157,6 @@ describe("durable request admissions", () => {
     const path = join(directory, "precos.sqlite");
     const crashed = openDatabase(path);
     seedRetailer(crashed);
-    seedStrategy(crashed, "extraction", extractionStrategy);
     createStrategyRun(crashed, { id: "crashed-run", stage: "collect" });
     crashed.prepare(`
       INSERT INTO products
@@ -229,12 +219,10 @@ describe("durable request admissions", () => {
     })).toEqual({ admitted: false, used: 20, remaining: 0, admissionId: null });
   });
 
-  it("caps stages independently and makes admission evidence append-only", () => {
+  it("shares one retailer/day cap across stages and keeps evidence append-only", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
-    seedStrategy(database, "discovery", discoveryStrategy);
-    seedStrategy(database, "extraction", extractionStrategy);
     createStrategyRun(database, { id: "collect-cap", stage: "collect" });
     createStrategyRun(database, { id: "discover-open", stage: "discover" });
     fillAdmissions(database, { runId: "collect-cap", stage: "collect", last: 2_000 });
@@ -253,21 +241,24 @@ describe("durable request admissions", () => {
       stage: "discover",
       admittedAt: "2026-07-10T12:00:00.000Z",
     });
-    expect(discoveryAdmission).toMatchObject({ admitted: true, used: 1, remaining: 1_999 });
+    expect(discoveryAdmission).toEqual({
+      admitted: false,
+      used: 2_000,
+      remaining: 0,
+      admissionId: null,
+    });
     expect(() => database.prepare(
       "UPDATE request_admissions SET admitted_at = admitted_at WHERE id = ?",
-    ).run(discoveryAdmission.admissionId)).toThrow(/immutable/iu);
+    ).run("collect-cap-admission-0001")).toThrow(/immutable/iu);
     expect(() => database.prepare(
       "DELETE FROM request_admissions WHERE id = ?",
-    ).run(discoveryAdmission.admissionId)).toThrow(/append-only/iu);
+    ).run("collect-cap-admission-0001")).toThrow(/append-only/iu);
   });
 
   it("rejects request, discovery-reference, and replay admissions for terminal runs", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
-    seedStrategy(database, "discovery", discoveryStrategy);
-    seedStrategy(database, "extraction", extractionStrategy);
     createStrategyRun(database, { id: "terminal-discovery", stage: "discover" });
     createStrategyRun(database, { id: "terminal-collection", stage: "collect" });
     database.prepare(`

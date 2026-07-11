@@ -33,6 +33,7 @@ import {
   buildAcceptanceReport,
   classificationAutomationIsCurrent,
   csvDataRowCount,
+  csvOverlapRowCount,
   experimentalSeriesState,
   evaluateM2,
   evaluateM3,
@@ -40,6 +41,7 @@ import {
   evaluateClassificationHumanReview,
   evaluateActiveStrategyValidationReceipts,
   resolveAcceptanceEvaluatedCommit,
+  releaseSourceMatchesEvaluatedCommit,
   renderAcceptanceMarkdown,
   readSystemdInstallationState,
   reviewFindingState,
@@ -48,6 +50,7 @@ import {
   validateTimerDefinitions,
   type AcceptanceReport,
 } from "../../src/ops/acceptance.js";
+import { insertTrustedStrategyValidationEvidence } from "../helpers/strategy-validation.js";
 
 const databases: Database.Database[] = [];
 const {
@@ -65,6 +68,28 @@ function fixture(): Database.Database {
   return database;
 }
 
+function scheduledProvenance(at: string, invocationId = "a".repeat(32)) {
+  const canonicalAt = new Date(at).toISOString();
+  return {
+    provenanceVersion: 1 as const,
+    trigger: "systemd-timer" as const,
+    serviceUnit: "precos-daily.service" as const,
+    timerUnit: "precos-daily.timer" as const,
+    invocationId,
+    cgroupSha256: "b".repeat(64),
+    releaseId: "c".repeat(32),
+    timerLastTriggerAt: canonicalAt,
+    serviceStartedAt: canonicalAt,
+    timerCausalitySha256: createHash("sha256").update(JSON.stringify({
+      invocationId,
+      serviceStartedAt: canonicalAt,
+      serviceUnit: "precos-daily.service",
+      timerLastTriggerAt: canonicalAt,
+      timerUnit: "precos-daily.timer",
+    })).digest("hex"),
+  };
+}
+
 function m3Criterion(result: ReturnType<typeof evaluateM3>, id: string) {
   const item = result.criteria.find((candidate) => candidate.id === id);
   if (item === undefined) throw new Error(`Missing M3 criterion ${id}`);
@@ -79,22 +104,15 @@ function seedRetailer(database: Database.Database, id: string, products = 30): v
   database.prepare(`
     INSERT INTO strategies(
       id, retailer_id, purpose, tier, version, strategy_json, provenance,
-      validation_sample_size, validation_successes, validation_rate, active
-    ) VALUES (?, ?, 'extraction', 1, 1, '{}', 'fixture', 30, 27, 0.9, 0)
+      validation_sample_size, validation_successes, validation_rate, active,
+      validated_at
+    ) VALUES (?, ?, 'extraction', 1, 1, '{}', 'fixture', 30, 27, 0.9, 0,
+      '2026-07-10T00:00:00.000Z')
   `).run(`strategy-${id}`, id);
-  database.prepare(`
-    INSERT INTO strategy_validation_evidence
-      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-       executor_json, attestation_key_id, attempted, valid, score, validated_at)
-    VALUES (?, ?, ?, ?, '{}', ?, 30, 27, 0.9, '2026-07-10T00:00:00.000Z')
-  `).run(
-    `strategy-${id}`,
-    `data/validation/strategy-${id}.json`,
-    "a".repeat(64),
-    "b".repeat(64),
-    "c".repeat(64),
-  );
-  database.prepare("UPDATE strategies SET active = 1 WHERE id = ?")
+  insertTrustedStrategyValidationEvidence(database, `strategy-${id}`);
+  database.prepare(`UPDATE strategies
+    SET active = 1, activated_at = '2026-07-10T00:00:00.000Z'
+    WHERE id = ?`)
     .run(`strategy-${id}`);
   const insert = database.prepare(`
     INSERT INTO products(
@@ -238,6 +256,8 @@ function strategyReceipt(
       sourceCommit,
       playwrightVersion: "1.61.1",
       chromiumVersion: "Chromium 141.0.0.0",
+      artifactSha256: "d".repeat(64),
+      challengeAlgorithm: "active-in-scope-category-url-bucket-round-robin-v1",
       sequentialPacingMs: 1_100,
       timeoutMs: 15_000,
       maxBodyBytes: 2_000_000,
@@ -268,6 +288,7 @@ function seedCollection(
     monitorFailedRunIds?: string[];
     retailerFailures?: Array<Record<string, unknown>>;
   } = {},
+  createHeartbeat = true,
 ): void {
   const runId = `run-${retailerId}-${day}`;
   const scheduledAt = `${day}T${scheduledTime}`;
@@ -309,21 +330,23 @@ function seedCollection(
     SET status = 'completed', attempted = ?, ok = ?, failed = ?, finished_at = ?
     WHERE id = ?
   `).run(attempted, ok, attempted - ok, completedAt, runId);
-  database.prepare(`
-    INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
-    VALUES (?, 'collect', ?, ?, 'completed', ?)
-  `).run(
-    `heartbeat-${runId}`,
-    scheduledAt,
-    completedAt,
-    JSON.stringify({
+  if (createHeartbeat) {
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES (?, 'collect', ?, ?, 'completed', ?)
+    `).run(
+      `heartbeat-${runId}`,
+      scheduledAt,
+      completedAt,
+      JSON.stringify({
       trigger,
-      ...(trigger === "systemd-timer" ? { timerUnit: "precos-daily.timer" } : {}),
-      runIds: [runId],
-      monitorFailedRunIds: operational.monitorFailedRunIds ?? [],
-      retailerFailures: operational.retailerFailures ?? [],
-    }),
-  );
+      ...(trigger === "systemd-timer" ? scheduledProvenance(scheduledAt) : {}),
+        runIds: [runId],
+        monitorFailedRunIds: operational.monitorFailedRunIds ?? [],
+        retailerFailures: operational.retailerFailures ?? [],
+      }),
+    );
+  }
 }
 
 function seedM4Evidence(database: Database.Database, estimateSource: string): void {
@@ -352,18 +375,7 @@ function seedM4Evidence(database: Database.Database, estimateSource: string): vo
         'Codex SDK; trusted host validation', 'gpt-test', 'prompt-v1',
         30, 27, 0.9, 0, '2026-07-10T10:00:00.000Z', NULL)
     `).run(strategyId, purpose);
-    database.prepare(`
-      INSERT INTO strategy_validation_evidence
-        (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-         executor_json, attestation_key_id, attempted, valid, score, validated_at)
-      VALUES (?, ?, ?, ?, '{}', ?, 30, 27, 0.9, '2026-07-10T10:00:00.000Z')
-    `).run(
-      strategyId,
-      `data/validation/agent-retailer-${purpose}-v2.json`,
-      "a".repeat(64),
-      "b".repeat(64),
-      "c".repeat(64),
-    );
+    insertTrustedStrategyValidationEvidence(database, strategyId);
     database.prepare(`
       UPDATE strategies
       SET active = 1, activated_at = '2026-07-10T10:00:00.000Z'
@@ -475,6 +487,7 @@ describe("acceptance status and evidence", () => {
       await mkdir(join(root, "docs"), { recursive: true });
       await writeFile(join(root, "data", "acceptance", "acceptance.json"), "{}\n");
       await writeFile(join(root, "data", "acceptance", "evidence", "fresh-clone.json"), "{}\n");
+      await writeFile(join(root, "data", "acceptance", "evidence", "healing-sabotage-drill.json"), "{}\n");
       await writeFile(join(root, "data", "acceptance", "evidence", "classification-review-v7.json"), "{}\n");
       await writeFile(join(root, "docs", "acceptance-report.md"), "# Generated report\n");
       execFileSync("git", ["add", "."], { cwd: root });
@@ -520,6 +533,52 @@ describe("acceptance status and evidence", () => {
     }
   });
 
+  it("keeps a frozen release current across committed mutable state only", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acceptance-release-state-tail-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      execFileSync("git", ["config", "user.name", "Evidence Test"], { cwd: root });
+      execFileSync("git", ["config", "user.email", "evidence@example.test"], { cwd: root });
+      await mkdir(join(root, "src"), { recursive: true });
+      await writeFile(join(root, "src", "implementation.ts"), "export const implemented = true;\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "implementation"], { cwd: root });
+      const releaseCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+
+      await mkdir(join(root, "data", "exports", "cut"), { recursive: true });
+      await mkdir(join(root, "analysis", "output", "cut"), { recursive: true });
+      await writeFile(join(root, "data", "precos.sqlite"), "scheduled evidence\n");
+      await writeFile(join(root, "data", "exports", "cut", "manifest.json"), "{}\n");
+      await writeFile(join(root, "analysis", "output", "cut", "manifest.json"), "{}\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "runtime state"], { cwd: root });
+      const evaluatedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+
+      expect(resolveAcceptanceEvaluatedCommit(root)).toBe(evaluatedCommit);
+      expect(releaseSourceMatchesEvaluatedCommit(root, releaseCommit, evaluatedCommit)).toBe(true);
+      expect(releaseSourceMatchesEvaluatedCommit(root, evaluatedCommit, releaseCommit)).toBe(true);
+
+      await mkdir(join(root, "retailers"), { recursive: true });
+      await writeFile(join(root, "retailers", "changed.json"), "{}\n");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "runtime configuration"], { cwd: root });
+      const changedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim();
+
+      expect(releaseSourceMatchesEvaluatedCommit(root, releaseCommit, changedCommit)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires a nonempty experimental relative chain while allowing absent official overlap", () => {
     const exportManifest = (rows: number, status: "no_index_data" | "complete") => ({
       status,
@@ -551,6 +610,29 @@ describe("acceptance status and evidence", () => {
       { status: "complete", files: [{ path: "aggregate_daily.csv", rows: 1 }] },
       analysisManifest(1, false),
     ).valid).toBe(false);
+  });
+
+  it("counts only genuine numeric official/experimental overlap rows", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "acceptance-overlap-"));
+    try {
+      const path = join(directory, "monthly_comparison.csv");
+      await writeFile(path, [
+        "month,status,experimental_variation_pct,official_variation_pct",
+        "2026-05,overlap,1.25,0.80",
+        "2026-06,no_overlap,,0.90",
+        "2026-07,overlap,not-a-number,1.10",
+        "",
+      ].join("\n"));
+      expect(csvOverlapRowCount(path)).toBe(1);
+      await writeFile(path, [
+        "month,status,experimental_variation_pct,official_variation_pct",
+        "2026-06,no_overlap,,0.90",
+        "",
+      ].join("\n"));
+      expect(csvOverlapRowCount(path)).toBe(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("counts actual CSV data rows instead of trusting manifest metadata", async () => {
@@ -616,6 +698,19 @@ describe("acceptance status and evidence", () => {
       .toBe("pending");
   });
 
+  it("does not fail a deployment made after today's daily start before tomorrow's first deadline", () => {
+    const database = fixture();
+    const deployedAt = new Date("2026-07-10T06:30:00.000Z"); // 03:30 São Paulo
+    const result = evaluateM2(
+      database,
+      new Date("2026-07-10T07:30:00.000Z"),
+      deployedAt,
+      "a".repeat(32),
+    );
+    expect(result.criterion.status).toBe("pending");
+    expect(result.criterion.reasonCodes).toContain("TIME_WINDOW_NOT_ELAPSED");
+  });
+
   it("does not let full manual daytime runs qualify as scheduled M2 evidence", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta"]) {
@@ -670,6 +765,7 @@ describe("acceptance status and evidence", () => {
 
   it("rejects the exact 0.899 validation boundary", () => {
     const database = fixture();
+    database.exec("DROP TRIGGER strategies_active_validation_binding_no_update");
     for (const retailer of ["alpha", "beta"]) {
       seedRetailer(database, retailer);
       database.prepare("UPDATE strategies SET validation_rate = 0.899 WHERE retailer_id = ?")
@@ -722,22 +818,23 @@ describe("acceptance status and evidence", () => {
       database.prepare(`
         INSERT INTO strategies(
           id, retailer_id, purpose, tier, version, strategy_json, provenance,
-          validation_sample_size, validation_successes, validation_rate, active
-        ) VALUES (?, ?, 'discovery', 1, 1, '{}', 'fixture', 30, 27, 0.9, 0)
+          validation_sample_size, validation_successes, validation_rate, active,
+          validated_at
+        ) VALUES (?, ?, 'discovery', 1, 1, '{}', 'fixture', 30, 27, 0.9, 0,
+          '2026-07-10T00:00:00.000Z')
       `).run(`discovery-${retailer}`, retailer);
-      database.prepare(`
-        INSERT INTO strategy_validation_evidence
-          (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-           executor_json, attestation_key_id, attempted, valid, score, validated_at)
-        VALUES (?, ?, ?, ?, '{}', ?, 30, 27, 0.9, '2026-07-10T00:00:00.000Z')
-      `).run(
+      insertTrustedStrategyValidationEvidence(
+        database,
         `discovery-${retailer}`,
-        `data/validation/discovery-${retailer}.json`,
-        "d".repeat(64),
-        "e".repeat(64),
-        "f".repeat(64),
+        {
+          receiptSha256: "d".repeat(64),
+          sampleSetSha256: "e".repeat(64),
+          attestationKeyId: "f".repeat(64),
+        },
       );
-      database.prepare("UPDATE strategies SET active = 1 WHERE id = ?")
+      database.prepare(`UPDATE strategies
+        SET active = 1, activated_at = '2026-07-10T00:00:00.000Z'
+        WHERE id = ?`)
         .run(`discovery-${retailer}`);
       seedCollection(database, retailer, "2026-07-09", 30, 30);
       seedCollection(database, retailer, "2026-07-10", 30, 30);
@@ -771,12 +868,44 @@ describe("acceptance status and evidence", () => {
     expect(result.evidence[0]?.facts.qualifyingRetailers).toBe(1);
   });
 
+  it("accepts consecutive scheduled days only from the currently deployed release", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(database, retailer);
+      seedCollection(database, retailer, "2026-07-09", 30, 30);
+      seedCollection(database, retailer, "2026-07-10", 30, 30);
+    }
+    const deployedAt = new Date("2026-07-09T00:00:00.000Z");
+    expect(evaluateM2(
+      database,
+      new Date("2026-07-10T12:00:00.000Z"),
+      deployedAt,
+      "c".repeat(32),
+    ).criterion.status).toBe("pass");
+    expect(evaluateM2(
+      database,
+      new Date("2026-07-10T12:00:00.000Z"),
+      deployedAt,
+      "d".repeat(32),
+    ).criterion.status).not.toBe("pass");
+  });
+
   it("uses only the latest classification and retains low-confidence products in M3", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
       seedRetailer(database, retailer, 5);
-      seedCollection(database, retailer, "2026-07-10", 5, 5);
+      seedCollection(database, retailer, "2026-07-10", 5, 5, "06:00:00.000Z", "systemd-timer", {}, false);
     }
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('heartbeat-latest-panel', 'collect', '2026-07-10T06:00:00.000Z',
+        '2026-07-10T06:11:00.000Z', 'completed', ?)
+    `).run(JSON.stringify({
+      ...scheduledProvenance("2026-07-10T06:00:00.000Z"),
+      runIds: ["alpha", "beta", "gamma", "delta"].map((retailer) => `run-${retailer}-2026-07-10`),
+      monitorFailedRunIds: [],
+      retailerFailures: [],
+    }));
     database.prepare(`
       INSERT INTO ipca_items(id, code, name, weight, weight_period, source_url, citation)
       VALUES ('item', '1', 'Item', 1, '2026-01', 'https://example.test', 'fixture')
@@ -913,7 +1042,7 @@ describe("acceptance status and evidence", () => {
     ]);
   });
 
-  it("does not count manual or stale collection as live-panel proof", () => {
+  it("treats a newer manual heartbeat as a panel contradiction and rejects stale scheduled proof", () => {
     const manual = fixture();
     for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
       seedRetailer(manual, retailer, 1);
@@ -923,9 +1052,9 @@ describe("acceptance status and evidence", () => {
       credentialConfigured: false,
       siteValidated: true,
     }, new Date("2026-07-10T12:00:00.000Z"));
-    expect(m3Criterion(manualResult, "m3-live-panel").status).toBe("pending");
+    expect(m3Criterion(manualResult, "m3-live-panel").status).toBe("fail");
     expect(m3Criterion(manualResult, "m3-live-panel").reasonCodes)
-      .toContain("SCHEDULED_RUN_NOT_YET_DUE");
+      .toContain("EVIDENCE_CONTRADICTION");
 
     const stale = fixture();
     for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
@@ -954,6 +1083,43 @@ describe("acceptance status and evidence", () => {
     expect(m3Criterion(result, "m3-live-panel").status).toBe("fail");
     expect(m3Criterion(result, "m3-live-panel").reasonCodes)
       .toContain("EVIDENCE_CONTRADICTION");
+  });
+
+  it("does not union an older success across a newer failed panel heartbeat", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(database, retailer, 1);
+      seedCollection(database, retailer, "2026-07-10", 1, 1, "06:00:00.000Z", "systemd-timer", {}, false);
+    }
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('panel-success', 'collect', '2026-07-10T06:00:00.000Z',
+        '2026-07-10T06:10:00.000Z', 'completed', ?)
+    `).run(JSON.stringify({
+      ...scheduledProvenance("2026-07-10T06:00:00.000Z"),
+      runIds: ["alpha", "beta", "gamma", "delta"].map((retailer) => `run-${retailer}-2026-07-10`),
+      monitorFailedRunIds: [],
+      retailerFailures: [],
+    }));
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('panel-failed', 'collect', '2026-07-10T07:00:00.000Z',
+        '2026-07-10T07:01:00.000Z', 'failed', ?)
+    `).run(JSON.stringify({
+      ...scheduledProvenance("2026-07-10T07:00:00.000Z", "d".repeat(32)),
+      runIds: [],
+      monitorFailedRunIds: [],
+      retailerFailures: [{ retailerId: "alpha", message: "controlled failure" }],
+    }));
+
+    const result = evaluateM3(database, {
+      credentialConfigured: false,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(result, "m3-live-panel")).toMatchObject({
+      status: "fail",
+      reasonCodes: ["EVIDENCE_CONTRADICTION"],
+    });
   });
 
   it("keeps the human classification review as an independent authority gate", async () => {
@@ -1065,10 +1231,19 @@ describe("acceptance status and evidence", () => {
       execFileSync("git", ["config", "user.email", "receipt@example.test"], { cwd: root });
       await mkdir(join(root, "retailers"), { recursive: true });
       await mkdir(join(root, "data", "validation"), { recursive: true });
+      await mkdir(join(root, "data", "validation", "attempts"), { recursive: true });
       await mkdir(join(root, "ops"), { recursive: true });
+      await writeFile(
+        join(root, "data", "validation", "attempts", "manifest.json"),
+        `${JSON.stringify({ schemaVersion: 1, attempts: [] })}\n`,
+      );
       await writeFile(
         join(root, "ops", "validation-attestation-public.pem"),
         TEST_VALIDATION_PUBLIC_KEY.export({ type: "spki", format: "pem" }),
+      );
+      await writeFile(
+        join(root, "ops", "validator-bundle.sha256"),
+        `${"d".repeat(64)}\n`,
       );
       await writeFile(
         join(root, "retailers", "carrefour.json"),
@@ -1120,7 +1295,7 @@ describe("acceptance status and evidence", () => {
       const database = fixture();
       registerRetailerConfigs(database, [boundConfig], {
         projectRoot: root,
-        verificationPublicKey: TEST_VALIDATION_PUBLIC_KEY,
+        testVerificationPublicKey: TEST_VALIDATION_PUBLIC_KEY,
       });
       const insertProduct = database.prepare(`
         INSERT INTO products(
@@ -1306,17 +1481,47 @@ describe("acceptance status and evidence", () => {
       }
       const unitSetSha256 = sha256(units.map((unit) => `${unit.name}\0${unit.sha256}\n`).join(""));
       const receiptPath = join(root, "var", "operations", "systemd-install.json");
+      const releaseId = "a".repeat(32);
+      const sourceCommit = "b".repeat(40);
+      const deployedAt = "2026-07-10T10:30:00.000Z";
+      const releasePath = join(root, "release");
+      await mkdir(releasePath);
+      const releaseManifest = "fixture release manifest\n";
+      await writeFile(join(releasePath, "release-manifest.json"), releaseManifest);
       await writeFile(receiptPath, JSON.stringify({
-        schemaVersion: 1,
-        installedAt: "2026-07-10T10:00:00.000Z",
+        schemaVersion: 2,
+        scheduleActivatedAt: "2026-07-10T10:00:00.000Z",
+        deployedAt,
+        sourceCommit,
+        releaseId,
+        releasePath,
+        releaseManifestSha256: sha256(releaseManifest),
         unitSetSha256,
         units,
       }), { mode: 0o600 });
       await chmod(receiptPath, 0o600);
-      expect(readSystemdInstallationState(root, new Date("2026-07-10T12:00:00.000Z"), installed))
-        .toMatchObject({ valid: true, unitSetSha256 });
+      const validateRelease = () => ({
+        schemaVersion: 1 as const,
+        releaseId,
+        sourceCommit,
+        deployedAt,
+        releasePath,
+        sourceRoot: root,
+        stateRoot: root,
+        artifactSetSha256: "c".repeat(64),
+        artifacts: [],
+        links: [],
+        signature: {
+          algorithm: "ed25519" as const,
+          keyId: "d".repeat(64),
+          payloadSha256: "e".repeat(64),
+          value: `${"A".repeat(86)}==`,
+        },
+      });
+      expect(readSystemdInstallationState(root, new Date("2026-07-10T12:00:00.000Z"), installed, validateRelease))
+        .toMatchObject({ valid: true, unitSetSha256, releaseId, sourceCommit });
       await writeFile(join(installed, names[0]!), "tampered\n");
-      expect(readSystemdInstallationState(root, new Date("2026-07-10T12:00:00.000Z"), installed).valid)
+      expect(readSystemdInstallationState(root, new Date("2026-07-10T12:00:00.000Z"), installed, validateRelease).valid)
         .toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1353,6 +1558,7 @@ describe("acceptance status and evidence", () => {
               enabled: false,
               active: false,
               result: null,
+              invocationId: null,
               lastStartedAt: null,
               lastFinishedAt: null,
             }));

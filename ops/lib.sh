@@ -7,7 +7,9 @@ select_node_24() {
   fi
 
   local candidate
-  for candidate in "$HOME"/.nvm/versions/node/v24*/bin/node; do
+  for candidate in \
+    "$HOME"/.local/share/precos/runtime/node-v24*/bin/node \
+    "$HOME"/.nvm/versions/node/v24*/bin/node; do
     if [[ -x "$candidate" ]] && [[ "$("$candidate" -p 'process.versions.node.split(`.`)[0]' 2>/dev/null)" == "24" ]]; then
       export PATH="$(dirname "$candidate"):$PATH"
       return

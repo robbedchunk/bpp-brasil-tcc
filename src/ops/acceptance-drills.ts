@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,9 +18,12 @@ import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
 
-import { sendAlertWithReceipt, type AlertSinkOptions } from "./alerts.js";
-import { checkHeartbeat } from "./heartbeat.js";
+import { EXPECTED_SCHEMA_MIGRATIONS } from "../db/database.js";
 import { resolveAcceptanceEvaluatedCommit } from "./evidence-cut.js";
+import {
+  validateFrozenRelease,
+  type ReleaseManifest,
+} from "./release-manifest.js";
 
 export type DrillStatus = "pass" | "pending" | "fail";
 
@@ -39,10 +43,18 @@ const RECEIPT_KEYS = [
   "observedAt", "reasonCodes", "schemaVersion", "status",
 ] as const;
 const ALERT_FACT_KEYS = [
-  "accepted", "appendedLineSha256", "channel", "drillIdMatched",
-  "drillIdSha256", "fallbackFileMode", "heartbeatRowsAfter",
-  "heartbeatRowsBefore", "heartbeatRowsUnchanged", "httpStatus",
-  "latestHeartbeatIdUnchanged", "simulatedStale",
+  "dbInitCommandSha256", "dbInitExitCode", "execMainCode",
+  "execMainStatus", "heartbeatCliArtifactSha256", "heartbeatCommandSha256",
+  "heartbeatExitCode", "heartbeatLastSuccessAt", "heartbeatStale",
+  "heartbeatStdoutSha256", "invocationId", "isolatedAlertLineMatched",
+  "isolatedAlertLineSha256", "isolatedAlertMode", "isolatedHeartbeatRows",
+  "isolatedSchemaMigrationCount", "isolatedSchemaVersion", "journalBytes",
+  "journalInvocationMatched", "journalSha256", "protocolVersion", "releaseArtifactSetSha256",
+  "releaseId", "releaseManifestSha256", "sourceHeartbeatRowsAfter",
+  "sourceHeartbeatRowsBefore", "sourceHeartbeatSnapshotSha256After",
+  "sourceHeartbeatSnapshotSha256Before", "sourceHeartbeatsUnchanged",
+  "systemdResult", "systemdRunCommandSha256", "systemdRunExitCode",
+  "transientUnit",
 ] as const;
 const BACKUP_FACT_KEYS = [
   "backupArtifactIdSha256", "backupSha256", "contentFingerprint", "countsMatched",
@@ -82,15 +94,37 @@ export function validatePublicDrillReceipt(
   const factKeys = value.drill === "alert" ? ALERT_FACT_KEYS : BACKUP_FACT_KEYS;
   if (!exactKeys(facts, factKeys)) throw new TypeError("Public drill receipt facts are not exactly allowlisted");
   if (value.drill === "alert") {
-    if (!["ntfy", "local", "local-after-ntfy-failure"].includes(String(facts.channel))
-      || typeof facts.accepted !== "boolean"
-      || (facts.httpStatus !== null && !Number.isInteger(facts.httpStatus))
-      || (facts.fallbackFileMode !== null && facts.fallbackFileMode !== "0600")
-      || (facts.appendedLineSha256 !== null && (typeof facts.appendedLineSha256 !== "string" || !HEX_64.test(facts.appendedLineSha256)))
-      || typeof facts.heartbeatRowsBefore !== "number"
-      || typeof facts.heartbeatRowsAfter !== "number"
-      || ![facts.simulatedStale, facts.heartbeatRowsUnchanged, facts.latestHeartbeatIdUnchanged, facts.drillIdMatched].every((item) => typeof item === "boolean")
-      || typeof facts.drillIdSha256 !== "string" || !HEX_64.test(facts.drillIdSha256)) {
+    if (facts.protocolVersion !== 2
+      || typeof facts.releaseId !== "string" || !/^[a-f0-9]{32}$/u.test(facts.releaseId)
+      || typeof facts.transientUnit !== "string"
+      || !/^precos-alert-drill-[a-f0-9]{12}\.service$/u.test(facts.transientUnit)
+      || typeof facts.invocationId !== "string" || !/^[a-f0-9]{32}$/u.test(facts.invocationId)
+      || facts.systemdResult !== "signal" || facts.execMainCode !== "killed"
+      || facts.execMainStatus !== 9
+      || !Number.isInteger(facts.systemdRunExitCode)
+      || !Number.isInteger(facts.dbInitExitCode)
+      || !Number.isInteger(facts.heartbeatExitCode)
+      || facts.heartbeatLastSuccessAt !== null
+      || facts.isolatedAlertMode !== "0600"
+      || !Number.isInteger(facts.sourceHeartbeatRowsBefore)
+      || !Number.isInteger(facts.sourceHeartbeatRowsAfter)
+      || !Number.isInteger(facts.isolatedHeartbeatRows)
+      || !Number.isInteger(facts.isolatedSchemaMigrationCount)
+      || !Number.isInteger(facts.isolatedSchemaVersion)
+      || !Number.isInteger(facts.journalBytes)
+      || ![
+        facts.releaseManifestSha256, facts.releaseArtifactSetSha256,
+        facts.heartbeatCliArtifactSha256, facts.systemdRunCommandSha256,
+        facts.dbInitCommandSha256, facts.heartbeatCommandSha256,
+        facts.heartbeatStdoutSha256, facts.journalSha256,
+        facts.isolatedAlertLineSha256,
+        facts.sourceHeartbeatSnapshotSha256Before,
+        facts.sourceHeartbeatSnapshotSha256After,
+      ].every((item) => typeof item === "string" && HEX_64.test(item))
+      || ![
+        facts.heartbeatStale, facts.isolatedAlertLineMatched,
+        facts.journalInvocationMatched, facts.sourceHeartbeatsUnchanged,
+      ].every((item) => typeof item === "boolean")) {
       throw new TypeError("Public alert receipt facts are invalid");
     }
   } else if (![facts.backupArtifactIdSha256, facts.backupSha256, facts.contentFingerprint,
@@ -107,18 +141,16 @@ export function validatePublicDrillReceipt(
   if (value.status === "pass") {
     if ((value.reasonCodes as unknown[]).length !== 0) throw new TypeError("Passing drill receipt cannot contain reason codes");
     if (value.drill === "alert") {
-      const local = facts.channel === "local" || facts.channel === "local-after-ntfy-failure";
-      const ntfy = facts.channel === "ntfy";
-      if (facts.accepted !== true || facts.simulatedStale !== true
-        || facts.heartbeatRowsUnchanged !== true || facts.latestHeartbeatIdUnchanged !== true
-        || facts.drillIdMatched !== true
-        || (ntfy && (!(typeof facts.httpStatus === "number") || facts.httpStatus < 200 || facts.httpStatus >= 300
-          || facts.fallbackFileMode !== null || facts.appendedLineSha256 !== null))
-        || (local && (facts.fallbackFileMode !== "0600"
-          || typeof facts.appendedLineSha256 !== "string" || !HEX_64.test(facts.appendedLineSha256)
-          || (facts.channel === "local" && facts.httpStatus !== null)
-          || (facts.channel === "local-after-ntfy-failure" && typeof facts.httpStatus === "number"
-            && facts.httpStatus >= 200 && facts.httpStatus < 300)))) {
+      if (facts.systemdRunExitCode === 0
+        || facts.dbInitExitCode !== 0 || facts.heartbeatExitCode !== 0
+        || facts.heartbeatStale !== true || facts.heartbeatLastSuccessAt !== null
+        || facts.journalBytes === 0 || facts.journalInvocationMatched !== true
+        || facts.isolatedAlertLineMatched !== true
+        || facts.isolatedHeartbeatRows !== 0
+        || facts.sourceHeartbeatRowsBefore !== facts.sourceHeartbeatRowsAfter
+        || facts.sourceHeartbeatSnapshotSha256Before
+          !== facts.sourceHeartbeatSnapshotSha256After
+        || facts.sourceHeartbeatsUnchanged !== true) {
         throw new TypeError("Passing alert receipt contradicts its delivery facts");
       }
     } else if (facts.integrityCheck !== "ok" || facts.restoreIntegrityCheck !== "ok"
@@ -138,14 +170,49 @@ interface ReceiptPaths {
   publicReceiptPath?: string;
 }
 
+interface AlertDrillReleaseBinding {
+  releasePath: string;
+  releaseId: string;
+  sourceCommit: string;
+  manifestSha256: string;
+  artifactSetSha256: string;
+  cliArtifactSha256: string;
+  cliPath: string;
+  nodePath: string;
+}
+
+interface DrillCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+interface DrillCommandOptions {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}
+
+export interface AlertDrillTestRunner {
+  resolveRelease(input: {
+    projectRoot: string;
+    evaluatedCommit: string;
+    now: Date;
+  }): AlertDrillReleaseBinding;
+  run(
+    command: string,
+    args: readonly string[],
+    options: DrillCommandOptions,
+  ): DrillCommandResult | Promise<DrillCommandResult>;
+}
+
 export interface AlertDrillOptions extends ReceiptPaths {
   projectRoot: string;
   databasePath: string;
-  fallbackPath: string;
-  ntfyTopic?: string;
-  fetch?: AlertSinkOptions["fetch"];
   now: () => Date;
   drillId?: () => string;
+  /** Explicit Vitest-only process seam. Production always uses native systemd
+   * and the installed signed frozen release. */
+  testRunner?: AlertDrillTestRunner;
 }
 
 export interface BackupDrillOptions extends ReceiptPaths {
@@ -230,72 +297,358 @@ function heartbeatIdentity(database: Database.Database): HeartbeatIdentity {
   `).get() as HeartbeatIdentity;
 }
 
+interface HeartbeatSnapshot extends HeartbeatIdentity {
+  sha256: string;
+}
+
+function heartbeatSnapshot(databasePath: string): HeartbeatSnapshot {
+  const database = new Database(databasePath, { readonly: true, fileMustExist: true });
+  try {
+    const identity = heartbeatIdentity(database);
+    const rows = database.prepare(`
+      SELECT id, pipeline, retailer_id, run_id, scheduled_for, completed_at,
+             status, details_json, created_at
+      FROM heartbeats ORDER BY id
+    `).all();
+    return { ...identity, sha256: sha256(JSON.stringify(rows)) };
+  } finally {
+    database.close();
+  }
+}
+
+function commandSha256(command: string, args: readonly string[]): string {
+  return sha256([command, ...args].join("\0"));
+}
+
+function exactIso(value: unknown, now: Date): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed <= now.getTime()
+    && new Date(parsed).toISOString() === value;
+}
+
+function installedRelease(
+  root: string,
+  evaluatedCommit: string,
+  now: Date,
+): AlertDrillReleaseBinding {
+  if (Number(process.versions.node.split(".")[0]) !== 24) {
+    throw new Error("Alert drill requires the provisioned Node.js 24 runtime");
+  }
+  const receiptPath = join(root, "var/operations/systemd-install.json");
+  if (!existsSync(receiptPath)) throw new Error("Systemd installation receipt is absent");
+  const receiptStat = lstatSync(receiptPath);
+  if (!receiptStat.isFile() || receiptStat.isSymbolicLink()
+    || (receiptStat.mode & 0o777) !== 0o600) {
+    throw new Error("Systemd installation receipt is not a private regular file");
+  }
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as Record<string, unknown>;
+  if (!exactKeys(receipt, [
+    "deployedAt", "releaseId", "releaseManifestSha256", "releasePath",
+    "scheduleActivatedAt", "schemaVersion", "sourceCommit", "unitSetSha256", "units",
+  ])
+    || receipt.schemaVersion !== 2
+    || !exactIso(receipt.deployedAt, now) || !exactIso(receipt.scheduleActivatedAt, now)
+    || typeof receipt.sourceCommit !== "string" || !HEX_40.test(receipt.sourceCommit)
+    || receipt.sourceCommit !== evaluatedCommit
+    || typeof receipt.releaseId !== "string" || !/^[a-f0-9]{32}$/u.test(receipt.releaseId)
+    || typeof receipt.releasePath !== "string" || !isAbsolute(receipt.releasePath)
+    || resolve(receipt.releasePath) !== receipt.releasePath
+    || typeof receipt.releaseManifestSha256 !== "string"
+    || !HEX_64.test(receipt.releaseManifestSha256)
+    || typeof receipt.unitSetSha256 !== "string" || !HEX_64.test(receipt.unitSetSha256)
+    || !Array.isArray(receipt.units) || receipt.units.length === 0) {
+    throw new Error("Systemd installation receipt does not bind the current release");
+  }
+  for (const unit of receipt.units) {
+    if (typeof unit !== "object" || unit === null || Array.isArray(unit)
+      || !exactKeys(unit as Record<string, unknown>, ["name", "sha256"])
+      || typeof (unit as { name?: unknown }).name !== "string"
+      || typeof (unit as { sha256?: unknown }).sha256 !== "string"
+      || !HEX_64.test((unit as { sha256: string }).sha256)) {
+      throw new Error("Systemd installation receipt contains a malformed unit binding");
+    }
+  }
+  const manifest = validateFrozenRelease({
+    releasePath: receipt.releasePath,
+    publicKeyPath: join(root, "ops/validation-attestation-public.pem"),
+    expectedSourceCommit: evaluatedCommit,
+    expectedReleaseId: receipt.releaseId,
+    expectedSourceRoot: root,
+  });
+  const manifestPath = join(receipt.releasePath, "release-manifest.json");
+  if (sha256(readFileSync(manifestPath)) !== receipt.releaseManifestSha256
+    || manifest.deployedAt !== receipt.deployedAt) {
+    throw new Error("Installed release manifest does not match its installation receipt");
+  }
+  const cliArtifact = manifest.artifacts.find(({ path }) => path === "dist/cli.js");
+  if (cliArtifact === undefined) throw new Error("Frozen release does not contain dist/cli.js");
+  return {
+    releasePath: receipt.releasePath,
+    releaseId: receipt.releaseId,
+    sourceCommit: receipt.sourceCommit,
+    manifestSha256: receipt.releaseManifestSha256,
+    artifactSetSha256: manifest.artifactSetSha256,
+    cliArtifactSha256: cliArtifact.sha256,
+    cliPath: join(receipt.releasePath, "dist/cli.js"),
+    nodePath: process.execPath,
+  };
+}
+
+function nativeCommand(
+  command: string,
+  args: readonly string[],
+  options: DrillCommandOptions,
+): DrillCommandResult {
+  try {
+    const stdout = execFileSync(command, [...args], {
+      cwd: options.cwd,
+      env: options.env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1_024 * 1_024,
+    });
+    return { exitCode: 0, stdout, stderr: "" };
+  } catch (error) {
+    const failure = error as {
+      status?: number;
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+    };
+    return {
+      exitCode: typeof failure.status === "number" ? failure.status : 1,
+      stdout: Buffer.isBuffer(failure.stdout)
+        ? failure.stdout.toString("utf8") : failure.stdout ?? "",
+      stderr: Buffer.isBuffer(failure.stderr)
+        ? failure.stderr.toString("utf8") : failure.stderr ?? "",
+    };
+  }
+}
+
+function systemdFailureCommand(unit: string): { command: string; args: string[] } {
+  return {
+    command: "systemd-run",
+    args: [
+      "--user",
+      `--unit=${unit}`,
+      "--wait",
+      "--property=Type=exec",
+      "/bin/sh",
+      "-c",
+      'kill -KILL "$$"',
+    ],
+  };
+}
+
+function parseProperties(output: string): Map<string, string> {
+  return new Map(output.trim().split("\n").filter(Boolean).map((line) => {
+    const separator = line.indexOf("=");
+    return separator < 0 ? [line, ""] : [line.slice(0, separator), line.slice(separator + 1)];
+  }));
+}
+
+function journalMatchesInvocation(output: string, invocationId: string): boolean {
+  let matched = false;
+  for (const line of output.split("\n").filter(Boolean)) {
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      if (entry._SYSTEMD_INVOCATION_ID === invocationId
+        || entry.OBJECT_SYSTEMD_INVOCATION_ID === invocationId) matched = true;
+    } catch {
+      return false;
+    }
+  }
+  return matched;
+}
+
 export async function runAlertDrill(options: AlertDrillOptions): Promise<PublicDrillReceipt> {
   const root = realpathSync(options.projectRoot);
   const path = safeDatabasePath(root, options.databasePath);
   const now = options.now();
-  const drillId = (options.drillId ?? randomUUID)();
-  const database = new Database(path, { readonly: true, fileMustExist: true });
-  let before: HeartbeatIdentity;
-  try {
-    before = heartbeatIdentity(database);
-  } finally {
-    database.close();
+  if (!Number.isFinite(now.getTime())) throw new Error("Alert drill clock is invalid");
+  if (options.testRunner !== undefined && process.env.VITEST !== "true") {
+    throw new Error("Alert drill test runner is restricted to Vitest");
   }
+  const evaluatedCommit = commit(root);
+  const runner = options.testRunner;
+  const release = runner === undefined
+    ? installedRelease(root, evaluatedCommit, now)
+    : runner.resolveRelease({ projectRoot: root, evaluatedCommit, now });
+  if (release.sourceCommit !== evaluatedCommit
+    || !HEX_40.test(release.sourceCommit)
+    || !/^[a-f0-9]{32}$/u.test(release.releaseId)
+    || ![release.manifestSha256, release.artifactSetSha256, release.cliArtifactSha256]
+      .every((value) => HEX_64.test(value))
+    || !isAbsolute(release.releasePath) || !isAbsolute(release.cliPath)
+    || !isAbsolute(release.nodePath)) {
+    throw new Error("Alert drill release binding is invalid");
+  }
+  const run = runner === undefined
+    ? async (command: string, args: readonly string[], commandOptions: DrillCommandOptions) =>
+        nativeCommand(command, args, commandOptions)
+    : runner.run.bind(runner);
+  const before = heartbeatSnapshot(path);
+  const rawDrillId = (options.drillId ?? randomUUID)().replaceAll("-", "").toLowerCase();
+  if (!/^[a-f0-9]{32}$/u.test(rawDrillId)) throw new Error("Alert drill ID is invalid");
+  const transientUnit = `precos-alert-drill-${rawDrillId.slice(0, 12)}.service`;
+  const baseOptions = { cwd: root, env: { ...process.env } };
+  const failureCommand = systemdFailureCommand(transientUnit);
+  const failure = await run(failureCommand.command, failureCommand.args, baseOptions);
+  const showArgs = [
+    "--user", "show", transientUnit,
+    "--property=Result,ExecMainCode,ExecMainStatus,InvocationID",
+  ];
+  const shown = await run("systemctl", showArgs, baseOptions);
+  const properties = parseProperties(shown.stdout);
+  const invocationId = properties.get("InvocationID") ?? "";
+  const result = properties.get("Result") ?? "";
+  const rawExecMainCode = properties.get("ExecMainCode") ?? "";
+  const execMainCode = rawExecMainCode === "2" || rawExecMainCode === "killed"
+    ? "killed" : rawExecMainCode;
+  const execMainStatus = Number(properties.get("ExecMainStatus"));
+  await run("systemctl", ["--user", "reset-failed", transientUnit], baseOptions);
+  const journalArgs = ["--user", "-u", transientUnit, "--output=json", "--no-pager", "--all"];
+  const journal = await run("journalctl", journalArgs, baseOptions);
+  const journalBytes = Buffer.byteLength(journal.stdout);
+  const journalInvocationMatched = /^[a-f0-9]{32}$/u.test(invocationId)
+    && journalMatchesInvocation(journal.stdout, invocationId);
 
-  const simulatedHeartbeat = new Date(now.getTime() - 25 * 60 * 60 * 1_000);
-  const heartbeatCheck = checkHeartbeat(now, simulatedHeartbeat);
-  const delivery = await sendAlertWithReceipt({
-    ...(options.ntfyTopic === undefined ? {} : { ntfyTopic: options.ntfyTopic }),
-    fallbackPath: options.fallbackPath,
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-    now: options.now,
-  }, {
-    severity: "warning",
-    title: `[DRILL] stale heartbeat ${drillId}`,
-    message: `Safe acceptance drill ${drillId}; no live heartbeat was changed.`,
-    details: { drillId, stale: heartbeatCheck.stale, ageMs: heartbeatCheck.ageMs },
-  });
-
-  const afterDatabase = new Database(path, { readonly: true, fileMustExist: true });
-  let after: HeartbeatIdentity;
+  const stagingParent = join(root, "var/acceptance");
+  mkdirSync(stagingParent, { recursive: true, mode: 0o700 });
+  const stagingRoot = mkdtempSync(join(stagingParent, "alert-drill-"));
+  let receipt: PublicDrillReceipt;
   try {
-    after = heartbeatIdentity(afterDatabase);
+    const isolatedDatabasePath = join(stagingRoot, "data", "precos.sqlite");
+    const isolatedAlertPath = join(stagingRoot, "var", "log", "alerts.jsonl");
+    const isolatedEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      PROJECT_ROOT: stagingRoot,
+      DATABASE_PATH: isolatedDatabasePath,
+      NTFY_TOPIC: "",
+      OPENAI_API_KEY: "",
+      CODEX_API_KEY: "",
+      LIVE_OPENAI: "0",
+    };
+    const cliOptions = { cwd: stagingRoot, env: isolatedEnvironment };
+    const dbInitArgs = [release.cliPath, "db", "init"];
+    const dbInit = await run(release.nodePath, dbInitArgs, cliOptions);
+    const heartbeatArgs = [release.cliPath, "heartbeat", "check", "--json"];
+    const heartbeat = await run(release.nodePath, heartbeatArgs, cliOptions);
+    let heartbeatOutput: Record<string, unknown> = {};
+    try {
+      heartbeatOutput = JSON.parse(heartbeat.stdout.trim()) as Record<string, unknown>;
+    } catch {
+      heartbeatOutput = {};
+    }
+    const heartbeatOutputValid = exactKeys(heartbeatOutput, ["ageMs", "lastSuccessAt", "stale"])
+      && heartbeatOutput.stale === true
+      && heartbeatOutput.ageMs === null
+      && heartbeatOutput.lastSuccessAt === null;
+    let isolatedHeartbeatRows = -1;
+    let isolatedSchemaMigrationCount = -1;
+    let isolatedSchemaVersion = -1;
+    if (existsSync(isolatedDatabasePath)) {
+      const isolated = new Database(isolatedDatabasePath, { readonly: true, fileMustExist: true });
+      try {
+        isolatedHeartbeatRows = (isolated.prepare(
+          "SELECT COUNT(*) AS count FROM heartbeats",
+        ).get() as { count: number }).count;
+        const schema = isolated.prepare(`
+          SELECT COUNT(*) AS count, COALESCE(MAX(version), 0) AS version
+          FROM schema_migrations
+        `).get() as { count: number; version: number };
+        isolatedSchemaMigrationCount = schema.count;
+        isolatedSchemaVersion = schema.version;
+      } finally {
+        isolated.close();
+      }
+    }
+    let isolatedAlertLine = "";
+    let isolatedAlertLineMatched = false;
+    let isolatedAlertMode = "";
+    if (existsSync(isolatedAlertPath)) {
+      isolatedAlertMode = (statSync(isolatedAlertPath).mode & 0o777)
+        .toString(8).padStart(4, "0");
+      const lines = readFileSync(isolatedAlertPath, "utf8").trimEnd().split("\n");
+      if (lines.length === 1) {
+        isolatedAlertLine = `${lines[0] ?? ""}\n`;
+        try {
+          const alert = JSON.parse(lines[0] ?? "") as Record<string, unknown>;
+          const details = alert.details as Record<string, unknown> | undefined;
+          isolatedAlertLineMatched = alert.severity === "error"
+            && alert.title === "Preço collection heartbeat stale"
+            && typeof alert.timestamp === "string" && Number.isFinite(Date.parse(alert.timestamp))
+            && details?.stale === true && details.ageMs === null
+            && details.lastSuccessAt === null;
+        } catch {
+          isolatedAlertLineMatched = false;
+        }
+      }
+    }
+    const after = heartbeatSnapshot(path);
+    const sourceHeartbeatsUnchanged = before.count === after.count
+      && before.latestId === after.latestId && before.sha256 === after.sha256;
+    const expectedSchemaVersion = EXPECTED_SCHEMA_MIGRATIONS.at(-1)?.version ?? 0;
+    const passed = failure.exitCode !== 0
+      && shown.exitCode === 0 && shown.stderr === ""
+      && result === "signal" && execMainCode === "killed" && execMainStatus === 9
+      && journal.exitCode === 0 && journal.stderr === "" && journalBytes > 0
+      && journalInvocationMatched
+      && dbInit.exitCode === 0 && dbInit.stderr === ""
+      && heartbeat.exitCode === 0 && heartbeat.stderr === "" && heartbeatOutputValid
+      && isolatedAlertMode === "0600" && isolatedAlertLineMatched
+      && isolatedHeartbeatRows === 0
+      && isolatedSchemaMigrationCount === EXPECTED_SCHEMA_MIGRATIONS.length
+      && isolatedSchemaVersion === expectedSchemaVersion
+      && sourceHeartbeatsUnchanged;
+    receipt = {
+      schemaVersion: 1,
+      drill: "alert",
+      status: passed ? "pass" : "fail",
+      observedAt: now.toISOString(),
+      evaluatedCommit,
+      implementationSha256: implementationSha256(),
+      reasonCodes: passed ? [] : ["EVIDENCE_CONTRADICTION"],
+      facts: {
+        protocolVersion: 2,
+        releaseId: release.releaseId,
+        releaseManifestSha256: release.manifestSha256,
+        releaseArtifactSetSha256: release.artifactSetSha256,
+        heartbeatCliArtifactSha256: release.cliArtifactSha256,
+        transientUnit,
+        systemdRunCommandSha256: commandSha256(failureCommand.command, failureCommand.args),
+        systemdRunExitCode: failure.exitCode,
+        systemdResult: result,
+        execMainCode,
+        execMainStatus,
+        invocationId,
+        journalBytes,
+        journalSha256: sha256(journal.stdout),
+        journalInvocationMatched,
+        dbInitCommandSha256: commandSha256(release.nodePath, dbInitArgs),
+        dbInitExitCode: dbInit.exitCode,
+        heartbeatCommandSha256: commandSha256(release.nodePath, heartbeatArgs),
+        heartbeatExitCode: heartbeat.exitCode,
+        heartbeatStdoutSha256: sha256(heartbeat.stdout),
+        heartbeatStale: heartbeatOutput.stale === true,
+        heartbeatLastSuccessAt: heartbeatOutput.lastSuccessAt === null
+          ? null : String(heartbeatOutput.lastSuccessAt ?? "invalid"),
+        isolatedSchemaMigrationCount,
+        isolatedSchemaVersion,
+        isolatedHeartbeatRows,
+        isolatedAlertMode,
+        isolatedAlertLineSha256: sha256(isolatedAlertLine),
+        isolatedAlertLineMatched,
+        sourceHeartbeatRowsBefore: before.count,
+        sourceHeartbeatRowsAfter: after.count,
+        sourceHeartbeatSnapshotSha256Before: before.sha256,
+        sourceHeartbeatSnapshotSha256After: after.sha256,
+        sourceHeartbeatsUnchanged,
+      },
+    };
   } finally {
-    afterDatabase.close();
+    rmSync(stagingRoot, { recursive: true, force: true });
   }
-  const unchanged = before.count === after.count && before.latestId === after.latestId;
-  let drillIdMatched = delivery.channel === "ntfy";
-  if (delivery.channel !== "ntfy") {
-    const lines = readFileSync(options.fallbackPath, "utf8").trimEnd().split("\n");
-    const lastLine = `${lines.at(-1) ?? ""}\n`;
-    drillIdMatched = lastLine.includes(drillId)
-      && sha256(lastLine) === delivery.appendedLineSha256;
-  }
-  const passed = delivery.accepted && heartbeatCheck.stale && unchanged && drillIdMatched;
-  const receipt: PublicDrillReceipt = {
-    schemaVersion: 1,
-    drill: "alert",
-    status: passed ? "pass" : "fail",
-    observedAt: now.toISOString(),
-    evaluatedCommit: commit(root),
-    implementationSha256: implementationSha256(),
-    reasonCodes: passed ? [] : ["EVIDENCE_CONTRADICTION"],
-    facts: {
-      channel: delivery.channel,
-      accepted: delivery.accepted,
-      httpStatus: delivery.httpStatus,
-      fallbackFileMode: delivery.fallbackFileMode,
-      appendedLineSha256: delivery.appendedLineSha256,
-      simulatedStale: heartbeatCheck.stale,
-      heartbeatRowsBefore: before.count,
-      heartbeatRowsAfter: after.count,
-      heartbeatRowsUnchanged: unchanged,
-      latestHeartbeatIdUnchanged: before.latestId === after.latestId,
-      drillIdMatched,
-      drillIdSha256: sha256(drillId),
-    },
-  };
   writeReceipts(receipt, options);
   return receipt;
 }

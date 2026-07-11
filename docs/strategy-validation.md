@@ -44,6 +44,18 @@ then registers immutable receipt evidence before setting a strategy active.
 Injected test transports, clocks, browsers, or runtimes always produce signed
 `test` receipts with `activatable=false`.
 
+The command is restartable. It writes a signed, content-bound private journal
+under ignored `data/validation/rollouts/` before the first request. The journal
+contains host-local config paths and is never published. A retry verifies and
+reuses an already-published receipt only when its signature, strategy version,
+exact independent challenge, source commit, and validator-bundle digest still
+match. It then reconciles the config binding and exact database activation
+idempotently. After an interruption that has modified retailer validation
+metadata, the launcher deliberately reuses the original `dist` bundle instead
+of rebuilding from a dirty tree. Missing or mismatched evidence is never
+overwritten. Trusted-host attempts below 27/30 are preserved automatically in
+`data/validation/attempts/` and require a successor strategy version.
+
 The exploration/healing path uses the same runner from the committed bundled
 `dist/scripts/validate-strategies.js`. Each candidate is checked against a
 preselected authoritative challenge in a private temporary config directory;

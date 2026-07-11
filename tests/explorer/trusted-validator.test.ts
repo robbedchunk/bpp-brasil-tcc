@@ -74,7 +74,7 @@ describe("generated-strategy trusted validator bridge", () => {
     if (signed.receipt === undefined) throw new Error("Fixture receipt was not created");
     await writeFile(
       join(root, "ops/validation-attestation-public.pem"),
-      signed.receipt.verificationPublicKey.export({ type: "spki", format: "pem" }),
+      signed.receipt.testVerificationPublicKey!.export({ type: "spki", format: "pem" }),
       { mode: 0o644 },
     );
 
@@ -107,6 +107,19 @@ describe("generated-strategy trusted validator bridge", () => {
     });
     expect(await readdir(join(root, "var/validation-candidates"))).toEqual([]);
     await report.receipt?.cleanup?.();
-    await expect(readFile(canonical)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(canonical, "utf8")).resolves.toContain(context.retailerId);
+
+    let reran = false;
+    const recover = createTrustedCandidateValidator({
+      database,
+      projectRoot: root,
+      executeRunner: async () => {
+        reran = true;
+        throw new Error("orphan recovery must precede another live validation");
+      },
+    });
+    const recovered = await recover(config.extraction, refs, context);
+    expect(reran).toBe(false);
+    expect(recovered.receipt?.sha256).toBe(report.receipt?.sha256);
   });
 });

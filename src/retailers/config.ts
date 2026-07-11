@@ -14,12 +14,16 @@ import {
   type ExtractionStrategy,
 } from "../strategies/schema.js";
 import type { ProductRef } from "../strategies/types.js";
+import { selectStrategyValidationChallenge } from "../strategies/validation-challenge.js";
 import {
+  canonicalEvidenceJson,
   readValidationVerificationPublicKey,
+  readTrustedValidatorArtifactSha256,
   validateStrategyEvidence,
   validationReceiptSha256,
   type StrategyValidationEvidence,
 } from "../strategies/validation-evidence.js";
+import { insertVerifiedStrategyValidationEvidence } from "../db/database.js";
 
 const FixtureProvenanceSchema = z.object({
   path: z.string().min(1),
@@ -260,8 +264,7 @@ function strategyTier(strategy: DiscoveryStrategy | ExtractionStrategy): number 
 export interface RetailerRegistrationOptions {
   projectRoot?: string;
   readValidationReceipt?: (absolutePath: string) => unknown;
-  verificationPublicKey?: KeyObject;
-  verificationPublicKeyPath?: string;
+  testVerificationPublicKey?: KeyObject;
   mode?: "activate" | "bootstrap-inactive";
 }
 
@@ -351,13 +354,15 @@ export function stageRetailerConfigStrategy(
 function authoritativeValidationRefs(
   database: Database.Database,
   retailerId: string,
+  includeHistorical = false,
 ): ProductRef[] {
   return (database.prepare(
     `SELECT canonical_url, retailer_product_id, source_category
      FROM products
      WHERE retailer_id = ?
+       AND (? = 1 OR (active = 1 AND in_scope = 1))
      ORDER BY canonical_url`,
-  ).all(retailerId) as Array<{
+  ).all(retailerId, includeHistorical ? 1 : 0) as Array<{
     canonical_url: string;
     retailer_product_id: string | null;
     source_category: string | null;
@@ -374,6 +379,7 @@ function validatedActivationEvidence(
   purpose: "discovery" | "extraction",
   options: RetailerRegistrationOptions,
   verificationPublicKey: KeyObject,
+  allowEmptyTestCatalog: boolean,
 ): StrategyValidationEvidence | null {
   if (!config.active) return null;
   const validation = config.validation[purpose];
@@ -397,17 +403,55 @@ function validatedActivationEvidence(
   } else {
     input = options.readValidationReceipt(absolutePath);
   }
-  const authoritativeRefs = authoritativeValidationRefs(database, config.id);
-  const evidence = validateStrategyEvidence(input, {
+  const expected = {
     retailerId: config.id,
     purpose,
     strategyVersion: config.strategyVersions[purpose],
     strategy: config[purpose],
     verificationPublicKey,
-    // A genuinely empty database is the receipt-backed bootstrap case. Once
-    // any catalog exists, every claimed sample must bind to that catalog.
-    ...(authoritativeRefs.length === 0 ? {} : { authoritativeRefs }),
-  });
+  } as const;
+  const identityEvidence = validateStrategyEvidence(input, expected);
+  const strategyId = `${config.id}-${purpose}-v${config.strategyVersions[purpose]}`;
+  const alreadyBound = database.prepare(
+    "SELECT 1 FROM strategy_validation_evidence WHERE strategy_id = ?",
+  ).get(strategyId) !== undefined;
+  const authoritativeRefs = alreadyBound
+    ? authoritativeValidationRefs(database, config.id, true)
+    : selectStrategyValidationChallenge(database, config.id, 30);
+  if (authoritativeRefs.length < 30 && !allowEmptyTestCatalog) {
+    throw new Error(
+      `Active ${config.id}/${purpose} requires at least 30 active in-scope catalog references`,
+    );
+  }
+  const evidence = authoritativeRefs.length === 0 && allowEmptyTestCatalog
+    ? identityEvidence
+    : validateStrategyEvidence(input, {
+        ...expected,
+        authoritativeRefs,
+      });
+  if (
+    !alreadyBound
+    && !allowEmptyTestCatalog
+    && canonicalEvidenceJson(evidence.samples.map(({ ref }) => ref))
+      !== canonicalEvidenceJson(authoritativeRefs)
+  ) {
+    throw new Error(
+      `Active ${config.id}/${purpose} receipt does not match the independent validation challenge`,
+    );
+  }
+  if (
+    !alreadyBound
+    && !allowEmptyTestCatalog
+    && (
+      evidence.executor.artifactSha256 !== readTrustedValidatorArtifactSha256()
+      || evidence.executor.challengeAlgorithm
+        !== "active-in-scope-category-url-bucket-round-robin-v1"
+    )
+  ) {
+    throw new Error(
+      `Active ${config.id}/${purpose} receipt is not bound to the trusted validator artifact`,
+    );
+  }
   if (
     validation.receiptSha256 === null
     || validation.receiptSha256 !== validationReceiptSha256(evidence)
@@ -440,15 +484,20 @@ export function registerRetailerConfigs(
 ): void {
   const activate = (options.mode ?? "activate") === "activate";
   const requiresKey = activate && configs.some((config) => config.active);
+  if (
+    options.testVerificationPublicKey !== undefined
+    && database.name !== ":memory:"
+    && database.name !== ""
+  ) {
+    throw new Error("A caller-supplied validation key is forbidden for file-backed registration");
+  }
   const verificationPublicKey = requiresKey
-    ? options.verificationPublicKey ?? readValidationVerificationPublicKey(
-      options.verificationPublicKeyPath
-        ?? resolve(
-          options.projectRoot ?? process.cwd(),
-          "ops/validation-attestation-public.pem",
-        ),
+    ? options.testVerificationPublicKey ?? readValidationVerificationPublicKey(
+      new URL("../../ops/validation-attestation-public.pem", import.meta.url).pathname,
     )
     : null;
+  const allowEmptyTestCatalog = options.testVerificationPublicKey !== undefined
+    && (database.name === ":memory:" || database.name === "");
   const register = database.transaction(() => {
     for (const config of configs) {
       database.prepare(
@@ -489,6 +538,7 @@ export function registerRetailerConfigs(
             purpose,
             options,
             verificationPublicKey,
+            allowEmptyTestCatalog,
           )
           : null;
         const bootstrap = !activate && config.active;
@@ -590,22 +640,40 @@ export function registerRetailerConfigs(
             valid: activationEvidence.valid,
             score: activationEvidence.score,
             validated_at: activationEvidence.validatedAt,
+            recorded_at: new Date().toISOString(),
           };
           const existingEvidence = database.prepare(
             `SELECT strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
                     executor_json, attestation_key_id, attempted, valid, score,
                     validated_at
              FROM strategy_validation_evidence WHERE strategy_id = ?`,
-          ).get(id) as typeof immutableEvidence | undefined;
+          ).get(id) as Omit<typeof immutableEvidence, "recorded_at"> | undefined;
           if (existingEvidence === undefined) {
-            database.prepare(
-              `INSERT INTO strategy_validation_evidence
-                 (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-                  executor_json, attestation_key_id, attempted, valid, score,
-                  validated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            ).run(...Object.values(immutableEvidence));
-          } else if (JSON.stringify(existingEvidence) !== JSON.stringify(immutableEvidence)) {
+            insertVerifiedStrategyValidationEvidence(database, {
+              strategyId: id,
+              receiptPath,
+              receiptSha256,
+              evidence: activationEvidence,
+              recordedAt: immutableEvidence.recorded_at,
+              ...(options.testVerificationPublicKey === undefined
+                ? {}
+                : { testVerificationPublicKey: options.testVerificationPublicKey }),
+            });
+          } else if (
+            JSON.stringify(existingEvidence)
+              !== JSON.stringify({
+                strategy_id: immutableEvidence.strategy_id,
+                receipt_path: immutableEvidence.receipt_path,
+                receipt_sha256: immutableEvidence.receipt_sha256,
+                sample_set_sha256: immutableEvidence.sample_set_sha256,
+                executor_json: immutableEvidence.executor_json,
+                attestation_key_id: immutableEvidence.attestation_key_id,
+                attempted: immutableEvidence.attempted,
+                valid: immutableEvidence.valid,
+                score: immutableEvidence.score,
+                validated_at: immutableEvidence.validated_at,
+              })
+          ) {
             throw new Error(
               `Strategy ${id} already binds different immutable validation evidence; `
               + "create a successor version",

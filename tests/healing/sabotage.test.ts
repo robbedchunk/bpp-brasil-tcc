@@ -13,6 +13,7 @@ import { monitorRun } from "../../src/healing/monitor.js";
 import { runCollection } from "../../src/pipeline/collect.js";
 import type { DomExtractionStrategy } from "../../src/strategies/schema.js";
 import { startLocalHttpServer, type LocalHttpServer } from "../helpers/local-http-server.js";
+import { insertTrustedStrategyValidationEvidence } from "../helpers/strategy-validation.js";
 import { signedCandidateReport } from "../helpers/validation-receipt.js";
 
 const validStrategy = (domain: string): DomExtractionStrategy => ({
@@ -82,14 +83,7 @@ describe("isolated staging sabotage", () => {
                'isolated sabotage fixture', 30, 30, 1, 0,
                '2026-07-10T00:00:00.000Z', NULL)`,
     ).run(JSON.stringify(broken));
-    database.prepare(`
-      INSERT INTO strategy_validation_evidence
-        (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-         executor_json, attestation_key_id, attempted, valid, score, validated_at)
-      VALUES ('sabotage-extraction-v1',
-        'data/validation/sabotage-extraction-v1.json', ?, ?, '{}', ?, 30, 30, 1,
-        '2026-07-10T00:00:00.000Z')
-    `).run("a".repeat(64), "b".repeat(64), "c".repeat(64));
+    insertTrustedStrategyValidationEvidence(database, "sabotage-extraction-v1");
     database.prepare(`
       UPDATE strategies SET active = 1,
         activated_at = '2026-07-10T00:00:00.000Z'

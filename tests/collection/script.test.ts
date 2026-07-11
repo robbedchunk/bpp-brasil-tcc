@@ -4,7 +4,10 @@ import { chromium, type Browser } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { executeRestrictedScript } from "../../src/collection/script.js";
+import { openDatabase } from "../../src/db/database.js";
+import { runCollection } from "../../src/pipeline/collect.js";
 import { ScriptStrategySchema } from "../../src/strategies/schema.js";
+import { seedRetailer, seedStrategy } from "../pipeline/helpers.js";
 import {
   startLocalHttpServer,
   type LocalHttpServer,
@@ -147,6 +150,86 @@ describe("executeRestrictedScript", () => {
       ok: true,
       fields: { title: "Café Torrado", price: 14.5, promoPrice: 12.9 },
     });
+  });
+
+  it("durably admits and paces every tier-4 network operation", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seedRetailer(database);
+      const strategy = ScriptStrategySchema.parse({
+        schemaVersion: 1,
+        purpose: "extraction",
+        tier: "script",
+        allowedDomains: ["127.0.0.1"],
+        operations: [
+          {
+            op: "http",
+            request: {
+              method: "GET",
+              url: `${server.origin}/api/{externalId}`,
+              headers: {},
+            },
+            saveAs: "first",
+          },
+          {
+            op: "http",
+            request: {
+              method: "GET",
+              url: `${server.origin}/api/{externalId}`,
+              headers: {},
+            },
+            saveAs: "second",
+          },
+          {
+            op: "extract",
+            source: "json",
+            from: "second",
+            fields: {
+              title: "$.name",
+              brand: "$.brand",
+              price: "$.price",
+              promoPrice: "$.promo",
+              unit: "$.unit",
+              availability: "$.available",
+            },
+          },
+        ],
+      });
+      seedStrategy(database, "extraction", strategy);
+      database.prepare(`
+        INSERT INTO products
+          (id, retailer_id, canonical_url, retailer_product_id, title,
+           descriptive_title, first_seen, last_seen)
+        VALUES ('script-product', 'retailer-1', ?, 'product/1',
+                'Café Torrado', 1,
+                '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')
+      `).run(`${server.origin}/produto/1`);
+      const sleeps: number[] = [];
+      let clock = 1_000;
+
+      const summary = await runCollection("retailer-1", {
+        database,
+        limit: 1,
+        concurrency: 3,
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+        politeDelayMs: { min: 125, max: 125 },
+        clock: () => clock,
+        sleep: async (milliseconds) => {
+          sleeps.push(milliseconds);
+          clock += milliseconds;
+        },
+      });
+
+      expect(summary).toMatchObject({ attempted: 1, ok: 1, failed: 0 });
+      expect(database.prepare(`
+        SELECT COUNT(*) AS count, MIN(stage_ordinal) AS first,
+               MAX(stage_ordinal) AS last
+        FROM request_admissions WHERE run_id = ?
+      `).get(summary.id)).toEqual({ count: 2, first: 1, last: 2 });
+      expect(sleeps).toEqual([125]);
+    } finally {
+      database.close();
+    }
   });
 
   it("rejects every configured cross-domain browser or HTTP target", async () => {

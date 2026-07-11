@@ -118,28 +118,46 @@ async function systemctlState(unit: string): Promise<ServiceState> {
   const [enabled, active, properties] = await Promise.all([
     readValue(["is-enabled", unit]),
     readValue(["is-active", unit]),
-    readValue(["show", unit, "--property=Result,ExecMainStartTimestamp,ExecMainExitTimestamp"]),
+    readValue(["show", unit, "--property=Result,InvocationID,ExecMainStartTimestamp,ExecMainExitTimestamp,LastTriggerUSec"]),
   ]);
   const propertyMap = new Map(properties.split("\n").map((line) => {
     const split = line.indexOf("=");
     return split < 0 ? [line, ""] : [line.slice(0, split), line.slice(split + 1)];
   }));
   const result = propertyMap.get("Result");
+  const invocationId = propertyMap.get("InvocationID");
   const lastStartedAt = propertyMap.get("ExecMainStartTimestamp");
   const lastFinishedAt = propertyMap.get("ExecMainExitTimestamp");
+  const lastTriggerAt = propertyMap.get("LastTriggerUSec");
   return {
     unit,
     enabled: enabled === "enabled",
     active: active === "active",
     result: result === undefined || result === "" ? null : result,
+    invocationId: invocationId === undefined || invocationId === "" ? null : invocationId,
     lastStartedAt: lastStartedAt === undefined || lastStartedAt === "" ? null : lastStartedAt,
     lastFinishedAt: lastFinishedAt === undefined || lastFinishedAt === "" ? null : lastFinishedAt,
+    lastTriggerAt: lastTriggerAt === undefined || lastTriggerAt === "" ? null : lastTriggerAt,
   };
 }
 
 const serviceReader: ServiceStateReader = {
   async read(units): Promise<ServiceState[]> {
     return Promise.all(units.map(systemctlState));
+  },
+  async readUserLingerEnabled(): Promise<boolean> {
+    const user = process.env.USER;
+    if (user === undefined || user === "") return false;
+    try {
+      const result = await execFileAsync(
+        "loginctl",
+        ["show-user", user, "--property=Linger", "--value"],
+        { encoding: "utf8" },
+      );
+      return result.stdout.trim() === "yes";
+    } catch {
+      return false;
+    }
   },
 };
 
@@ -224,8 +242,6 @@ async function runDrill(args: string[]): Promise<void> {
     const receipt = cli.drill === "alert"
       ? await runAlertDrill({
           ...common,
-          fallbackPath: resolve(projectRoot, "var/log/alerts.jsonl"),
-          ...(config.ntfyTopic === undefined ? {} : { ntfyTopic: config.ntfyTopic }),
         })
       : await runBackupDrill({ ...common, backupDirectory: resolve(projectRoot, "var/backups") });
     process.stdout.write(cli.json ? `${JSON.stringify(receipt)}\n` : `Acceptance ${cli.drill} drill: ${receipt.status.toUpperCase()}\n`);

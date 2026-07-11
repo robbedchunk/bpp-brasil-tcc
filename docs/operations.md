@@ -2,14 +2,17 @@
 
 ## Setup and smoke
 
-Use Node 24/npm 11 and Python 3.11 or newer:
+The single setup entry point installs or verifies the pinned Node 24/npm 11
+runtime, Python 3.11+, SQLite, build tools, Playwright/Chromium dependencies,
+and the `America/Sao_Paulo` system timezone on a Debian/Ubuntu host:
 
 ```bash
 bash ops/setup.sh
 bash ops/smoke.sh
 ```
 
-Setup is idempotent, uses locked Node dependencies, installs the pinned Python
+Setup is idempotent, verifies the official Node archive checksum, uses locked
+Node dependencies, installs the pinned Python
 environment under ignored `var/analysis-venv/`, verifies Playwright Chromium,
 creates private runtime directories, and migrates SQLite forward. It never
 prints secrets. Set `INSTALL_TIMERS=1` only when intentionally deploying this
@@ -21,13 +24,16 @@ credentials; classification/exploration remain pending.
 
 ## Scheduled services
 
-`ops/install-systemd.sh` renders absolute Node/Bash/project paths and enables six
-user timers in `America/Sao_Paulo`:
+`ops/install-systemd.sh` accepts only a completely clean committed worktree,
+builds `dist` from that commit, and checks the tracked validator-bundle digest.
+It then creates a new signed, read-only release under
+`~/.local/share/precos/releases/<commit>-<release-id>` and enables six user
+timers in `America/Sao_Paulo`:
 
 - daily collection around 03:00;
 - queued healing around 03:30;
 - daily backup around 04:15;
-- weekly discovery Sunday around 02:00;
+- weekly discovery Sunday around 18:00, after the daily window, with lock-conflict retries;
 - weekly index/analysis Monday around 08:00;
 - hourly heartbeat check.
 
@@ -38,6 +44,30 @@ committed. A missing model credential remains a safe pending exit, while a later
 classification failure cannot roll back or erase collection evidence. Collection,
 classification, healing, and index work use separate locks. Never kill a live
 owner or start duplicate daily work merely to improve acceptance metrics.
+
+Every service uses the frozen release as its working directory, carries
+`PRECOS_RELEASE_ID`, and verifies the complete Ed25519-signed artifact manifest
+before execution against the original checkout's tracked public key (the copy
+inside the release is never accepted as its own trust anchor). The release
+contains the built runtime, retailer definitions,
+operations scripts and units, package manifests, public verification material,
+and analysis code. Its `data`, `var`, and `analysis/output` paths are explicit
+links to the original checkout's state; `node_modules` is a declared dependency
+link. The original checkout remains the source of `.env`, so credentials are
+neither copied into nor hashed by a release. The private install receipt at
+`var/operations/systemd-install.json` uses schema 2: `scheduleActivatedAt` is
+preserved across redeployments, while `deployedAt`, commit, release ID/path,
+signed-manifest hash, and installed unit set are refreshed and bound together.
+Installation also enables and verifies user linger so timers survive logout.
+A later committed collection/export cut does not invalidate that executable:
+acceptance treats only `data/**`, `analysis/output/**`, and the strict generated
+acceptance-receipt allowlist as release-neutral state. The release source and
+evaluated commit must remain on one linear history, and their complete diff
+must stay inside those state paths. Any retailer config, source, dependency,
+unit, script, test, or other repository change makes the installed release
+non-current and requires a new clean deployment.
+A dry run creates no release; after the first deployment it deterministically
+renders from the already installed, strictly validated release.
 
 ```bash
 bash ops/install-systemd.sh --dry-run
@@ -55,8 +85,10 @@ extended deadline and blocking state after every wait. Requests already executin
 finish; work only queued for polite spacing is not attempted after a stop.
 Unstarted products are reported as skipped, not inserted as synthetic failures.
 Every network start is charged through an append-only SQLite admission before
-the request: discovery and collection each have an independent 2,000-request
-retailer/day cap. Discovery references have a separate 3,000/day admission and
+the request: discovery and collection share one hard 2,000-request
+retailer/day cap. Redirects and every tier-4 browser/script exchange are charged
+and politely paced at the transport boundary. Discovery references have a
+separate 3,000/day admission and
 private replay writes a 20/day admission. Charges survive crashes by design and
 remain atomic across concurrent processes; a terminal run cannot consume more.
 
@@ -80,24 +112,76 @@ latest is older than 24 hours. Missing collection days remain gaps.
 Retailer-level orchestration errors do not prevent later retailers from being
 attempted. They and post-collection monitor errors produce a durable partial
 heartbeat, a fallback-capable alert, and a nonzero daily service result; partial
-heartbeats never satisfy schedule freshness or acceptance.
+heartbeats never satisfy schedule freshness or acceptance. A scheduled
+heartbeat also binds the exact `precos-daily.service` cgroup, systemd
+`INVOCATION_ID`, and current frozen release ID; merely exporting
+`PRECOS_SCHEDULE_SOURCE` fails closed.
 
-Task 16's missed-run drill does not kill a service or insert an old row. It calls
-the pure heartbeat classifier with an injected 25-hour age, sends a `[DRILL]`
-event through the configured sink, verifies delivery, and proves production
-heartbeat rows are unchanged.
+The missed-run drill never sacrifices production collection or inserts an old
+heartbeat. It starts a uniquely named disposable user-systemd unit whose fixed
+command self-terminates with `SIGKILL`, verifies `Result=signal`, status 9, the
+systemd invocation ID, and invocation-matched journal records, then removes the
+failed transient unit. It validates the installed signed frozen release and
+runs that release's `dist/cli.js db init` and `heartbeat check --json` against a
+temporary file-backed database with an isolated local alert file. The complete
+production heartbeat view is hashed before and after and must be unchanged.
 
 ```bash
 npm run acceptance:drill -- alert --confirm-safe-drill --json
 ```
 
+## Installed-release healing sabotage drill
+
+M5 is not satisfied by the offline mutated-layout suite alone. Its live staging
+drill validates the currently installed signed frozen release, takes an online
+file-backed copy of the production database while holding the pipeline and
+explorer locks, and creates a disposable retailer only inside that copy. It
+deliberately replaces the disposable API field selectors with invalid JSON
+paths, observes a drift-classified failed run and queued healing event, then
+uses the real Codex provider under a durable bounded budget reservation. The
+generated successor must pass the trusted host's exact 30-reference gate,
+activate, and recover a second 30-product run at at least 90% success.
+
+The command refuses before staging or provider work unless both the private
+credential and explicit spend authorization are present:
+
+```bash
+LIVE_OPENAI=1 npm run acceptance:healing-drill -- \
+  --confirm-staging-sabotage --authorize-live-spend-usd 5
+```
+
+The signed public-safe receipt is
+`data/acceptance/evidence/healing-sabotage-drill.json`. The file-backed staging
+database, validation receipt, logs, and any replay material remain mode-`0600`
+private evidence under `var/acceptance/m5-healing/<drill-id>/`; the copied
+signing key is deleted before publication. Acceptance rejects a malformed,
+stale, or prior-release receipt and never turns fake/offline providers into a
+live M5 pass.
+
 ## Backup and restore-read drill
 
-`ops/backup.sh` uses SQLite's online `.backup`, requires `integrity_check=ok`,
-sets mode `0600`, and rotates files older than 14 days under ignored
-`var/backups/`. When present, the mode-0600 Ed25519 validation private key is
-copied into the same private rotation; the tracked public verifier is not a
-secret.
+`ops/backup.sh` uses SQLite's online `.backup`, requires both integrity and
+foreign-key checks to pass, and publishes the database and its mode-`0600`
+receipt under ignored `var/backups/`. The receipt is written through a private
+temporary file and atomic rename. It binds the exact artifact hash, coherent
+snapshot fingerprint and per-table counts, schema migration state, completion
+time, and (for the scheduled service) systemd `INVOCATION_ID`. Source facts are
+captured in a pinned read transaction on the same connection used by SQLite's
+online backup; the artifact is independently recomputed and publication fails
+if the two snapshots differ. An invocation ID is classified as scheduled only
+while the writer process is in the exact `precos-backup.service` cgroup recorded
+by `/proc/self/cgroup`; copying an old ID into a manual shell is rejected.
+Acceptance trusts
+only the receipt whose invocation ID equals the recorded
+`precos-backup.service` invocation; filename recency and modification-time
+proximity are not evidence. The service refuses manual systemd starts; an
+operator may run `bash ops/backup.sh` for a manual receipt, but that receipt
+cannot satisfy the scheduled acceptance gate. Files older than 14 days are
+rotated as bundles,
+including `-wal`/`-shm` companions, and orphan SQLite sidecars are removed only
+after the checkpoint handle is closed. When present, the mode-0600 Ed25519
+validation private key is copied into the same private rotation; the tracked
+public verifier is not a secret.
 
 ```bash
 bash ops/backup.sh --self-test
@@ -126,7 +210,21 @@ disposable directory.
 npm run audit:publication -- --json
 npm run acceptance -- --json
 npm run verify:fresh-clone
+# Trust-minimized equivalent, bypassing npm as a parent process:
+./ops/verify-fresh-clone.sh
 ```
+
+The fresh-clone verifier must be executed directly, never as
+`bash ops/verify-fresh-clone.sh`. Its executable interpreter boundary clears the
+environment before Bash starts, then recovers only the current account's home
+directory so the pinned Node 24 runtime remains discoverable. This prevents
+`BASH_ENV`, inherited shell functions, aliases, runtime preloads, and caller
+`PATH` entries from reaching the verifier's Bash process. The npm command is
+safe under the normal npm `/bin/sh` launcher because it executes that boundary
+directly. As with every child process, it cannot undo code already executed by
+a compromised parent npm, interactive shell, or operating-system loader; use
+the direct executable form to minimize that unavoidable parent-process trust
+boundary.
 
 A secret/history finding blocks publication. Revoke/rotate first; do not rewrite
 history without author approval. Paid services, anti-blocking escalation,

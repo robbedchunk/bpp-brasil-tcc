@@ -137,6 +137,7 @@ export interface SidraSourceEvidence {
 export interface DatabaseSourceEvidence {
   counts: Record<string, number>;
   maxima: Record<string, string | null>;
+  snapshotSha256: string;
 }
 
 export interface ExportResearchOptions {

@@ -81,7 +81,7 @@ export interface CandidateValidationReport {
     path: string;
     sha256: string;
     evidence: StrategyValidationEvidence;
-    verificationPublicKey: KeyObject;
+    testVerificationPublicKey?: KeyObject;
     cleanup?: () => Promise<void>;
   };
 }
@@ -779,7 +779,12 @@ export async function exploreRetailer(
               receiptPath: report.receipt!.path,
               receiptSha256: report.receipt!.sha256,
               evidence: report.receipt!.evidence,
-              verificationPublicKey: report.receipt!.verificationPublicKey,
+              ...(report.receipt!.testVerificationPublicKey === undefined
+                ? {}
+                : {
+                    testVerificationPublicKey:
+                      report.receipt!.testVerificationPublicKey,
+                  }),
             },
             activatedAt: finishedAt,
           },

@@ -6,7 +6,8 @@ import { Decimal } from "decimal.js";
 import {
   BudgetGuard,
   RELEASED_CLASSIFICATION_BATCH_STATUSES,
-  classificationMonthlyCommittedUsd,
+  reserveSynchronousClassificationBudget,
+  settleSynchronousClassificationBudget,
 } from "../ops/budget.js";
 import { DEFAULT_CLASSIFICATION_MODEL } from "./openai-provider.js";
 import { ClassificationProviderError } from "./provider.js";
@@ -208,6 +209,7 @@ export function persistClassificationBatch(
   version: number,
   occurredAt: string,
   estimatedCostUsd: number,
+  classificationReservationId?: string,
 ): number {
   const resultByProduct = validateBatchResult(batch, providerResult);
   const costShares = decimalShares(estimatedCostUsd, batch.length);
@@ -232,10 +234,11 @@ export function persistClassificationBatch(
   `);
   const insertCost = database.prepare(`
     INSERT INTO cost_ledger
-      (id, category, retailer_id, classification_id, provider, model,
+      (id, category, retailer_id, classification_id,
+       classification_reservation_id, provider, model,
        input_tokens, output_tokens, cost_usd, occurred_at, details_json)
     VALUES
-      (?, 'classification', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (?, 'classification', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let unclassified = 0;
   batch.forEach((input, index) => {
@@ -284,6 +287,7 @@ export function persistClassificationBatch(
       randomUUID(),
       product.retailer_id,
       classificationId,
+      classificationReservationId ?? null,
       providerResult.provider,
       providerResult.model,
       inputTokens,
@@ -310,14 +314,16 @@ export function persistFailureAttempts(
     productIds: readonly string[];
     version: number;
     batchJobId?: string;
+    classificationReservationId?: string;
   },
 ): number {
   const insert = database.prepare(`
     INSERT INTO cost_ledger
-      (id, category, provider, model, input_tokens, output_tokens,
+      (id, category, classification_reservation_id, provider, model,
+       input_tokens, output_tokens,
        cost_usd, occurred_at, details_json)
     VALUES
-      (?, 'classification_failure', ?, ?, ?, ?, ?, ?, ?)
+      (?, 'classification_failure', ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   let total = new Decimal(0);
   for (const attempt of attempts) {
@@ -328,6 +334,7 @@ export function persistFailureAttempts(
     });
     insert.run(
       randomUUID(),
+      context.classificationReservationId ?? null,
       attempt.provider,
       attempt.actualModel,
       attempt.inputTokens,
@@ -403,7 +410,6 @@ export async function classifyNewProducts(
   const model = dependencies.classificationModel ?? DEFAULT_CLASSIFICATION_MODEL;
   const now = dependencies.now ?? (() => new Date());
   const productById = new Map(products.map((product) => [product.id, product]));
-  let currentSpend = classificationMonthlyCommittedUsd(dependencies.database, now());
   let batches = 0;
   let classified = 0;
   let unclassified = 0;
@@ -417,13 +423,22 @@ export async function classifyNewProducts(
       model,
       ...plannedUsage(inputBatch),
     });
-    if (budgetGuard.decide({
-      projectedMonthlyUsd: currentSpend + projectedCost,
-      essential: false,
-    }) === "pause") {
+    const reservation = reserveSynchronousClassificationBudget(
+      dependencies.database,
+      {
+        version,
+        model,
+        productIds: inputBatch.map(({ productId }) => productId),
+        projectedCostUsd: projectedCost,
+        now: now(),
+        budgetGuard,
+      },
+    );
+    if (!reservation.reserved || reservation.reservationId === null) {
       budgetDenied = products.length - offset;
       break;
     }
+    const reservationId = reservation.reservationId;
 
     let providerResult: ClassificationBatchResult;
     try {
@@ -431,8 +446,8 @@ export async function classifyNewProducts(
     } catch (error) {
       if (error instanceof ClassificationProviderError && error.attempts.length > 0) {
         const occurredAt = now().toISOString();
-        const transaction = dependencies.database.transaction(() =>
-          persistFailureAttempts(
+        const transaction = dependencies.database.transaction(() => {
+          const actualCost = persistFailureAttempts(
             dependencies.database,
             error.attempts,
             budgetGuard,
@@ -440,8 +455,17 @@ export async function classifyNewProducts(
               occurredAt,
               productIds: inputBatch.map((input) => input.productId),
               version,
+              classificationReservationId: reservationId,
             },
-          ));
+          );
+          settleSynchronousClassificationBudget(dependencies.database, {
+            reservationId,
+            actualCostUsd: actualCost,
+            settledAt: occurredAt,
+            status: "settled",
+            details: { providerFailed: true, attemptEvidence: error.attempts.length },
+          });
+        });
         transaction.immediate();
       }
       throw error;
@@ -460,8 +484,8 @@ export async function classifyNewProducts(
         failureKind: "validation_failed",
       };
       const occurredAt = now().toISOString();
-      const transaction = dependencies.database.transaction(() =>
-        persistFailureAttempts(
+      const transaction = dependencies.database.transaction(() => {
+        const validationFailureCost = persistFailureAttempts(
           dependencies.database,
           [...(providerResult.failedAttempts ?? []), validationAttempt],
           budgetGuard,
@@ -469,8 +493,17 @@ export async function classifyNewProducts(
             occurredAt,
             productIds: inputBatch.map((input) => input.productId),
             version,
+            classificationReservationId: reservationId,
           },
-        ));
+        );
+        settleSynchronousClassificationBudget(dependencies.database, {
+          reservationId,
+          actualCostUsd: validationFailureCost,
+          settledAt: occurredAt,
+          status: "settled",
+          details: { responseValidationFailed: true },
+        });
+      });
       transaction.immediate();
       throw error;
     }
@@ -492,6 +525,7 @@ export async function classifyNewProducts(
             occurredAt,
             productIds: inputBatch.map((input) => input.productId),
             version,
+            classificationReservationId: reservationId,
           },
         );
         batchUnclassified = persistClassificationBatch(
@@ -503,7 +537,18 @@ export async function classifyNewProducts(
           version,
           occurredAt,
           actualCost,
+          reservationId,
         );
+        settleSynchronousClassificationBudget(dependencies.database, {
+          reservationId,
+          actualCostUsd: actualCost + failedAttemptCost,
+          settledAt: occurredAt,
+          status: "settled",
+          details: {
+            classifications: inputBatch.length,
+            failedAttemptCostUsd: failedAttemptCost,
+          },
+        });
       });
       transaction.immediate();
     } catch (error) {
@@ -518,8 +563,8 @@ export async function classifyNewProducts(
         outputTokens: providerResult.usage.outputTokens,
         failureKind: "duplicate_conflict",
       };
-      const transaction = dependencies.database.transaction(() =>
-        persistFailureAttempts(
+      const transaction = dependencies.database.transaction(() => {
+        const cost = persistFailureAttempts(
           dependencies.database,
           [...(providerResult.failedAttempts ?? []), duplicateAttempt],
           budgetGuard,
@@ -527,17 +572,25 @@ export async function classifyNewProducts(
             occurredAt,
             productIds: inputBatch.map((input) => input.productId),
             version,
+            classificationReservationId: reservationId,
           },
-        ));
+        );
+        settleSynchronousClassificationBudget(dependencies.database, {
+          reservationId,
+          actualCostUsd: cost,
+          settledAt: occurredAt,
+          status: "settled",
+          details: { duplicateConflict: true },
+        });
+        return cost;
+      });
       failedAttemptCost = transaction.immediate();
-      currentSpend += failedAttemptCost;
       estimatedCostUsd = estimatedCostUsd.plus(failedAttemptCost);
       continue;
     }
     unclassified += batchUnclassified;
     batches += 1;
     classified += inputBatch.length;
-    currentSpend += actualCost + failedAttemptCost;
     estimatedCostUsd = estimatedCostUsd.plus(actualCost).plus(failedAttemptCost);
   }
 

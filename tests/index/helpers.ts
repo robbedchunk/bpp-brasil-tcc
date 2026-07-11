@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import { loadIpcaItems } from "../../scripts/load-ipca-items.js";
 import { openDatabase } from "../../src/db/database.js";
 import { buildDailyIndex as buildProductionDailyIndex } from "../../src/index/aggregate.js";
+import { insertTrustedStrategyValidationEvidence } from "../helpers/strategy-validation.js";
 
 const authoritativeWeights = readFileSync(new URL(
   "../../data/reference/ipca_pof2017_2018_sp_food_at_home_weights.csv",
@@ -32,23 +33,16 @@ export function seedRetailer(database: Database.Database, id: string): void {
   database.prepare(`
     INSERT INTO strategies
       (id, retailer_id, purpose, tier, version, strategy_json, provenance,
-       validation_sample_size, validation_successes, validation_rate, active)
-    VALUES (?, ?, 'extraction', 1, 1, '{}', 'index-test', 30, 30, 1, 0)
+       validation_sample_size, validation_successes, validation_rate, active,
+       validated_at)
+    VALUES (?, ?, 'extraction', 1, 1, '{}', 'index-test', 30, 30, 1, 0,
+            '2026-01-01T00:00:00.000Z')
   `).run(`${id}-strategy`, id);
-  database.prepare(`
-    INSERT INTO strategy_validation_evidence
-      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-       executor_json, attestation_key_id, attempted, valid, score, validated_at)
-    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, '2026-01-01T00:00:00.000Z')
-  `).run(
-    `${id}-strategy`,
-    `data/validation/${id}-strategy.json`,
-    "a".repeat(64),
-    "b".repeat(64),
-    "c".repeat(64),
-  );
+  insertTrustedStrategyValidationEvidence(database, `${id}-strategy`);
   database.prepare(
-    "UPDATE strategies SET active = 1 WHERE id = ?",
+    `UPDATE strategies
+     SET active = 1, activated_at = '2026-01-01T00:00:00.000Z'
+     WHERE id = ?`,
   ).run(`${id}-strategy`);
 }
 

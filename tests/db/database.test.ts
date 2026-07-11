@@ -6,7 +6,15 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { loadConfig } from "../../src/config.js";
-import { openDatabase } from "../../src/db/database.js";
+import {
+  EXPECTED_SCHEMA_MIGRATIONS,
+  insertTestStrategyValidationEvidenceRow,
+  openDatabase,
+} from "../../src/db/database.js";
+import {
+  insertTrustedStrategyValidationEvidence,
+  trustedValidationExecutorJson,
+} from "../helpers/strategy-validation.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 const temporaryDirectories: string[] = [];
@@ -58,18 +66,7 @@ function insertFixtureStrategy(
             '2026-07-10T00:00:00.000Z')
   `).run(id, version, provenance);
   if (!active) return;
-  database.prepare(`
-    INSERT INTO strategy_validation_evidence
-      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-       executor_json, attestation_key_id, attempted, valid, score, validated_at)
-    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, '2026-07-10T00:00:00.000Z')
-  `).run(
-    id,
-    `data/validation/${id}.json`,
-    "a".repeat(64),
-    "b".repeat(64),
-    "c".repeat(64),
-  );
+  insertTrustedStrategyValidationEvidence(database, id);
   database.prepare(`
     UPDATE strategies
     SET active = 1, activated_at = '2026-07-10T00:00:00.000Z'
@@ -233,6 +230,95 @@ describe("database foundation", () => {
     ).toThrow(/UNIQUE/);
   });
 
+  it("rejects raw, malformed, replayed, and aggregate-detached activation evidence", () => {
+    const database = openMemoryDatabase();
+    insertRetailer(database);
+    insertFixtureStrategy(database, "strategy-1", 1, false);
+    const validatedAt = "2026-07-10T00:00:00.000Z";
+    const values = {
+      strategy_id: "strategy-1",
+      receipt_path: "data/validation/retailer-1-extraction-v1.json",
+      receipt_sha256: "a".repeat(64),
+      sample_set_sha256: "b".repeat(64),
+      executor_json: trustedValidationExecutorJson(validatedAt),
+      attestation_key_id: "c".repeat(64),
+      attempted: 30,
+      valid: 30,
+      score: 1,
+      validated_at: validatedAt,
+      recorded_at: validatedAt,
+    };
+    const insert = database.prepare(`
+      INSERT INTO strategy_validation_evidence
+        (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
+         executor_json, attestation_key_id, attempted, valid, score,
+         validated_at, recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const runInsert = (evidence = values) => insert.run(
+      evidence.strategy_id,
+      evidence.receipt_path,
+      evidence.receipt_sha256,
+      evidence.sample_set_sha256,
+      evidence.executor_json,
+      evidence.attestation_key_id,
+      evidence.attempted,
+      evidence.valid,
+      evidence.score,
+      evidence.validated_at,
+      evidence.recorded_at,
+    );
+
+    expect(() => runInsert()).toThrow(/not authorized/iu);
+    expect(() => insertTestStrategyValidationEvidenceRow(
+      database,
+      { ...values, executor_json: "{}" },
+    )).toThrow(/trusted binding/iu);
+
+    insertTestStrategyValidationEvidenceRow(database, values);
+    expect(() => runInsert()).toThrow(/not authorized|UNIQUE/iu);
+
+    database.prepare(`
+      UPDATE strategies
+      SET validation_successes = 27, validation_rate = 0.9
+      WHERE id = 'strategy-1'
+    `).run();
+    expect(() => database.prepare(`
+      UPDATE strategies
+      SET active = 1, activated_at = '2026-07-10T00:01:00.000Z'
+      WHERE id = 'strategy-1'
+    `).run()).toThrow(/exact immutable validation evidence|must remain evidence-bound/iu);
+
+    database.prepare(`
+      UPDATE strategies
+      SET validation_successes = 30, validation_rate = 1
+      WHERE id = 'strategy-1'
+    `).run();
+    database.prepare(`
+      UPDATE strategies
+      SET active = 1, activated_at = '2026-07-10T00:01:00.000Z'
+      WHERE id = 'strategy-1'
+    `).run();
+    expect(() => database.prepare(`
+      UPDATE strategies SET validation_successes = 27, validation_rate = 0.9
+      WHERE id = 'strategy-1'
+    `).run()).toThrow(/must remain evidence-bound/iu);
+    expect(() => database.prepare(`
+      UPDATE strategies SET active = 0 WHERE id = 'strategy-1'
+    `).run()).toThrow(/lifecycle is monotonic/iu);
+    database.prepare(`
+      UPDATE strategies
+      SET active = 0, retired_at = '2026-07-10T01:00:00.000Z'
+      WHERE id = 'strategy-1'
+    `).run();
+    expect(() => database.prepare(`
+      UPDATE strategies
+      SET active = 1, retired_at = NULL,
+          activated_at = '2026-07-10T02:00:00.000Z'
+      WHERE id = 'strategy-1'
+    `).run()).toThrow(/lifecycle is monotonic|validation evidence/iu);
+  });
+
   it("enforces foreign keys, product identity, and observation price checks", () => {
     const database = openMemoryDatabase();
     insertRetailer(database);
@@ -311,7 +397,7 @@ describe("database foundation", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 13 });
+    ).toEqual({ count: EXPECTED_SCHEMA_MIGRATIONS.length });
 
     database.exec("SELECT 1");
     expect(() => openMemoryDatabase()).not.toThrow();
@@ -333,7 +419,7 @@ describe("database foundation", () => {
     databases.push(database);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-    ).toEqual({ count: 13 });
+    ).toEqual({ count: EXPECTED_SCHEMA_MIGRATIONS.length });
   });
 
   it("binds at most one immutable exploration run to each healing event", () => {
@@ -420,14 +506,6 @@ describe("database foundation", () => {
     seedEvidenceGraph(database);
 
     database.exec(`
-      UPDATE strategies
-      SET validation_sample_size = 30,
-          validation_successes = 27,
-          validation_rate = 0.9,
-          validated_at = '2026-07-10T04:05:00.000Z',
-          activated_at = '2026-07-10T04:06:00.000Z'
-      WHERE id = 'strategy-1';
-
       UPDATE runs
       SET status = 'completed',
           attempted = 2,

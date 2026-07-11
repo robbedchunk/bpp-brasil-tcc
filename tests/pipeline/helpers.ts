@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 
+import { insertTrustedStrategyValidationEvidence } from "../helpers/strategy-validation.js";
+
 export function seedRetailer(
   database: Database.Database,
   id = "retailer-1",
@@ -26,18 +28,7 @@ export function seedStrategy(
      VALUES (?, ?, ?, 1, 1, ?, 'test fixture', 30, 30, 1, 0,
              '2026-07-10T00:00:00.000Z', NULL)`,
   ).run(id, retailerId, purpose, JSON.stringify(strategy));
-  database.prepare(`
-    INSERT INTO strategy_validation_evidence
-      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-       executor_json, attestation_key_id, attempted, valid, score, validated_at)
-    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, '2026-07-10T00:00:00.000Z')
-  `).run(
-    id,
-    `data/validation/${id}.json`,
-    "a".repeat(64),
-    "b".repeat(64),
-    "c".repeat(64),
-  );
+  insertTrustedStrategyValidationEvidence(database, id);
   database.prepare(
     `UPDATE strategies
      SET active = 1, activated_at = '2026-07-10T00:00:00.000Z'

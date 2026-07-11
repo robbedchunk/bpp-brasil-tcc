@@ -31,7 +31,11 @@ import {
   discoveryFailureFromUnknown,
 } from "../discovery/failure.js";
 import { RobotsPolicy } from "../discovery/robots.js";
-import { fetchBounded } from "../collection/http.js";
+import {
+  fetchBounded,
+  NetworkRequestBoundaryError,
+} from "../collection/http.js";
+import { robotsCanFetch } from "../discovery/robots.js";
 import type { DiscoveryStrategy } from "../strategies/schema.js";
 import type { ProductRef } from "../strategies/types.js";
 import { JsonlLogger } from "../ops/logger.js";
@@ -115,6 +119,8 @@ function causedByRequestBudgetExhaustion(error: unknown): boolean {
   let current = error;
   while (current !== null && typeof current === "object" && !seen.has(current)) {
     if (current instanceof RequestBudgetExhaustedError) return true;
+    if (current instanceof Error
+      && current.message === "Daily discovery request budget is exhausted") return true;
     seen.add(current);
     current = "cause" in current ? current.cause : null;
   }
@@ -152,11 +158,23 @@ function createPoliteGate(
 }
 
 function robotsOrigins(strategy: DiscoveryStrategy): string[] {
+  const renderForOrigin = (template: string): string => template.replace(
+    /\{(?:page|pageSize|offset|from|to|cursor|segment)\}/gu,
+    "0",
+  );
   const urls = strategy.tier === "sitemap"
     ? strategy.sitemapUrls
-    : strategy.tier === "dom-crawl"
-      ? strategy.startUrls
-      : [];
+    : strategy.tier === "api"
+      ? [renderForOrigin(strategy.request.url)]
+      : strategy.tier === "dom-crawl"
+        ? strategy.startUrls
+        : strategy.operations.flatMap((operation) => {
+            if (operation.op === "goto") return [renderForOrigin(operation.url)];
+            if (operation.op === "http") {
+              return [renderForOrigin(operation.request.url)];
+            }
+            return [];
+          });
   return [...new Set(urls.map((url) => new URL(url).origin))];
 }
 
@@ -177,9 +195,10 @@ async function executionContextFor(
       new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))),
     dependencies.clock ?? Date.now,
   );
-  const inheritedBeforeRequest = dependencies.executionContext?.beforeRequest;
-  const beforeRequest = async (): Promise<void> => {
-    await inheritedBeforeRequest?.();
+  const inheritedBeforeNetworkRequest =
+    dependencies.executionContext?.beforeNetworkRequest;
+  const admitNetworkRequest = async (target: string): Promise<void> => {
+    await inheritedBeforeNetworkRequest?.(target);
     await politeGate();
     const result = admitRequest(dependencies.database, {
       runId: admission.runId,
@@ -188,24 +207,36 @@ async function executionContextFor(
       stage: "discover",
       admittedAt: admission.now().toISOString(),
     });
-    if (!result.admitted) throw new RequestBudgetExhaustedError();
+    if (!result.admitted) {
+      throw new NetworkRequestBoundaryError({
+        category: "network",
+        message: new RequestBudgetExhaustedError().message,
+        responded: false,
+      });
+    }
   };
-  const context: DiscoveryExecutionContext = {
+  const bootstrapContext: DiscoveryExecutionContext = {
     ...dependencies.executionContext,
-    beforeRequest,
+    beforeNetworkRequest: admitNetworkRequest,
   };
-  if (dependencies.execute !== undefined) return context;
+  if (dependencies.execute !== undefined) {
+    return {
+      ...bootstrapContext,
+      // Custom executors are a test/integration seam and historically invoke
+      // beforeRequest themselves rather than the HTTP transport hook.
+      beforeRequest: async () => admitNetworkRequest("https://custom-executor.invalid/"),
+    };
+  }
   const origins = robotsOrigins(strategy);
-  if (origins.length === 0) return context;
+  if (origins.length === 0) return bootstrapContext;
 
   const robotsByOrigin = new Map<string, RobotsPolicy>();
   for (const origin of origins) {
     const robotsUrl = new URL("/robots.txt", origin).toString();
-    await beforeRequest();
     const fetched = await fetchBounded(
       { url: robotsUrl, method: "GET" },
       strategy.allowedDomains,
-      context,
+      bootstrapContext,
     );
     if (!fetched.ok) throw new DiscoveryFailureError(fetched.failure);
     if (new URL(fetched.response.url).origin !== origin) {
@@ -230,10 +261,30 @@ async function executionContextFor(
   const singleRobots = robotsByOrigin.size === 1
     ? robotsByOrigin.values().next().value
     : undefined;
+  const inheritedAllowDocumentUrl = dependencies.executionContext?.allowDocumentUrl;
+  const policyAllows = (target: string): boolean =>
+    inheritedAllowDocumentUrl?.(target) !== false
+    && robotsCanFetch({
+      robotsByOrigin,
+      ...(dependencies.executionContext?.userAgent === undefined
+        ? {}
+        : { userAgent: dependencies.executionContext.userAgent }),
+    }, target);
   return {
-    ...context,
+    ...bootstrapContext,
     ...(singleRobots === undefined ? {} : { robots: singleRobots }),
     robotsByOrigin,
+    allowDocumentUrl: policyAllows,
+    beforeNetworkRequest: async (target) => {
+      if (!policyAllows(target)) {
+        throw new NetworkRequestBoundaryError({
+          category: "domain-denied",
+          message: `Robots policy denies discovery request ${target}`,
+          responded: false,
+        });
+      }
+      await admitNetworkRequest(target);
+    },
   };
 }
 

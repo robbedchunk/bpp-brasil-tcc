@@ -117,6 +117,8 @@ function testReceipt(config: RetailerConfig, purpose: "discovery" | "extraction"
       sourceCommit: "a".repeat(40),
       playwrightVersion: "1.61.1",
       chromiumVersion: "Chromium 141.0.0.0",
+      artifactSha256: "d".repeat(64),
+      challengeAlgorithm: "active-in-scope-category-url-bucket-round-robin-v1",
       sequentialPacingMs: 500,
       timeoutMs: 15_000,
       maxBodyBytes: 2_000_000,
@@ -141,7 +143,7 @@ function registerRetailerConfigs(
 ): void {
   const bundle = testActivationBundle(configs);
   registerRetailerConfigsWithEvidence(database, bundle.configs, {
-    verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+    testVerificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
     readValidationReceipt: (absolutePath) => {
       for (const [path, receipt] of bundle.receipts) {
         if (absolutePath.endsWith(path)) return receipt;
@@ -161,11 +163,11 @@ function testActivationBundle(configs: readonly RetailerConfig[]): {
     const validation = { ...config.validation };
     for (const purpose of ["discovery", "extraction"] as const) {
       const receipt = testReceipt(config, purpose);
-      const path = config.validation[purpose].receiptPath;
-      if (path === null) throw new Error("Active test config lacks a receipt path");
+      const path = `data/validation/${config.id}-${purpose}-v${config.strategyVersions[purpose]}.json`;
       receipts.set(path, receipt);
       validation[purpose] = {
         ...validation[purpose],
+        receiptPath: path,
         receiptSha256: validationReceiptSha256(receipt),
       };
     }
@@ -476,7 +478,7 @@ describe("live retailer configuration", () => {
     };
 
     expect(() => registerRetailerConfigsWithEvidence(database, [changed], {
-      verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+      testVerificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
       readValidationReceipt: (path) => path.includes("-extraction-")
         ? extractionReceipt
         : discoveryReceipt,
@@ -485,7 +487,7 @@ describe("live retailer configuration", () => {
       .toEqual({ n: 0 });
   });
 
-  it("fails activation for a missing or wrong verification public key", () => {
+  it("uses the tracked key and forbids supplied keys for file-backed activation", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     const current = loadRetailerConfigs("retailers")
@@ -497,13 +499,21 @@ describe("live retailer configuration", () => {
     const temporary = mkdtempSync(join(tmpdir(), "validation-key-test-"));
     try {
       expect(() => registerRetailerConfigsWithEvidence(database, bundle.configs, {
-        verificationPublicKeyPath: join(temporary, "missing.pem"),
-        readValidationReceipt,
-      })).toThrow();
-      expect(() => registerRetailerConfigsWithEvidence(database, bundle.configs, {
-        verificationPublicKey: generateKeyPairSync("ed25519").publicKey,
         readValidationReceipt,
       })).toThrow(/attestation/iu);
+      expect(() => registerRetailerConfigsWithEvidence(database, bundle.configs, {
+        testVerificationPublicKey: generateKeyPairSync("ed25519").publicKey,
+        readValidationReceipt,
+      })).toThrow(/attestation/iu);
+      const fileDatabase = openDatabase(join(temporary, "file-backed.sqlite"));
+      try {
+        expect(() => registerRetailerConfigsWithEvidence(fileDatabase, bundle.configs, {
+          testVerificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+          readValidationReceipt,
+        })).toThrow(/caller-supplied.*forbidden/iu);
+      } finally {
+        fileDatabase.close();
+      }
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
@@ -520,7 +530,7 @@ describe("live retailer configuration", () => {
     if (current === undefined) return;
     const bundle = testActivationBundle([current]);
     registerRetailerConfigsWithEvidence(database, bundle.configs, {
-      verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+      testVerificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
       readValidationReceipt: receiptReader(bundle.receipts),
     });
     const path = current.validation.extraction.receiptPath;
@@ -549,7 +559,7 @@ describe("live retailer configuration", () => {
     replacements.set(path, replacement);
 
     expect(() => registerRetailerConfigsWithEvidence(database, [replacementConfig], {
-      verificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
+      testVerificationPublicKey: TEST_VERIFICATION_PUBLIC_KEY,
       readValidationReceipt: receiptReader(replacements),
     })).toThrow(/immutable validation evidence|successor version/iu);
   });

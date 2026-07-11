@@ -128,7 +128,7 @@
 
 ## 2026-07-10 — M2 production operations
 
-- Daily collection runs around 03:00, weekly discovery on Sunday around 02:00,
+- Daily collection runs around 03:00; weekly discovery runs Sunday around 18:00 after the daily window,
   heartbeat checks hourly, and backups around 04:15, all in
   `America/Sao_Paulo` with persistent randomized user timers.
 - All mutating CLI entry points share one atomic PID/start-time process lock.
@@ -175,10 +175,13 @@
   `pending` with an explicit recheck command. Routine monitoring exits zero for
   honest pending evidence; strict completion exits three and never changes a
   date, inserts evidence, or calls a paid provider.
-- The alert drill classifies an injected 25-hour age in memory and proves the
-  live heartbeat identity is unchanged. The backup drill uses SQLite online
-  backup and a second restore-read copy; neither drill replaces or edits the
-  production database.
+- The alert drill executes a disposable user-systemd unit that terminates by
+  `SIGKILL`, verifies its result, invocation, and journal, then runs the current
+  signed frozen release's heartbeat CLI against a migrated file-backed staging
+  database and an isolated local alert file. It hashes the complete production
+  heartbeat view before and after. The backup drill uses SQLite online backup
+  and a second restore-read copy; neither drill replaces or edits the production
+  database.
 - Private detailed receipts, alert lines, and backup bytes stay under ignored
   `var/` paths with mode `0600`. Only primitive sanitized facts, hashes,
   repository-relative paths, and implementation commit identity are public.
@@ -349,8 +352,9 @@
 
 ## 2026-07-11 — Catalog integrity, bounded replay, and broad discovery
 
-- Discovery and collection now have independent daily allowances: up to 3,000
-  discovered references and 2,000 collection attempts per retailer. Collection
+- Discovery references have a separate 3,000/day allowance, while discovery
+  and collection network exchanges share one hard 2,000/day retailer ledger.
+  Redirects and tier-4 subrequests consume the same ledger. Collection
   uses never-attempted then oldest-attempted rotation, and cannot mutate the
   discovery-only `last_seen` fact.
 - Food-at-home scope is fail-closed and append-only audited. Source category has

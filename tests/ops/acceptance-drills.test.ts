@@ -1,12 +1,17 @@
-import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
-import { runAlertDrill, runBackupDrill, validatePublicDrillReceipt } from "../../src/ops/acceptance-drills.js";
+import {
+  runAlertDrill,
+  runBackupDrill,
+  validatePublicDrillReceipt,
+  type AlertDrillTestRunner,
+} from "../../src/ops/acceptance-drills.js";
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map((path) =>
@@ -26,21 +31,102 @@ async function databaseFixture(): Promise<{ root: string; path: string }> {
   return { root, path };
 }
 
+const sha256 = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+async function testAlertRunner(root: string): Promise<{
+  runner: AlertDrillTestRunner;
+  commands: Array<{ command: string; args: readonly string[] }>;
+}> {
+  const releasePath = join(root, "fixture-release");
+  const cliPath = join(releasePath, "dist", "cli.js");
+  await mkdir(join(releasePath, "dist"), { recursive: true });
+  await writeFile(cliPath, "fixture frozen cli\n");
+  const commands: Array<{ command: string; args: readonly string[] }> = [];
+  const invocationId = "b".repeat(32);
+  return {
+    commands,
+    runner: {
+      resolveRelease: ({ evaluatedCommit }) => ({
+        releasePath,
+        releaseId: "a".repeat(32),
+        sourceCommit: evaluatedCommit,
+        manifestSha256: "c".repeat(64),
+        artifactSetSha256: "d".repeat(64),
+        cliArtifactSha256: sha256("fixture frozen cli\n"),
+        cliPath,
+        nodePath: process.execPath,
+      }),
+      run: async (command, args, options) => {
+        commands.push({ command, args: [...args] });
+        if (command === "systemd-run") {
+          return { exitCode: 137, stdout: "", stderr: "unit failed by signal\n" };
+        }
+        if (command === "systemctl" && args.includes("show")) {
+          return {
+            exitCode: 0,
+            stdout: `Result=signal\nExecMainCode=2\nExecMainStatus=9\nInvocationID=${invocationId}\n`,
+            stderr: "",
+          };
+        }
+        if (command === "journalctl") {
+          return {
+            exitCode: 0,
+            stdout: `${JSON.stringify({
+              _SYSTEMD_INVOCATION_ID: invocationId,
+              MESSAGE: "Main process exited, code=killed, status=9/KILL",
+            })}\n`,
+            stderr: "",
+          };
+        }
+        if (command === "systemctl" && args.includes("reset-failed")) {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (command === process.execPath && args.slice(-2).join(" ") === "db init") {
+          const databasePath = options.env.DATABASE_PATH;
+          if (databasePath === undefined) throw new Error("missing isolated database path");
+          const database = openDatabase(databasePath);
+          database.close();
+          return { exitCode: 0, stdout: "Database initialized.\n", stderr: "" };
+        }
+        if (command === process.execPath
+          && args.slice(-3).join(" ") === "heartbeat check --json") {
+          const projectRoot = options.env.PROJECT_ROOT;
+          if (projectRoot === undefined) throw new Error("missing isolated project root");
+          const alertPath = join(projectRoot, "var", "log", "alerts.jsonl");
+          await mkdir(join(projectRoot, "var", "log"), { recursive: true, mode: 0o700 });
+          await writeFile(alertPath, `${JSON.stringify({
+            timestamp: "2026-07-10T12:00:00.000Z",
+            severity: "error",
+            title: "Preço collection heartbeat stale",
+            message: "No successful daily collection heartbeat is recorded",
+            details: { stale: true, ageMs: null, lastSuccessAt: null },
+          })}\n`, { mode: 0o600 });
+          return {
+            exitCode: 0,
+            stdout: `${JSON.stringify({ stale: true, ageMs: null, lastSuccessAt: null })}\n`,
+            stderr: "",
+          };
+        }
+        throw new Error(`unexpected drill command: ${command} ${args.join(" ")}`);
+      },
+    },
+  };
+}
+
 describe("safe acceptance drills", () => {
-  it("sends a local alert drill without inserting or updating a heartbeat", async () => {
+  it("binds a real-failure/isolated-heartbeat workflow without changing production heartbeats", async () => {
     const fixture = await databaseFixture();
-    const fallbackPath = join(fixture.root, "var", "log", "alerts.jsonl");
+    const { runner, commands } = await testAlertRunner(fixture.root);
     const before = openDatabase(fixture.path).prepare(
       "SELECT id, completed_at FROM heartbeats ORDER BY id",
     ).all();
-    const drillId = randomUUID();
 
     const receipt = await runAlertDrill({
       projectRoot: fixture.root,
       databasePath: fixture.path,
-      fallbackPath,
       now: () => new Date("2026-07-10T12:00:00.000Z"),
-      drillId: () => drillId,
+      drillId: () => "e".repeat(32),
+      testRunner: runner,
     });
 
     const afterDatabase = openDatabase(fixture.path);
@@ -48,17 +134,34 @@ describe("safe acceptance drills", () => {
     afterDatabase.close();
     expect(after).toEqual(before);
     expect(receipt).toMatchObject({ drill: "alert", status: "pass" });
-    expect(receipt.facts).toMatchObject({ channel: "local", heartbeatRowsUnchanged: true });
-    const line = await readFile(fallbackPath, "utf8");
-    expect(line).toContain(drillId);
-    expect((await stat(fallbackPath)).mode & 0o777).toBe(0o600);
+    expect(receipt.facts).toMatchObject({
+      protocolVersion: 2,
+      systemdResult: "signal",
+      execMainCode: "killed",
+      execMainStatus: 9,
+      heartbeatStale: true,
+      sourceHeartbeatsUnchanged: true,
+      isolatedHeartbeatRows: 0,
+      isolatedAlertMode: "0600",
+    });
+    expect(commands.find(({ command }) => command === "systemd-run")?.args).toEqual([
+      "--user",
+      "--unit=precos-alert-drill-eeeeeeeeeeee.service",
+      "--wait",
+      "--property=Type=exec",
+      "/bin/sh",
+      "-c",
+      'kill -KILL "$$"',
+    ]);
+    expect(commands.some(({ args }) => args.includes("heartbeat") && args.includes("check")))
+      .toBe(true);
     expect(Object.keys(receipt).sort()).toEqual([
       "drill", "evaluatedCommit", "facts", "implementationSha256",
       "observedAt", "reasonCodes", "schemaVersion", "status",
     ].sort());
     expect(() => validatePublicDrillReceipt({
       ...receipt,
-      facts: { ...receipt.facts, heartbeatRowsUnchanged: false },
+      facts: { ...receipt.facts, journalInvocationMatched: false },
     }, "alert")).toThrow(/contradict/i);
   });
 
@@ -88,24 +191,21 @@ describe("safe acceptance drills", () => {
     }, "backup")).toThrow(/contradict/i);
   });
 
-  it("records a validated local fallback when ntfy rejects the drill", async () => {
-    const fixture = await databaseFixture();
-    const fallbackPath = join(fixture.root, "var", "log", "alerts.jsonl");
-    const receipt = await runAlertDrill({
-      projectRoot: fixture.root,
-      databasePath: fixture.path,
-      fallbackPath,
-      ntfyTopic: "acceptance-test-topic",
-      fetch: async () => new Response("unavailable", { status: 503 }),
-      now: () => new Date("2026-07-10T12:00:00.000Z"),
-    });
-    expect(receipt).toMatchObject({ drill: "alert", status: "pass" });
-    expect(receipt.facts).toMatchObject({
-      channel: "local-after-ntfy-failure",
-      httpStatus: 503,
-      fallbackFileMode: "0600",
-    });
-    expect(() => validatePublicDrillReceipt(receipt, "alert")).not.toThrow();
+  it("rejects the old in-memory simulated-stale receipt", () => {
+    expect(() => validatePublicDrillReceipt({
+      schemaVersion: 1,
+      drill: "alert",
+      status: "pass",
+      observedAt: "2026-07-10T12:00:00.000Z",
+      evaluatedCommit: "a".repeat(40),
+      implementationSha256: "b".repeat(64),
+      reasonCodes: [],
+      facts: {
+        channel: "local",
+        accepted: true,
+        simulatedStale: true,
+      },
+    }, "alert")).toThrow(/allowlisted|invalid/iu);
   });
 
   it("cannot pass backup evidence when any critical evidence table is absent", async () => {

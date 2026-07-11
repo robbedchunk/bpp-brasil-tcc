@@ -10,6 +10,19 @@ import {
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 afterEach(() => databases.splice(0).forEach((database) => database.close()));
 
+const scheduledDetails = {
+  provenanceVersion: 1,
+  trigger: "systemd-timer",
+  serviceUnit: "precos-daily.service",
+  timerUnit: "precos-daily.timer",
+  invocationId: "a".repeat(32),
+  cgroupSha256: "b".repeat(64),
+  releaseId: "c".repeat(32),
+  timerLastTriggerAt: "2026-07-10T06:00:00.000Z",
+  serviceStartedAt: "2026-07-10T06:00:00.000Z",
+  timerCausalitySha256: "b86ba89e8105bea1281932a48880f8dc3ca784e6100932b29db415977b575197",
+};
+
 describe("heartbeat", () => {
   it("marks a last success older than 24 hours stale", () => {
     const now = new Date("2026-07-10T12:00:00.000Z");
@@ -42,7 +55,7 @@ describe("heartbeat", () => {
       pipeline: "collect",
       scheduledFor: "2026-07-09T06:00:00.000Z",
       completedAt: "2026-07-09T06:05:00.000Z",
-      details: { trigger: "systemd-timer", timerUnit: "precos-daily.timer" },
+      details: scheduledDetails,
     });
     recordHeartbeat(database, {
       pipeline: "collect",
@@ -64,8 +77,7 @@ describe("heartbeat", () => {
       scheduledFor: "2026-07-09T06:00:00.000Z",
       completedAt: "2026-07-09T06:05:00.000Z",
       details: {
-        trigger: "systemd-timer",
-        timerUnit: "precos-daily.timer",
+        ...scheduledDetails,
         monitorFailedRunIds: [],
         retailerFailures: [],
       },
@@ -75,8 +87,7 @@ describe("heartbeat", () => {
       scheduledFor: "2026-07-10T06:00:00.000Z",
       completedAt: "2026-07-10T06:05:00.000Z",
       details: {
-        trigger: "systemd-timer",
-        timerUnit: "precos-daily.timer",
+        ...scheduledDetails,
         monitorFailedRunIds: ["run-failed-monitor"],
         retailerFailures: [],
       },

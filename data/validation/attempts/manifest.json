@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "attempts": [
+    {
+      "path": "data/validation/attempts/carrefour-discovery-v4.json",
+      "fileSha256": "820dd064510f64416fc3951a783ffd115291cdc4db4aaa23e0a417fb3b5213fa",
+      "receiptSha256": "a2713991171a1f04ecafd021270c02d55fab4cc490c990faea473a44f2e38780",
+      "strategySourceCommit": "2b550c2bb130589251c5a5a3f657ef7fb7cfc2db"
+    },
+    {
+      "path": "data/validation/attempts/pao-de-acucar-discovery-v2.json",
+      "fileSha256": "a38c0d178fb7f4239e65f7495d8beea6daa92ccf40815088d2036483c1e6aabf",
+      "receiptSha256": "33d411c08900933b166aad0fc84f37ab8abe9bbf08c6fc2a560764464987141e",
+      "strategySourceCommit": "d762ef5af44967472a1997beee5136139f95176e"
+    },
+    {
+      "path": "data/validation/attempts/pao-de-acucar-discovery-v3.json",
+      "fileSha256": "791cf1b413cf1f8bd1ce62476837bcf0bfea069b7e40c2aaa7f63f1b53a27438",
+      "receiptSha256": "6110e2c3d7d8abdabdbe02a8209fe14de8d18b5539c2d029c05e8062fd37794e",
+      "strategySourceCommit": "18635466395c9b2313123186f77e3a8ca8bcbae6"
+    }
+  ]
+}

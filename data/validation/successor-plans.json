@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "plans": [
+    {
+      "retailerId": "carrefour",
+      "purpose": "discovery",
+      "fromVersion": 5,
+      "toVersion": 6,
+      "strategySha256": "41d00151cfce1a08f3edd5a7fd3fd3fe69c3a271a80a07f24888f566ea5e3646",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "carrefour",
+      "purpose": "extraction",
+      "fromVersion": 4,
+      "toVersion": 5,
+      "strategySha256": "ce0757d400c9f63704765d57d244a45eb3819d4589bf7ebed269249ea102999b",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "extra-mercado",
+      "purpose": "discovery",
+      "fromVersion": 2,
+      "toVersion": 3,
+      "strategySha256": "8587a4d7fe76ed493dcda443532dabfbdd43fd9f2d2acfb044e6ea60086f4077",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "extra-mercado",
+      "purpose": "extraction",
+      "fromVersion": 2,
+      "toVersion": 3,
+      "strategySha256": "34619e078ce2d982f935fc7ea64cd0ea0d418fc454c0620399a0c06ae854d9f1",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "pao-de-acucar",
+      "purpose": "discovery",
+      "fromVersion": 4,
+      "toVersion": 5,
+      "strategySha256": "a9805aafb92461e69841a5204c07490ec026c84285d2fe3f4608af17b5ea558d",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "pao-de-acucar",
+      "purpose": "extraction",
+      "fromVersion": 2,
+      "toVersion": 3,
+      "strategySha256": "1f20f83d5f2497cbf5ee68bead5f97ef08057eb05ca822cb4e3880b1d9eab0c3",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "st-marche",
+      "purpose": "discovery",
+      "fromVersion": 4,
+      "toVersion": 5,
+      "strategySha256": "4df9fce7754d90ea9793b304705639b0040e26b6344b6dafc514f179c1c4dd14",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    },
+    {
+      "retailerId": "st-marche",
+      "purpose": "extraction",
+      "fromVersion": 3,
+      "toVersion": 4,
+      "strategySha256": "47a06706867359b36c399e230e6996474e7cef07e4de11b8ffdf4e931600e76b",
+      "reason": "Re-attest the unchanged strategy with the independent challenge and validator-bundle binding."
+    }
+  ]
+}

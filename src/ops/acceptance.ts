@@ -11,26 +11,56 @@ import {
   CLASSIFICATION_REVIEW_SIZE,
   readClassificationReviewResult,
 } from "../classify/review.js";
+import { EXPECTED_SCHEMA_MIGRATIONS } from "../db/database.js";
+import { databaseSourceSnapshotSha256 } from "../index/export.js";
 import {
   auditPublication,
   validateFreshCloneReceipt,
   type PublicationAuditReport,
 } from "../publication/audit.js";
-import { loadRetailerConfigs, type RetailerConfig } from "../retailers/config.js";
+import {
+  loadRetailerConfigs,
+  RetailerConfigSchema,
+  type RetailerConfig,
+} from "../retailers/config.js";
 import { parseStrategy } from "../strategies/schema.js";
 import {
+  readTrustedValidatorArtifactSha256,
   readValidationVerificationPublicKey,
   StrategyValidationEvidenceSchema,
+  strategyEvidenceSha256,
   validateStrategyEvidence,
   validationReceiptSha256,
 } from "../strategies/validation-evidence.js";
 import { validatePublicDrillReceipt, type PublicDrillReceipt } from "./acceptance-drills.js";
 import {
+  assertHealingSabotageReceiptFresh,
+  validateHealingSabotageEvidence,
+  type HealingSabotageDrillReceipt,
+} from "./healing-drill.js";
+import {
   isAcceptanceEvidencePath,
+  releaseSourceMatchesEvaluatedCommit,
   resolveAcceptanceEvaluatedCommit,
 } from "./evidence-cut.js";
+import {
+  REQUIRED_BACKUP_TABLES,
+  scheduledBackupPairMatchesService,
+  validateScheduledBackupPair,
+  validateScheduledBackupReceipt,
+  type ScheduledBackupPairValidation,
+  type ScheduledBackupReceipt,
+} from "./scheduled-backup.js";
+import {
+  validateFrozenRelease,
+  type ReleaseManifest,
+  type ValidateReleaseOptions,
+} from "./release-manifest.js";
 
-export { resolveAcceptanceEvaluatedCommit } from "./evidence-cut.js";
+export {
+  releaseSourceMatchesEvaluatedCommit,
+  resolveAcceptanceEvaluatedCommit,
+} from "./evidence-cut.js";
 
 export type AcceptanceStatus = "pass" | "pending" | "fail";
 export type MilestoneId = "M0" | "M1" | "M2" | "M3" | "M4" | "M5" | "M6" | "M7";
@@ -95,12 +125,15 @@ export interface ServiceState {
   enabled: boolean;
   active: boolean;
   result: string | null;
+  invocationId: string | null;
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
+  lastTriggerAt?: string | null;
 }
 
 export interface ServiceStateReader {
   read(units: string[]): Promise<ServiceState[]>;
+  readUserLingerEnabled?(): Promise<boolean>;
 }
 
 export interface ClassificationAutomationState {
@@ -219,45 +252,96 @@ function gitSucceeds(root: string, args: string[]): boolean {
 
 export interface SystemdInstallationState {
   valid: boolean;
+  scheduleActivatedAt: Date | null;
+  deployedAt: Date | null;
+  sourceCommit: string | null;
+  releaseId: string | null;
+  releasePath: string | null;
+  releaseManifestSha256: string | null;
+  /** Compatibility alias for scheduleActivatedAt. */
   installedAt: Date | null;
   unitSetSha256: string | null;
 }
+
+const invalidSystemdInstallation = (): SystemdInstallationState => ({
+  valid: false,
+  scheduleActivatedAt: null,
+  deployedAt: null,
+  sourceCommit: null,
+  releaseId: null,
+  releasePath: null,
+  releaseManifestSha256: null,
+  installedAt: null,
+  unitSetSha256: null,
+});
 
 export function readSystemdInstallationState(
   root: string,
   now: Date,
   installedUnitDirectory = resolve(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user"),
+  releaseValidator: (options: ValidateReleaseOptions) => ReleaseManifest = validateFrozenRelease,
 ): SystemdInstallationState {
   const path = join(root, "var/operations/systemd-install.json");
   const parsed = readJson(path);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
-    || !exactObjectKeys(parsed as Record<string, unknown>, ["installedAt", "schemaVersion", "unitSetSha256", "units"])) {
-    return { valid: false, installedAt: null, unitSetSha256: null };
+    || !exactObjectKeys(parsed as Record<string, unknown>, [
+      "deployedAt", "releaseId", "releaseManifestSha256", "releasePath",
+      "scheduleActivatedAt", "schemaVersion", "sourceCommit", "unitSetSha256", "units",
+    ])) {
+    return invalidSystemdInstallation();
   }
   const receipt = parsed as Record<string, unknown>;
-  const installedAtMs = typeof receipt.installedAt === "string" ? Date.parse(receipt.installedAt) : Number.NaN;
-  if (receipt.schemaVersion !== 1 || !Number.isFinite(installedAtMs) || installedAtMs > now.getTime()
-    || new Date(installedAtMs).toISOString() !== receipt.installedAt
+  const scheduleActivatedAtMs = typeof receipt.scheduleActivatedAt === "string"
+    ? Date.parse(receipt.scheduleActivatedAt) : Number.NaN;
+  const deployedAtMs = typeof receipt.deployedAt === "string" ? Date.parse(receipt.deployedAt) : Number.NaN;
+  if (receipt.schemaVersion !== 2
+    || !Number.isFinite(scheduleActivatedAtMs) || scheduleActivatedAtMs > now.getTime()
+    || new Date(scheduleActivatedAtMs).toISOString() !== receipt.scheduleActivatedAt
+    || !Number.isFinite(deployedAtMs) || deployedAtMs > now.getTime()
+    || new Date(deployedAtMs).toISOString() !== receipt.deployedAt
+    || typeof receipt.sourceCommit !== "string" || !COMMIT.test(receipt.sourceCommit)
+    || typeof receipt.releaseId !== "string" || !/^[a-f0-9]{32}$/u.test(receipt.releaseId)
+    || typeof receipt.releasePath !== "string" || !isAbsolute(receipt.releasePath)
+    || resolve(receipt.releasePath) !== receipt.releasePath
+    || typeof receipt.releaseManifestSha256 !== "string" || !SHA256.test(receipt.releaseManifestSha256)
     || typeof receipt.unitSetSha256 !== "string" || !SHA256.test(receipt.unitSetSha256)
     || !Array.isArray(receipt.units) || receipt.units.length !== ALL_SYSTEMD_UNITS.length
-    || !existsSync(path) || (statSync(path).mode & 0o777) !== 0o600) {
-    return { valid: false, installedAt: null, unitSetSha256: null };
+    || !existsSync(path) || !lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()
+    || (statSync(path).mode & 0o777) !== 0o600) {
+    return invalidSystemdInstallation();
+  }
+  let release: ReleaseManifest;
+  try {
+    release = releaseValidator({
+      releasePath: receipt.releasePath,
+      publicKeyPath: join(root, "ops/validation-attestation-public.pem"),
+      expectedSourceCommit: receipt.sourceCommit,
+      expectedReleaseId: receipt.releaseId,
+      expectedSourceRoot: root,
+    });
+    const manifestPath = join(receipt.releasePath, "release-manifest.json");
+    if (release.deployedAt !== receipt.deployedAt
+      || hash(readFileSync(manifestPath)) !== receipt.releaseManifestSha256) {
+      return invalidSystemdInstallation();
+    }
+  } catch {
+    return invalidSystemdInstallation();
   }
   const names = new Set<string>();
   const units: Array<{ name: string; sha256: string }> = [];
   for (const value of receipt.units) {
     if (typeof value !== "object" || value === null || Array.isArray(value)
       || !exactObjectKeys(value as Record<string, unknown>, ["name", "sha256"])) {
-      return { valid: false, installedAt: null, unitSetSha256: null };
+      return invalidSystemdInstallation();
     }
     const unit = value as Record<string, unknown>;
     if (typeof unit.name !== "string" || !ALL_SYSTEMD_UNITS.includes(unit.name)
       || names.has(unit.name) || typeof unit.sha256 !== "string" || !SHA256.test(unit.sha256)) {
-      return { valid: false, installedAt: null, unitSetSha256: null };
+      return invalidSystemdInstallation();
     }
     const installedPath = join(installedUnitDirectory, unit.name);
     if (!existsSync(installedPath) || hash(readFileSync(installedPath)) !== unit.sha256) {
-      return { valid: false, installedAt: null, unitSetSha256: null };
+      return invalidSystemdInstallation();
     }
     names.add(unit.name);
     units.push({ name: unit.name, sha256: unit.sha256 });
@@ -265,11 +349,17 @@ export function readSystemdInstallationState(
   units.sort((left, right) => left.name.localeCompare(right.name));
   const computedSetHash = hash(units.map((unit) => `${unit.name}\0${unit.sha256}\n`).join(""));
   if (computedSetHash !== receipt.unitSetSha256) {
-    return { valid: false, installedAt: null, unitSetSha256: null };
+    return invalidSystemdInstallation();
   }
   return {
     valid: true,
-    installedAt: new Date(installedAtMs),
+    scheduleActivatedAt: new Date(scheduleActivatedAtMs),
+    deployedAt: new Date(deployedAtMs),
+    sourceCommit: receipt.sourceCommit,
+    releaseId: receipt.releaseId,
+    releasePath: receipt.releasePath,
+    releaseManifestSha256: receipt.releaseManifestSha256,
+    installedAt: new Date(scheduleActivatedAtMs),
     unitSetSha256: receipt.unitSetSha256,
   };
 }
@@ -328,6 +418,14 @@ interface M2Row {
   completed_at: string;
   heartbeat_trigger: string | null;
   timer_unit: string | null;
+  service_unit: string | null;
+  provenance_version: number | null;
+  invocation_id: string | null;
+  cgroup_sha256: string | null;
+  release_id: string | null;
+  timer_last_trigger_at: string | null;
+  service_started_at: string | null;
+  timer_causality_sha256: string | null;
   run_id: string;
   retailer_id: string;
   collection_day: string;
@@ -362,6 +460,14 @@ WITH active_product_counts AS (
     heartbeat.completed_at,
     json_extract(heartbeat.details_json, '$.trigger') AS heartbeat_trigger,
     json_extract(heartbeat.details_json, '$.timerUnit') AS timer_unit,
+    json_extract(heartbeat.details_json, '$.serviceUnit') AS service_unit,
+    json_extract(heartbeat.details_json, '$.provenanceVersion') AS provenance_version,
+    json_extract(heartbeat.details_json, '$.invocationId') AS invocation_id,
+    json_extract(heartbeat.details_json, '$.cgroupSha256') AS cgroup_sha256,
+    json_extract(heartbeat.details_json, '$.releaseId') AS release_id,
+    json_extract(heartbeat.details_json, '$.timerLastTriggerAt') AS timer_last_trigger_at,
+    json_extract(heartbeat.details_json, '$.serviceStartedAt') AS service_started_at,
+    json_extract(heartbeat.details_json, '$.timerCausalitySha256') AS timer_causality_sha256,
     run_id.value AS run_id
   FROM heartbeats AS heartbeat,
        json_each(heartbeat.details_json, '$.runIds') AS run_id
@@ -378,6 +484,14 @@ SELECT
   linked.completed_at,
   linked.heartbeat_trigger,
   linked.timer_unit,
+  linked.service_unit,
+  linked.provenance_version,
+  linked.invocation_id,
+  linked.cgroup_sha256,
+  linked.release_id,
+  linked.timer_last_trigger_at,
+  linked.service_started_at,
+  linked.timer_causality_sha256,
   run.id AS run_id,
   run.retailer_id,
   run.collection_day,
@@ -422,12 +536,40 @@ function validTimestampAtOrBefore(value: string | null, now: Date): boolean {
 }
 
 function scheduledHeartbeatDetails(value: unknown): value is {
+  provenanceVersion: 1;
   trigger: "systemd-timer";
+  serviceUnit: "precos-daily.service";
   timerUnit: "precos-daily.timer";
+  invocationId: string;
+  cgroupSha256: string;
+  releaseId: string;
+  timerLastTriggerAt: string;
+  serviceStartedAt: string;
+  timerCausalitySha256: string;
 } {
-  return typeof value === "object" && value !== null
-    && (value as Record<string, unknown>).trigger === "systemd-timer"
-    && (value as Record<string, unknown>).timerUnit === "precos-daily.timer";
+  if (typeof value !== "object" || value === null) return false;
+  const details = value as Record<string, unknown>;
+  return details.provenanceVersion === 1
+    && details.trigger === "systemd-timer"
+    && details.serviceUnit === "precos-daily.service"
+    && details.timerUnit === "precos-daily.timer"
+    && typeof details.invocationId === "string" && /^[a-f0-9]{32}$/u.test(details.invocationId)
+    && typeof details.cgroupSha256 === "string" && SHA256.test(details.cgroupSha256)
+    && typeof details.releaseId === "string" && /^[a-f0-9]{32}$/u.test(details.releaseId)
+    && typeof details.timerLastTriggerAt === "string"
+    && Number.isFinite(Date.parse(details.timerLastTriggerAt))
+    && typeof details.serviceStartedAt === "string"
+    && Number.isFinite(Date.parse(details.serviceStartedAt))
+    && Math.abs(Date.parse(details.timerLastTriggerAt) - Date.parse(details.serviceStartedAt)) <= 1_000
+    && typeof details.timerCausalitySha256 === "string"
+    && SHA256.test(details.timerCausalitySha256)
+    && details.timerCausalitySha256 === hash(JSON.stringify({
+      invocationId: details.invocationId,
+      serviceStartedAt: new Date(details.serviceStartedAt).toISOString(),
+      serviceUnit: "precos-daily.service",
+      timerLastTriggerAt: new Date(details.timerLastTriggerAt).toISOString(),
+      timerUnit: "precos-daily.timer",
+    }));
 }
 
 function validateHeartbeatLinks(database: Database.Database, now: Date): string[] {
@@ -537,9 +679,27 @@ function saoPauloDay(value: string | Date): string {
 function isScheduledCollectionHeartbeat(input: {
   heartbeat_trigger: string | null;
   timer_unit: string | null;
+  service_unit: string | null;
+  provenance_version: number | null;
+  invocation_id: string | null;
+  cgroup_sha256: string | null;
+  release_id: string | null;
+  timer_last_trigger_at: string | null;
+  service_started_at: string | null;
+  timer_causality_sha256: string | null;
 }): boolean {
-  return input.heartbeat_trigger === "systemd-timer"
-    && input.timer_unit === "precos-daily.timer";
+  return scheduledHeartbeatDetails({
+    provenanceVersion: input.provenance_version,
+    trigger: input.heartbeat_trigger,
+    serviceUnit: input.service_unit,
+    timerUnit: input.timer_unit,
+    invocationId: input.invocation_id,
+    cgroupSha256: input.cgroup_sha256,
+    releaseId: input.release_id,
+    timerLastTriggerAt: input.timer_last_trigger_at,
+    serviceStartedAt: input.service_started_at,
+    timerCausalitySha256: input.timer_causality_sha256,
+  });
 }
 
 function dailyBoundary(day: string): Date {
@@ -559,6 +719,13 @@ function scheduledBoundaryForDay(day: string, hour: number, minute: number): Dat
   return new Date(`${day}T${String(hour + 3).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00.000Z`);
 }
 
+function deadlineForScheduledStart(start: Date, hour: number, minute: number): Date {
+  const candidate = scheduledBoundaryForDay(saoPauloDay(start), hour, minute);
+  return candidate.getTime() >= start.getTime()
+    ? candidate
+    : scheduledBoundaryForDay(nextDay(saoPauloDay(start)), hour, minute);
+}
+
 function currentScheduledBoundary(first: Date, now: Date, hour: number, minute: number): Date {
   const today = scheduledBoundaryForDay(saoPauloDay(now), hour, minute);
   return today.getTime() < first.getTime() ? first : today;
@@ -568,6 +735,7 @@ export function evaluateM2(
   database: Database.Database,
   now: Date,
   scheduleActivatedAt: Date | null = null,
+  expectedReleaseId: string | null = null,
 ): CriterionEvaluation {
   const id = "m2-two-consecutive-days";
   const contradictions = validateHeartbeatLinks(database, now);
@@ -595,12 +763,23 @@ export function evaluateM2(
   }
   const allRows = database.prepare(M2_QUERY).all() as M2Row[];
   const rows = allRows.filter((row) => isScheduledCollectionHeartbeat(row)
+    && (expectedReleaseId === null || (row.release_id === expectedReleaseId
+      && scheduleActivatedAt !== null
+      && Date.parse(row.scheduled_for) >= scheduleActivatedAt.getTime()))
     && row.collection_day === saoPauloDay(row.scheduled_for));
   const selectedHeartbeatByDay = new Map<string, string>();
   const heartbeatRows = database.prepare(`
     SELECT id, scheduled_for, completed_at,
       json_extract(details_json, '$.trigger') AS heartbeat_trigger,
-      json_extract(details_json, '$.timerUnit') AS timer_unit
+      json_extract(details_json, '$.timerUnit') AS timer_unit,
+      json_extract(details_json, '$.serviceUnit') AS service_unit,
+      json_extract(details_json, '$.provenanceVersion') AS provenance_version,
+      json_extract(details_json, '$.invocationId') AS invocation_id,
+      json_extract(details_json, '$.cgroupSha256') AS cgroup_sha256,
+      json_extract(details_json, '$.releaseId') AS release_id,
+      json_extract(details_json, '$.timerLastTriggerAt') AS timer_last_trigger_at,
+      json_extract(details_json, '$.serviceStartedAt') AS service_started_at,
+      json_extract(details_json, '$.timerCausalitySha256') AS timer_causality_sha256
     FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
       AND COALESCE(json_array_length(details_json, '$.monitorFailedRunIds'), 0) = 0
@@ -612,8 +791,20 @@ export function evaluateM2(
     completed_at: string;
     heartbeat_trigger: string | null;
     timer_unit: string | null;
+    service_unit: string | null;
+    provenance_version: number | null;
+    invocation_id: string | null;
+    cgroup_sha256: string | null;
+    release_id: string | null;
+    timer_last_trigger_at: string | null;
+    service_started_at: string | null;
+    timer_causality_sha256: string | null;
   }>;
-  const scheduledHeartbeats = heartbeatRows.filter(isScheduledCollectionHeartbeat);
+  const scheduledHeartbeats = heartbeatRows.filter((heartbeat) =>
+    isScheduledCollectionHeartbeat(heartbeat)
+    && (expectedReleaseId === null || (heartbeat.release_id === expectedReleaseId
+      && scheduleActivatedAt !== null
+      && Date.parse(heartbeat.scheduled_for) >= scheduleActivatedAt.getTime())));
   for (const heartbeat of heartbeatRows) {
     if (!isScheduledCollectionHeartbeat(heartbeat)) continue;
     const day = saoPauloDay(heartbeat.scheduled_for);
@@ -675,6 +866,7 @@ export function evaluateM2(
       qualifyingDayPair: passingPair?.[0] ?? null,
       contradictoryHeartbeats: contradictions.length,
       scheduleActivatedAt: scheduleActivatedAt?.toISOString() ?? null,
+      expectedReleaseId,
     },
   );
   if (passingPair !== undefined) {
@@ -695,7 +887,7 @@ export function evaluateM2(
     && now.getTime() >= new Date(`${nextDay(latestScheduledDay)}T07:00:00.000Z`).getTime();
   const firstDeadline = scheduleActivatedAt === null
     ? null
-    : scheduledBoundaryAfter(scheduleActivatedAt, 4, 0);
+    : deadlineForScheduledStart(scheduledBoundaryAfter(scheduleActivatedAt, 3, 0), 4, 0);
   const noScheduledHeartbeatElapsed = latestScheduledDay === null && firstDeadline !== null
     && now.getTime() >= firstDeadline.getTime();
   if (hasMissedInteriorDay || nextBoundaryElapsed || noScheduledHeartbeatElapsed) {
@@ -739,6 +931,8 @@ export interface M3GateOptions {
   decisionsDocumented?: boolean;
   namedBackupDocumented?: boolean;
   blockedDayTriggerProven?: boolean;
+  deployedAt?: Date;
+  releaseId?: string;
 }
 
 export interface M3Evaluation {
@@ -775,9 +969,36 @@ export function evaluateM3(
   const scheduledRows = contradictions.length === 0
     ? (database.prepare(M2_QUERY).all() as M2Row[]).filter((row) =>
         isScheduledCollectionHeartbeat(row)
+        && (options.releaseId === undefined || (row.release_id === options.releaseId
+          && options.deployedAt !== undefined
+          && Date.parse(row.scheduled_for) >= options.deployedAt.getTime()))
         && row.collection_day === saoPauloDay(row.scheduled_for))
     : [];
-  const substantiveRows = scheduledRows.filter((row) =>
+  const latestHeartbeat = database.prepare(`
+    SELECT id, completed_at, status, details_json
+    FROM heartbeats
+    WHERE pipeline = 'collect'
+    ORDER BY completed_at DESC, id DESC
+    LIMIT 1
+  `).get() as { id: string; completed_at: string; status: string; details_json: string } | undefined;
+  const latestHeartbeatInDeploymentWindow = latestHeartbeat !== undefined
+    && (options.deployedAt === undefined
+      || Date.parse(latestHeartbeat.completed_at) >= options.deployedAt.getTime());
+  const latestHeartbeatId = latestHeartbeatInDeploymentWindow ? latestHeartbeat.id : null;
+  let latestHeartbeatScheduled = false;
+  if (latestHeartbeatInDeploymentWindow && latestHeartbeat.status === "completed") {
+    try {
+      const parsed = JSON.parse(latestHeartbeat.details_json);
+      latestHeartbeatScheduled = scheduledHeartbeatDetails(parsed)
+        && (options.releaseId === undefined || parsed.releaseId === options.releaseId);
+    } catch {
+      latestHeartbeatScheduled = false;
+    }
+  }
+  const latestHeartbeatRows = latestHeartbeatId === null
+    ? []
+    : scheduledRows.filter((row) => latestHeartbeatScheduled && row.heartbeat_id === latestHeartbeatId);
+  const substantiveRows = latestHeartbeatRows.filter((row) =>
     Date.parse(row.completed_at) >= now.getTime() - 24 * 60 * 60 * 1_000
     && row.attempted > 0
     && row.error_category === null
@@ -792,9 +1013,15 @@ export function evaluateM3(
     && Math.abs(row.validation_rate - row.validation_successes / row.validation_sample_size) < 1e-12
     && row.observation_rows === row.ok
     && row.bound_observation_rows === row.ok);
-  const retailersWithCollectionEvidence = new Set(substantiveRows.map((row) => row.retailer_id)).size;
-  const latestScheduledAt = scheduledRows.reduce<string | null>((latest, row) =>
-    latest === null || Date.parse(row.completed_at) > Date.parse(latest) ? row.completed_at : latest, null);
+  const substantiveRetailers = new Set(substantiveRows.map((row) => row.retailer_id));
+  const duplicateLatestRetailers = latestHeartbeatRows.length
+    - new Set(latestHeartbeatRows.map((row) => row.retailer_id)).size;
+  const retailersWithCollectionEvidence = substantiveRetailers.size;
+  const latestScheduledAt = latestHeartbeatInDeploymentWindow ? latestHeartbeat.completed_at : null;
+  const latestHeartbeatCoversPanel = latestHeartbeatRows.length === retailerFacts.activeRetailers
+    && substantiveRows.length === retailerFacts.activeRetailers
+    && retailersWithCollectionEvidence === retailerFacts.activeRetailers
+    && duplicateLatestRetailers === 0;
 
   const panelEvidenceId = "db-m3-live-panel";
   const panelEvidence = evidence(panelEvidenceId, "database-query", "m3-live-panel", now.toISOString(), {
@@ -802,6 +1029,9 @@ export function evaluateM3(
     degradedRetailers: retailerFacts.degradedRetailers,
     panelExceptionApproved: panelExceptionPass,
     recentScheduledSubstantiveRetailers: retailersWithCollectionEvidence,
+    latestHeartbeatId,
+    latestHeartbeatRunRows: latestHeartbeatRows.length,
+    duplicateLatestRetailers,
     latestScheduledCollectionCompletedAt: latestScheduledAt,
     contradictoryHeartbeats: contradictions.length,
   });
@@ -824,7 +1054,7 @@ export function evaluateM3(
     panelGate = gate("m3-live-panel", "site", "SITE_VALIDATION_PENDING", null,
       "Activate a validated fourth retailer or record the exact named-backup swap after three blocked days",
       "npm run acceptance -- --json", [panelEvidenceId]);
-  } else if (retailersWithCollectionEvidence !== retailerFacts.activeRetailers) {
+  } else if (!latestHeartbeatCoversPanel) {
     const staleScheduledEvidence = latestScheduledAt !== null
       && Date.parse(latestScheduledAt) < now.getTime() - 24 * 60 * 60 * 1_000;
     if (staleScheduledEvidence) {
@@ -953,8 +1183,184 @@ interface StrategyReceiptRow {
   validation_successes: number;
   validation_rate: number | null;
   validated_at: string | null;
+  activated_at: string | null;
+  retired_at: string | null;
   active: number;
   provenance: string;
+}
+
+function sourceCommitDeclaresStrategyVersion(
+  root: string,
+  sourceCommit: string,
+  input: {
+    retailerId: string;
+    purpose: "discovery" | "extraction";
+    version: number;
+    strategy: ReturnType<typeof parseStrategy>;
+  },
+): boolean {
+  try {
+    const historicalConfig = RetailerConfigSchema.parse(JSON.parse(execFileSync(
+      "git",
+      ["show", `${sourceCommit}:retailers/${input.retailerId}.json`],
+      { cwd: root, encoding: "utf8" },
+    )));
+    const strategySha256 = strategyEvidenceSha256(input.strategy);
+    if (historicalConfig.strategyVersions[input.purpose] === input.version
+      && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
+      return true;
+    }
+    if (historicalConfig.strategyVersions[input.purpose] !== input.version - 1
+      || strategyEvidenceSha256(historicalConfig[input.purpose]) !== strategySha256) {
+      return false;
+    }
+    const plan = JSON.parse(execFileSync(
+      "git",
+      ["show", `${sourceCommit}:data/validation/successor-plans.json`],
+      { cwd: root, encoding: "utf8" },
+    )) as { schemaVersion?: unknown; plans?: unknown };
+    if (plan.schemaVersion !== 1 || !Array.isArray(plan.plans)) return false;
+    const matches = plan.plans.filter((candidate) => {
+      if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
+      const value = candidate as Record<string, unknown>;
+      return Object.keys(value).sort().join("\0")
+          === ["fromVersion", "purpose", "reason", "retailerId", "strategySha256", "toVersion"].sort().join("\0")
+        && value.retailerId === input.retailerId
+        && value.purpose === input.purpose
+        && value.fromVersion === input.version - 1
+        && value.toVersion === input.version
+        && value.strategySha256 === strategySha256
+        && typeof value.reason === "string" && value.reason.length > 0;
+    });
+    return matches.length === 1;
+  } catch {
+    return false;
+  }
+}
+
+function validateFailedValidationAttemptRegistry(
+  root: string,
+  database: Database.Database,
+  verificationPublicKey: import("node:crypto").KeyObject | null,
+): {
+  attempts: number;
+  invalid: number;
+  missing: number;
+  hashes: Array<{ path: string; sha256: string }>;
+} {
+  const directory = join(root, "data/validation/attempts");
+  const manifestPath = join(directory, "manifest.json");
+  const hashes: Array<{ path: string; sha256: string }> = [];
+  if (verificationPublicKey === null || !existsSync(manifestPath)) {
+    return { attempts: 0, invalid: 0, missing: 1, hashes };
+  }
+  try {
+    if (!lstatSync(manifestPath).isFile()) throw new Error("Attempt manifest is not regular");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      schemaVersion?: unknown;
+      attempts?: unknown;
+    };
+    if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.attempts)) {
+      throw new Error("Failed validation attempt manifest is malformed");
+    }
+    const actualFiles = readdirSync(directory)
+      .filter((name) => name.endsWith(".json") && name !== "manifest.json")
+      .map((name) => `data/validation/attempts/${name}`)
+      .sort();
+    const entries = manifest.attempts as Array<Record<string, unknown>>;
+    const declaredFiles = entries.map((entry) => entry.path).sort();
+    if (
+      declaredFiles.some((path) => typeof path !== "string")
+      || JSON.stringify(declaredFiles) !== JSON.stringify(actualFiles)
+      || !gitSucceeds(root, ["ls-files", "--error-unmatch", "data/validation/attempts/manifest.json"])
+    ) {
+      throw new Error("Failed validation attempt manifest coverage is incomplete");
+    }
+    for (const entry of entries) {
+      if (
+        Object.keys(entry).sort().join("\0")
+          !== ["fileSha256", "path", "receiptSha256", "strategySourceCommit"].sort().join("\0")
+        || typeof entry.path !== "string"
+        || !/^data\/validation\/attempts\/[a-z0-9-]+\.json$/u.test(entry.path)
+        || typeof entry.fileSha256 !== "string"
+        || !SHA256.test(entry.fileSha256)
+        || typeof entry.receiptSha256 !== "string"
+        || !SHA256.test(entry.receiptSha256)
+        || typeof entry.strategySourceCommit !== "string"
+        || !COMMIT.test(entry.strategySourceCommit)
+        || !gitSucceeds(root, ["ls-files", "--error-unmatch", entry.path])
+      ) {
+        throw new Error("Failed validation attempt manifest entry is malformed");
+      }
+      const absolutePath = resolve(root, entry.path);
+      if (!lstatSync(absolutePath).isFile()) throw new Error("Attempt receipt is not regular");
+      const raw = readFileSync(absolutePath);
+      if (hash(raw) !== entry.fileSha256) throw new Error("Attempt file digest mismatch");
+      const parsed = StrategyValidationEvidenceSchema.parse(JSON.parse(raw.toString("utf8")));
+      if (
+        parsed.attempted !== 30
+        || parsed.valid >= 27
+        || parsed.score !== parsed.valid / parsed.attempted
+        || parsed.activatable !== false
+        || validationReceiptSha256(parsed) !== entry.receiptSha256
+        || parsed.executor.sourceCommit !== entry.strategySourceCommit
+        || !gitSucceeds(root, ["merge-base", "--is-ancestor", parsed.executor.sourceCommit, "HEAD"])
+      ) {
+        throw new Error("Failed validation receipt outcome is inconsistent");
+      }
+      const historicalConfig = RetailerConfigSchema.parse(JSON.parse(execFileSync(
+        "git",
+        ["show", `${entry.strategySourceCommit}:retailers/${parsed.retailerId}.json`],
+        { cwd: root, encoding: "utf8" },
+      )));
+      if (!sourceCommitDeclaresStrategyVersion(root, entry.strategySourceCommit, {
+        retailerId: parsed.retailerId,
+        purpose: parsed.purpose,
+        version: parsed.strategyVersion,
+        strategy: historicalConfig[parsed.purpose],
+      })) {
+        throw new Error("Failed receipt strategy version lacks historical identity");
+      }
+      const historicalRefs = (database.prepare(`
+        SELECT canonical_url, retailer_product_id, source_category
+        FROM products WHERE retailer_id = ?
+        ORDER BY canonical_url
+      `).all(parsed.retailerId) as Array<{
+        canonical_url: string;
+        retailer_product_id: string | null;
+        source_category: string | null;
+      }>).map((row) => ({
+        canonicalUrl: row.canonical_url,
+        externalId: row.retailer_product_id,
+        sourceCategory: row.source_category,
+      }));
+      validateStrategyEvidence(parsed, {
+        retailerId: parsed.retailerId,
+        purpose: parsed.purpose,
+        strategyVersion: parsed.strategyVersion,
+        strategy: historicalConfig[parsed.purpose],
+        verificationPublicKey,
+        authoritativeRefs: historicalRefs,
+      });
+      const activatedEvidence = database.prepare(`
+        SELECT 1
+        FROM strategies AS strategy
+        JOIN strategy_validation_evidence AS evidence ON evidence.strategy_id = strategy.id
+        WHERE strategy.retailer_id = ? AND strategy.purpose = ? AND strategy.version = ?
+      `).get(parsed.retailerId, parsed.purpose, parsed.strategyVersion);
+      if (activatedEvidence !== undefined) {
+        throw new Error("Failed validation receipt is also registered as activation evidence");
+      }
+      hashes.push({ path: entry.path, sha256: entry.fileSha256 });
+    }
+    hashes.push({
+      path: "data/validation/attempts/manifest.json",
+      sha256: hash(readFileSync(manifestPath)),
+    });
+    return { attempts: entries.length, invalid: 0, missing: 0, hashes };
+  } catch {
+    return { attempts: 0, invalid: 1, missing: 0, hashes };
+  }
 }
 
 export function evaluateActiveStrategyValidationReceipts(
@@ -966,7 +1372,7 @@ export function evaluateActiveStrategyValidationReceipts(
   const rows = database.prepare(`
     SELECT id, retailer_id, purpose, version, strategy_json,
       validation_sample_size, validation_successes, validation_rate,
-      validated_at, active, provenance
+      validated_at, activated_at, retired_at, active, provenance
     FROM strategies
     ORDER BY retailer_id, purpose, version
   `).all() as StrategyReceiptRow[];
@@ -991,12 +1397,20 @@ export function evaluateActiveStrategyValidationReceipts(
   let malformedReceipts = 0;
   let untrackedReceipts = 0;
   let verificationPublicKey: import("node:crypto").KeyObject | null = null;
+  let trustedValidatorArtifactSha256: string | null = null;
   try {
     verificationPublicKey = readValidationVerificationPublicKey(
       join(root, "ops/validation-attestation-public.pem"),
     );
   } catch {
     verificationPublicKey = null;
+  }
+  try {
+    trustedValidatorArtifactSha256 = readTrustedValidatorArtifactSha256(
+      join(root, "ops/validator-bundle.sha256"),
+    );
+  } catch {
+    trustedValidatorArtifactSha256 = null;
   }
   for (const name of files) {
     const relativePath = `data/validation/${name}`;
@@ -1058,6 +1472,15 @@ export function evaluateActiveStrategyValidationReceipts(
             AND status = 'finished' AND outcome = 'activated'
           LIMIT 1
         `).get(strategy.id, strategy.retailer_id, strategy.purpose) !== undefined;
+      if (strategy.active === 1 && !generatedActivationExists
+        && !sourceCommitDeclaresStrategyVersion(root, validated.executor.sourceCommit, {
+          retailerId: strategy.retailer_id,
+          purpose: strategy.purpose,
+          version: strategy.version,
+          strategy: parseStrategy(strategy.strategy_json),
+        })) {
+        throw new TypeError("Validation executor source does not declare the strategy version");
+      }
       if (strategy.active === 1 && !configIdentityMatches && !generatedActivationExists) {
         throw new TypeError("Validation receipt does not bind a config or trusted generated activation");
       }
@@ -1071,12 +1494,27 @@ export function evaluateActiveStrategyValidationReceipts(
           || configValidation.receiptSha256 !== canonicalReceiptSha256)) {
         throw new TypeError("Validation receipt does not bind the active retailer config aggregate");
       }
+      const lifecycleValid = strategy.active === 1
+        ? strategy.activated_at !== null && strategy.retired_at === null
+        : strategy.activated_at !== null
+          && strategy.retired_at !== null
+          && Date.parse(strategy.retired_at) >= Date.parse(strategy.activated_at);
+      const activeArtifactBindingValid = strategy.active !== 1 || (
+        trustedValidatorArtifactSha256 !== null
+        && validated.executor.artifactSha256 === trustedValidatorArtifactSha256
+        && validated.executor.challengeAlgorithm
+          === "active-in-scope-category-url-bucket-round-robin-v1"
+      );
       if (validated.attempted !== 30 || validated.activatable !== true
         || validated.valid !== strategy.validation_successes
         || validated.attempted !== strategy.validation_sample_size
         || strategy.validation_rate === null
         || validated.score !== strategy.validation_rate
         || validated.validatedAt !== strategy.validated_at
+        || !lifecycleValid
+        || !activeArtifactBindingValid
+        || strategy.activated_at === null
+        || Date.parse(strategy.activated_at) < Date.parse(validated.validatedAt)
         || Date.parse(validated.validatedAt) > now.getTime()) {
         throw new TypeError("Validation receipt does not bind the database activation aggregate");
       }
@@ -1120,6 +1558,13 @@ export function evaluateActiveStrategyValidationReceipts(
   }
   const missingActiveReceipts = active.filter((row) =>
     !receipts.has(`${row.retailer_id}/${row.purpose}/${row.version}`)).length;
+  const failedAttempts = validateFailedValidationAttemptRegistry(
+    root,
+    database,
+    verificationPublicKey,
+  );
+  const malformedReceiptFiles = malformedReceipts;
+  receiptHashes.push(...failedAttempts.hashes);
   const registrySha256 = receiptHashes.length === 0 ? undefined : hash(receiptHashes
     .sort((left, right) => left.path.localeCompare(right.path, "en"))
     .map((item) => `${item.path}\0${item.sha256}\n`).join(""));
@@ -1132,6 +1577,8 @@ export function evaluateActiveStrategyValidationReceipts(
     malformedReceipts,
     untrackedReceipts,
     configRegistryValid,
+    preservedFailedAttempts: failedAttempts.attempts,
+    failedAttemptRegistryMissing: failedAttempts.missing,
   }, registrySha256);
   if (active.length === 0) {
     return {
@@ -1140,16 +1587,23 @@ export function evaluateActiveStrategyValidationReceipts(
       evidence: [item],
     };
   }
-  if (malformedReceipts > 0) {
+  if (malformedReceiptFiles > 0) {
     return {
       criterion: criterion(id, "fail", "The strategy-validation receipt registry is malformed or misbound", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
       gates: [],
       evidence: [item],
     };
   }
-  if (missingActiveReceipts > 0) {
+  if (missingActiveReceipts > 0 || failedAttempts.missing > 0) {
     return {
       criterion: criterion(id, "fail", "One or more active strategies lack a machine-readable 30-sample validation receipt", ["REQUIRED_ARTIFACT_MISSING"], [evidenceId]),
+      gates: [],
+      evidence: [item],
+    };
+  }
+  if (failedAttempts.invalid > 0) {
+    return {
+      criterion: criterion(id, "fail", "The strategy-validation receipt registry is malformed or misbound", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
       gates: [],
       evidence: [item],
     };
@@ -1398,6 +1852,159 @@ function commandAcceptance(id: string, command: CommandEvidence, summary: string
   };
 }
 
+export interface M5HealingDrillGateOptions {
+  root: string;
+  evaluatedCommit: string;
+  now: Date;
+  credentialConfigured: boolean;
+  spendAuthorized: boolean;
+  installation: SystemdInstallationState;
+  receiptExists?: boolean;
+  validateReceipt?: () => HealingSabotageDrillReceipt;
+}
+
+export function evaluateM5HealingDrill(
+  options: M5HealingDrillGateOptions,
+): CriterionEvaluation {
+  const id = "m5-automatic-healing";
+  const relativePath = "data/acceptance/evidence/healing-sabotage-drill.json";
+  const receiptPath = join(options.root, relativePath);
+  const receiptExists = options.receiptExists ?? existsSync(receiptPath);
+  const releaseSourceCurrent = options.installation.sourceCommit !== null
+    && (options.installation.sourceCommit === options.evaluatedCommit
+      || releaseSourceMatchesEvaluatedCommit(
+        options.root,
+        options.installation.sourceCommit,
+        options.evaluatedCommit,
+      ));
+  let receipt: HealingSabotageDrillReceipt | null = null;
+  let invalid = false;
+  if (receiptExists) {
+    try {
+      if (options.validateReceipt !== undefined) {
+        receipt = options.validateReceipt();
+      } else {
+        if (options.installation.releasePath === null
+          || options.installation.releaseId === null
+          || options.installation.sourceCommit === null) {
+          throw new Error("Current installed release identity is absent");
+        }
+        receipt = validateHealingSabotageEvidence({
+          projectRoot: options.root,
+          releasePath: options.installation.releasePath,
+          publicKeyPath: join(options.root, "ops/validation-attestation-public.pem"),
+          receiptPath,
+          expectedSourceCommit: options.installation.sourceCommit,
+          expectedReleaseId: options.installation.releaseId,
+          now: options.now,
+        });
+      }
+    } catch {
+      invalid = true;
+    }
+    if (receipt !== null) {
+      try {
+        assertHealingSabotageReceiptFresh(receipt, options.now);
+        if (receipt.payload.release.sourceCommit !== options.installation.sourceCommit
+          || receipt.payload.release.releaseId !== options.installation.releaseId) {
+          throw new Error("Healing receipt is bound to a different release");
+        }
+      } catch {
+        invalid = true;
+      }
+    }
+  }
+  const evidenceId = "receipt-m5-installed-release-healing-sabotage";
+  const receiptHash = receiptExists
+    ? (() => {
+        try {
+          return hash(readFileSync(receiptPath));
+        } catch {
+          return receipt?.signature.payloadSha256;
+        }
+      })()
+    : undefined;
+  const item = evidence(
+    evidenceId,
+    "receipt",
+    relativePath,
+    receipt?.payload.observedAt ?? options.now.toISOString(),
+    {
+      receiptPresent: receiptExists,
+      receiptValid: receipt !== null && !invalid,
+      installedReleaseValid: options.installation.valid,
+      installedReleaseCurrent: releaseSourceCurrent,
+      credentialConfigured: options.credentialConfigured,
+      liveSpendAuthorized: options.spendAuthorized,
+      releaseId: receipt?.payload.release.releaseId ?? null,
+      sourceCommit: receipt?.payload.release.sourceCommit ?? null,
+      brokenAttempted: receipt?.payload.brokenRun.attempted ?? 0,
+      brokenSuccessRate: receipt?.payload.brokenRun.successRate ?? 0,
+      healingAttempts: receipt?.payload.healing.attempts ?? 0,
+      modelInputTokens: receipt?.payload.cost.inputTokens ?? 0,
+      modelOutputTokens: receipt?.payload.cost.outputTokens ?? 0,
+      modelCostUsd: receipt?.payload.cost.actualCostUsd ?? 0,
+      validationSampleSize: receipt?.payload.validation.attempted ?? 0,
+      validationSuccesses: receipt?.payload.validation.valid ?? 0,
+      recoveredSuccessRate: receipt?.payload.recoveredRun.successRate ?? 0,
+    },
+    receiptHash,
+  );
+  if (!options.installation.valid
+    || !releaseSourceCurrent
+    || options.installation.releasePath === null
+    || options.installation.releaseId === null) {
+    return {
+      criterion: criterion(id, "fail", "M5 requires a current valid installed frozen release", ["UNSAFE_CONFIGURATION"], [evidenceId]),
+      gates: [],
+      evidence: [item],
+    };
+  }
+  if (receiptExists && (invalid || receipt === null)) {
+    return {
+      criterion: criterion(id, "fail", "The installed-release healing sabotage receipt is malformed, stale, or misbound", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
+      gates: [],
+      evidence: [item],
+    };
+  }
+  if (receipt !== null) {
+    return {
+      criterion: criterion(id, "pass", "A credential-backed installed-release staging sabotage healed and recovered without human intervention", [], [evidenceId]),
+      gates: [],
+      evidence: [item],
+    };
+  }
+  let kind: PendingGateKind;
+  let reason: string;
+  let action: string;
+  if (!options.credentialConfigured) {
+    kind = "credential";
+    reason = "CREDENTIAL_NOT_CONFIGURED";
+    action = "Configure the explorer credential privately; acceptance will not invoke a provider";
+  } else if (!options.spendAuthorized) {
+    kind = "authority";
+    reason = "LIVE_SPEND_NOT_AUTHORIZED";
+    action = "Set LIVE_OPENAI=1 only after explicitly authorizing the bounded staging drill spend";
+  } else {
+    kind = "site";
+    reason = "SITE_VALIDATION_PENDING";
+    action = "Run the isolated installed-release staging sabotage and retain its signed evidence";
+  }
+  return {
+    criterion: criterion(id, "pending", "Offline healing checks pass only as supporting evidence; the genuine staging sabotage drill is still pending", [reason], [evidenceId]),
+    gates: [gate(
+      id,
+      kind,
+      reason,
+      null,
+      action,
+      "npm run acceptance:healing-drill -- --confirm-staging-sabotage --authorize-live-spend-usd 5",
+      [evidenceId],
+    )],
+    evidence: [item],
+  };
+}
+
 function sourceWorktreeClean(root: string): boolean {
   const porcelain = git(root, ["status", "--porcelain=v1"]);
   if (porcelain === "") return true;
@@ -1574,7 +2181,12 @@ function m0Evaluation(
   const quick = database.pragma("quick_check") as Array<Record<string, unknown>>;
   const quickOk = quick.length === 1 && Object.values(quick[0] ?? {})[0] === "ok";
   const foreignKeys = (database.pragma("foreign_key_check") as unknown[]).length;
-  const migrations = (database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get() as { count: number }).count;
+  const migrationRows = database.prepare(
+    "SELECT version, name FROM schema_migrations ORDER BY version",
+  ).all() as Array<{ version: number; name: string }>;
+  const migrations = migrationRows.length;
+  const migrationsExact = JSON.stringify(migrationRows)
+    === JSON.stringify(EXPECTED_SCHEMA_MIGRATIONS);
   const runtimeOk = Number(process.versions.node.split(".")[0]) === 24;
   const evidenceId = "receipt-m0-fresh-clone";
   const item = evidence(evidenceId, "receipt", "data/acceptance/evidence/fresh-clone.json", now.toISOString(), {
@@ -1586,10 +2198,11 @@ function m0Evaluation(
     databaseQuickCheck: quickOk ? "ok" : "failed",
     foreignKeyViolations: foreignKeys,
     migrationCount: migrations,
+    migrationSetExact: migrationsExact,
     sourceWorktreeClean: sourceClean,
   }, receiptHash);
   const passed = receiptValid && receiptRuntimeValid && receiptArtifactsValid
-    && runtimeOk && quickOk && foreignKeys === 0 && migrations >= 10 && sourceClean;
+    && runtimeOk && quickOk && foreignKeys === 0 && migrationsExact && sourceClean;
   return {
     criterion: criterion(id, passed ? "pass" : "fail", passed
       ? "Clean-clone receipt, declared runtime, migrations, and read-only database checks pass"
@@ -1618,6 +2231,23 @@ export function csvDataRowCount(path: string): number | null {
       relax_column_count: false,
     }) as Array<Record<string, string>>;
     return rows.length;
+  } catch {
+    return null;
+  }
+}
+
+export function csvOverlapRowCount(path: string): number | null {
+  try {
+    const rows = parse(readFileSync(path), {
+      columns: true,
+      skip_empty_lines: true,
+    }) as Array<Record<string, string>>;
+    return rows.filter((row) =>
+      row.status === "overlap"
+      && row.experimental_variation_pct !== ""
+      && Number.isFinite(Number(row.experimental_variation_pct))
+      && row.official_variation_pct !== ""
+      && Number.isFinite(Number(row.official_variation_pct))).length;
   } catch {
     return null;
   }
@@ -1700,7 +2330,15 @@ function m6Evaluation(
     const receipt = validateFreshCloneReceipt(readJson(freshPath));
     regenerationObservedAt = receipt.completedAt;
     const analysisCheck = receipt.checks.find((check) => check.id === "analysis");
+    const verifierDigest = createHash("sha256")
+      .update("ops/verify-fresh-clone.sh\0")
+      .update(readFileSync(join(root, "ops/verify-fresh-clone.sh")))
+      .update("\0scripts/create-fresh-clone-receipt.mjs\0")
+      .update(readFileSync(join(root, "scripts/create-fresh-clone-receipt.mjs")))
+      .digest("hex");
     regenerationValid = receipt.sourceCommit === evaluatedCommit
+      && receipt.verifierSha256 === verifierDigest
+      && gitSucceeds(root, ["merge-base", "--is-ancestor", receipt.sourceCommit, receipt.cloneCommit])
       && analysisCheck?.exitCode === 0
       && receipt.artifacts.length === 2;
     freshReceiptHash = hash(readFileSync(freshPath));
@@ -1751,7 +2389,11 @@ function m6Evaluation(
   const exportManifest = readJson(exportManifestPath) as Record<string, unknown>;
   const analysisManifest = readJson(analysisManifestPath) as Record<string, unknown>;
   const exportSources = exportManifest.sources as {
-    database?: { counts?: Record<string, number>; maxima?: Record<string, string | null> };
+    database?: {
+      counts?: Record<string, number>;
+      maxima?: Record<string, string | null>;
+      snapshotSha256?: string;
+    };
     sidra?: { status?: string };
   } | undefined;
   const expectedCounts = exportSources?.database?.counts ?? {};
@@ -1785,6 +2427,11 @@ function m6Evaluation(
   const analysisInput = analysisManifest.input as { manifestSha256?: string } | undefined;
   const statuses = analysisManifest.statuses as { noIndexData?: boolean; noOfficialOverlap?: boolean } | undefined;
   const experimentalSeries = experimentalSeriesState(exportManifest, analysisManifest);
+  const officialMonthlyRows = manifestRows(exportManifest, "files", "official_ipca_monthly.csv");
+  const comparisonMonthlyRows = manifestRows(exportManifest, "files", "monthly_comparison.csv");
+  const overlapMonthlyRows = csvOverlapRowCount(
+    join(dirname(exportManifestPath), "monthly_comparison.csv"),
+  );
   const experimentalCsvRows = {
     productRelativeRows: csvDataRowCount(join(dirname(exportManifestPath), "product_relatives.csv")),
     retailerSubitemRows: csvDataRowCount(join(dirname(exportManifestPath), "retailer_subitem_daily.csv")),
@@ -1798,6 +2445,14 @@ function m6Evaluation(
   const exportStatus = String(exportManifest.status ?? "");
   const sidraStatus = exportSources?.sidra?.status;
   const officialUnavailable = exportStatus === "official_unavailable" || sidraStatus === "unavailable";
+  const officialOverlapMissing = officialUnavailable
+    || sidraStatus === "no_overlap"
+    || officialMonthlyRows === null
+    || officialMonthlyRows === 0
+    || comparisonMonthlyRows === null
+    || comparisonMonthlyRows === 0
+    || overlapMonthlyRows === null
+    || overlapMonthlyRows === 0;
   const indexStatusConsistent = exportStatus === "official_unavailable"
     || (exportStatus === "no_index_data") === (statuses?.noIndexData === true);
   const statusConsistent = indexStatusConsistent
@@ -1807,8 +2462,15 @@ function m6Evaluation(
   const expectedMaxima = exportSources?.database?.maxima ?? {};
   const maximaMatch = Object.entries(expectedMaxima).every(([key, value]) => actualMaxima[key] === value)
     && Object.keys(actualMaxima).length === Object.keys(expectedMaxima).length;
+  const databaseSnapshotSha256 = database.transaction(
+    () => databaseSourceSnapshotSha256(database),
+  ).deferred();
+  const databaseSnapshotMatches = SHA256.test(
+    exportSources?.database?.snapshotSha256 ?? "",
+  ) && exportSources?.database?.snapshotSha256 === databaseSnapshotSha256;
   const bindingValid = countsMatch
     && maximaMatch
+    && databaseSnapshotMatches
     && analysisInput?.manifestSha256 === exportPointer.manifestSha256
     && manifestFilesValid(exportManifest, dirname(exportManifestPath), "files")
     && manifestFilesValid(analysisManifest, dirname(analysisManifestPath), "outputs")
@@ -1818,6 +2480,7 @@ function m6Evaluation(
   const fileEvidence = evidence("file-m6-current-binding", "file", "data/exports/latest.json+analysis/output/latest.json", regenerationObservedAt, {
     databaseCountsMatch: countsMatch,
     databaseMaximaMatch: maximaMatch,
+    databaseSnapshotMatches,
     analysisInputManifestMatches: analysisInput?.manifestSha256 === exportPointer.manifestSha256,
     artifactHashesValid: manifestFilesValid(exportManifest, dirname(exportManifestPath), "files")
       && manifestFilesValid(analysisManifest, dirname(analysisManifestPath), "outputs"),
@@ -1832,6 +2495,9 @@ function m6Evaluation(
     experimentalCsvRowsMatch,
     exportStatus,
     sidraStatus: sidraStatus ?? null,
+    officialMonthlyRows: officialMonthlyRows ?? -1,
+    comparisonMonthlyRows: comparisonMonthlyRows ?? -1,
+    overlapMonthlyRows: overlapMonthlyRows ?? -1,
   }, hash(readFileSync(analysisManifestPath)));
   base.evidence.push(fileEvidence);
   base.criterion.evidenceIds = [...base.criterion.evidenceIds, fileEvidence.id].sort();
@@ -1848,14 +2514,16 @@ function m6Evaluation(
       "npm run research:snapshot && npm run acceptance -- --json",
       base.criterion.evidenceIds,
     )];
-  } else if (officialUnavailable) {
-    base.criterion = criterion("m6-index-analysis", "pending", "Current artifacts are valid but the official overlap source is unavailable", ["OFFICIAL_OVERLAP_NOT_AVAILABLE"], base.criterion.evidenceIds);
+  } else if (officialOverlapMissing) {
+    base.criterion = criterion("m6-index-analysis", "pending", "Current artifacts are valid but a nonempty official overlap comparison is not yet available", ["OFFICIAL_OVERLAP_NOT_AVAILABLE"], base.criterion.evidenceIds);
     base.gates = [gate(
       "m6-index-analysis",
-      "site",
+      officialUnavailable ? "site" : "time",
       "OFFICIAL_OVERLAP_NOT_AVAILABLE",
       regenerationObservedAt,
-      "Retry the reviewed SIDRA export when the official endpoint is available",
+      officialUnavailable
+        ? "Retry the reviewed SIDRA export when the official endpoint is available"
+        : "Collect through an overlapping closed official month, then regenerate the comparison",
       "npm run research:snapshot && npm run acceptance -- --json",
       base.criterion.evidenceIds,
     )];
@@ -1895,14 +2563,17 @@ export function validateTimerDefinitions(
       && /Persistent=true/u.test(timer)
       && /RandomizedDelaySec=/u.test(timer)
       && new RegExp(`Unit=${serviceUnit.replaceAll(".", "\\.")}`, "u").test(timer)
-      && /WorkingDirectory=@PROJECT_ROOT@/u.test(service)
+      && /WorkingDirectory=@RELEASE_ROOT@/u.test(service)
       && /Environment=@RUNTIME_PATH@/u.test(service)
+      && /Environment=@RELEASE_ID_ENV@/u.test(service)
       && /Environment=TZ=America\/Sao_Paulo/u.test(service)
       && /UMask=0077/u.test(service)
+      && /ExecStartPre=@NODE_PATH@ @RELEASE_VERIFY_PATH@ verify @RELEASE_ROOT_QUOTED@ @PUBLIC_KEY_PATH@/u.test(service)
       && /ExecStart=@(?:NODE|BASH)_PATH@/u.test(service)
       && !/(?:OPENAI_API_KEY|CODEX_API_KEY|NTFY_TOPIC)\s*=/u.test(`${timer}\n${service}`);
     if (name === "healing") valid &&= /After=.*precos-daily\.service/u.test(service);
     if (name === "weekly-index") valid &&= /After=.*precos-weekly-discovery\.service/u.test(service);
+    if (name === "backup") valid &&= /RefuseManualStart=yes/u.test(service);
 
     const installedTimer = join(installedUnitDirectory, timerUnit);
     const installedService = join(installedUnitDirectory, serviceUnit);
@@ -1912,8 +2583,10 @@ export function validateTimerDefinitions(
     }
     installedCount += 2;
     const rendered = `${readFileSync(installedTimer, "utf8")}\n${readFileSync(installedService, "utf8")}`;
-    valid &&= !/@(?:PROJECT_ROOT|NODE_PATH|NPM_PATH|BASH_PATH|CLI_PATH|RUNTIME_PATH|ENV_FILE|BACKUP_PATH|WEEKLY_INDEX_PATH)@/u.test(rendered)
+    valid &&= !/@(?:RELEASE_ROOT|RELEASE_ID_ENV|RELEASE_VERIFY_PATH|RELEASE_ROOT_QUOTED|PUBLIC_KEY_PATH|NODE_PATH|NPM_PATH|BASH_PATH|CLI_PATH|RUNTIME_PATH|ENV_FILE|BACKUP_PATH|WEEKLY_INDEX_PATH)@/u.test(rendered)
       && /WorkingDirectory=\//u.test(rendered)
+      && /Environment="PRECOS_RELEASE_ID=[a-f0-9]{32}"/u.test(rendered)
+      && /ExecStartPre="?[^\n"]*\/v24[^/]*\/bin\/node"?[^\n]*\/dist\/ops\/release-manifest\.js"? verify/u.test(rendered)
       && /ExecStart="?\//u.test(rendered)
       && /PATH=[^\n]*\/v24[^/]*\/bin/u.test(rendered);
     if (["daily", "healing", "heartbeat", "weekly-discovery"].includes(name)) {
@@ -1941,12 +2614,14 @@ export function validateTimerDefinitions(
       && /Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer/u.test(daily)
       && /Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer/u.test(installedDaily)
       && /After=precos-daily\.service/u.test(classification)
-      && /WorkingDirectory=@PROJECT_ROOT@/u.test(classification)
+      && /WorkingDirectory=@RELEASE_ROOT@/u.test(classification)
       && /Environment=@RUNTIME_PATH@/u.test(classification)
+      && /Environment=@RELEASE_ID_ENV@/u.test(classification)
       && /Environment=TZ=America\/Sao_Paulo/u.test(classification)
       && /UMask=0077/u.test(classification)
+      && /ExecStartPre=@NODE_PATH@ @RELEASE_VERIFY_PATH@ verify @RELEASE_ROOT_QUOTED@ @PUBLIC_KEY_PATH@/u.test(classification)
       && /ExecStart=@NODE_PATH@ @CLI_PATH@ classify --batch-size 50 --version 1 --json/u.test(classification)
-      && !/@(?:PROJECT_ROOT|NODE_PATH|CLI_PATH|RUNTIME_PATH|ENV_FILE)@/u.test(installed)
+      && !/@(?:RELEASE_ROOT|RELEASE_ID_ENV|RELEASE_VERIFY_PATH|RELEASE_ROOT_QUOTED|PUBLIC_KEY_PATH|NODE_PATH|CLI_PATH|RUNTIME_PATH|ENV_FILE)@/u.test(installed)
       && /After=precos-daily\.service/u.test(installed)
       && /WorkingDirectory=\//u.test(installed)
       && /PATH=[^\n]*\/v24[^/]*\/bin/u.test(installed)
@@ -1959,10 +2634,12 @@ export function validateTimerDefinitions(
 function m7Evaluation(
   root: string,
   database: Database.Database,
+  sourceDatabasePath: string,
   evaluatedCommit: string,
   now: Date,
   publication: PublicationAuditReport,
   services: ServiceState[],
+  userLingerEnabled: boolean,
 ): CriterionEvaluation {
   const id = "m7-publication-operations";
   const alertPath = join(root, "data/acceptance/evidence/alert-drill.json");
@@ -1979,7 +2656,7 @@ function m7Evaluation(
     freshMatches = false;
   }
   const drillImplementationHash = hash(readFileSync(join(root, "src/ops/acceptance-drills.ts")));
-  const alertMatches = alert?.status === "pass" && alert.evaluatedCommit === evaluatedCommit
+  const alertStaticMatches = alert?.status === "pass" && alert.evaluatedCommit === evaluatedCommit
     && alert.implementationSha256 === drillImplementationHash;
   const backupMatches = backup?.status === "pass" && backup.evaluatedCommit === evaluatedCommit
     && backup.implementationSha256 === drillImplementationHash;
@@ -1997,11 +2674,87 @@ function m7Evaluation(
     return result !== null && result !== undefined && result !== "success";
   });
   const installation = readSystemdInstallationState(root, now);
-  const activation = installation.installedAt ?? now;
+  const releaseCurrent = installation.valid
+    && installation.sourceCommit !== null
+    && (installation.sourceCommit === evaluatedCommit
+      || releaseSourceMatchesEvaluatedCommit(root, installation.sourceCommit, evaluatedCommit))
+    && installation.releaseId !== null
+    && installation.deployedAt !== null;
+  let installedArtifactSetSha256: string | null = null;
+  let installedCliSha256: string | null = null;
+  if (releaseCurrent && installation.releasePath !== null) {
+    try {
+      const releaseManifest = readJson(join(installation.releasePath, "release-manifest.json")) as {
+        artifactSetSha256?: unknown;
+      };
+      installedArtifactSetSha256 = typeof releaseManifest.artifactSetSha256 === "string"
+        && SHA256.test(releaseManifest.artifactSetSha256)
+        ? releaseManifest.artifactSetSha256 : null;
+      const cliPath = join(installation.releasePath, "dist/cli.js");
+      installedCliSha256 = existsSync(cliPath) ? hash(readFileSync(cliPath)) : null;
+    } catch {
+      installedArtifactSetSha256 = null;
+      installedCliSha256 = null;
+    }
+  }
+  const commandDigest = (command: string, args: readonly string[]): string =>
+    hash([command, ...args].join("\0"));
+  const alertUnit = typeof alert?.facts.transientUnit === "string"
+    ? alert.facts.transientUnit : "";
+  let liveAlertJournalMatches = false;
+  if (alert !== null
+    && typeof alert.facts.invocationId === "string"
+    && /^[a-f0-9]{32}$/u.test(alert.facts.invocationId)
+    && /^precos-alert-drill-[a-f0-9]{12}\.service$/u.test(alertUnit)) {
+    try {
+      const journal = execFileSync("journalctl", [
+        "--user", "-u", alertUnit, "--output=json", "--no-pager", "--all",
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      const invocationMatched = journal.split("\n").filter(Boolean).some((line) => {
+        try {
+          const entry = JSON.parse(line) as Record<string, unknown>;
+          return entry._SYSTEMD_INVOCATION_ID === alert.facts.invocationId
+            || entry.OBJECT_SYSTEMD_INVOCATION_ID === alert.facts.invocationId;
+        } catch {
+          return false;
+        }
+      });
+      liveAlertJournalMatches = invocationMatched
+        && alert.facts.journalSha256 === hash(journal)
+        && alert.facts.journalBytes === Buffer.byteLength(journal);
+    } catch {
+      liveAlertJournalMatches = false;
+    }
+  }
+  const alertMatches = alertStaticMatches && releaseCurrent && alert !== null
+    && alert.facts.protocolVersion === 2
+    && alert.facts.releaseId === installation.releaseId
+    && alert.facts.releaseManifestSha256 === installation.releaseManifestSha256
+    && alert.facts.releaseArtifactSetSha256 === installedArtifactSetSha256
+    && alert.facts.heartbeatCliArtifactSha256 === installedCliSha256
+    && alert.facts.systemdRunCommandSha256 === commandDigest("systemd-run", [
+      "--user",
+      `--unit=${alertUnit}`,
+      "--wait",
+      "--property=Type=exec",
+      "/bin/sh",
+      "-c",
+      'kill -KILL "$$"',
+    ])
+    && installation.releasePath !== null
+    && alert.facts.dbInitCommandSha256 === commandDigest(process.execPath, [
+      join(installation.releasePath, "dist/cli.js"), "db", "init",
+    ])
+    && alert.facts.heartbeatCommandSha256 === commandDigest(process.execPath, [
+      join(installation.releasePath, "dist/cli.js"), "heartbeat", "check", "--json",
+    ])
+    && liveAlertJournalMatches
+    && Date.parse(alert.observedAt) >= installation.deployedAt!.getTime();
+  const activation = releaseCurrent ? installation.deployedAt! : now;
   const firstDailyStart = scheduledBoundaryAfter(activation, 3, 0);
-  const firstDailyDeadline = scheduledBoundaryAfter(activation, 4, 0);
+  const firstDailyDeadline = deadlineForScheduledStart(firstDailyStart, 4, 0);
   const firstBackupStart = scheduledBoundaryAfter(activation, 4, 15);
-  const firstBackupDeadline = scheduledBoundaryAfter(activation, 5, 15);
+  const firstBackupDeadline = deadlineForScheduledStart(firstBackupStart, 5, 15);
   const currentDailyStart = currentScheduledBoundary(firstDailyStart, now, 3, 0);
   const currentDailyDeadline = currentScheduledBoundary(firstDailyDeadline, now, 4, 0);
   const currentBackupStart = currentScheduledBoundary(firstBackupStart, now, 4, 15);
@@ -2009,7 +2762,15 @@ function m7Evaluation(
   const heartbeatCandidates = database.prepare(`
     SELECT scheduled_for, completed_at,
       json_extract(details_json, '$.trigger') AS heartbeat_trigger,
-      json_extract(details_json, '$.timerUnit') AS timer_unit
+      json_extract(details_json, '$.timerUnit') AS timer_unit,
+      json_extract(details_json, '$.serviceUnit') AS service_unit,
+      json_extract(details_json, '$.provenanceVersion') AS provenance_version,
+      json_extract(details_json, '$.invocationId') AS invocation_id,
+      json_extract(details_json, '$.cgroupSha256') AS cgroup_sha256,
+      json_extract(details_json, '$.releaseId') AS release_id,
+      json_extract(details_json, '$.timerLastTriggerAt') AS timer_last_trigger_at,
+      json_extract(details_json, '$.serviceStartedAt') AS service_started_at,
+      json_extract(details_json, '$.timerCausalitySha256') AS timer_causality_sha256
     FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
       AND COALESCE(json_array_length(details_json, '$.monitorFailedRunIds'), 0) = 0
@@ -2020,45 +2781,112 @@ function m7Evaluation(
     completed_at: string;
     heartbeat_trigger: string | null;
     timer_unit: string | null;
+    service_unit: string | null;
+    provenance_version: number | null;
+    invocation_id: string | null;
+    cgroup_sha256: string | null;
+    release_id: string | null;
+    timer_last_trigger_at: string | null;
+    service_started_at: string | null;
+    timer_causality_sha256: string | null;
   }>;
   const latestHeartbeat = heartbeatCandidates.find((heartbeat) => isScheduledCollectionHeartbeat(heartbeat)
+    && releaseCurrent
+    && heartbeat.release_id === installation.releaseId
+    && Date.parse(heartbeat.scheduled_for) >= installation.deployedAt!.getTime()
     && Date.parse(heartbeat.scheduled_for) >= currentDailyStart.getTime());
   const heartbeatAgeHours = latestHeartbeat === undefined
     ? null
     : (now.getTime() - Date.parse(latestHeartbeat.completed_at)) / 3_600_000;
   const heartbeatFresh = heartbeatAgeHours !== null && Number.isFinite(heartbeatAgeHours) && heartbeatAgeHours <= 24;
   const backupDirectory = join(root, "var/backups");
-  const backupFiles = existsSync(backupDirectory)
-    ? readdirSync(backupDirectory).filter((name) => /^precos-\d{8}T\d{6}-\d+\.sqlite$/u.test(name))
-      .map((name) => join(backupDirectory, name)).sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)
-    : [];
-  const newestBackupAgeHours = backupFiles[0] === undefined ? null : (now.getTime() - statSync(backupFiles[0]).mtimeMs) / 3_600_000;
-  const newestBackupAfterCurrentWindow = backupFiles[0] !== undefined && statSync(backupFiles[0]).mtimeMs >= currentBackupStart.getTime();
-  let scheduledBackupIntegrityValid = false;
-  if (backupFiles[0] !== undefined && (statSync(backupFiles[0]).mode & 0o777) === 0o600) {
-    try {
-      const scheduledBackup = new Database(backupFiles[0], { readonly: true, fileMustExist: true });
-      const quick = scheduledBackup.pragma("quick_check") as Array<Record<string, unknown>>;
-      const foreignKeys = scheduledBackup.pragma("foreign_key_check") as unknown[];
-      scheduledBackup.close();
-      scheduledBackupIntegrityValid = quick.length === 1 && Object.values(quick[0] ?? {})[0] === "ok" && foreignKeys.length === 0;
-    } catch {
-      scheduledBackupIntegrityValid = false;
-    }
-  }
   const dailyService = timerMap.get("precos-daily.service");
   const backupService = timerMap.get("precos-backup.service");
+  const dailyTimer = timerMap.get("precos-daily.timer");
+  const backupTimer = timerMap.get("precos-backup.timer");
   const parseServiceTime = (value: string | null | undefined) => value === null || value === undefined ? Number.NaN : Date.parse(value);
   const dailyServiceStart = parseServiceTime(dailyService?.lastStartedAt);
   const backupServiceStart = parseServiceTime(backupService?.lastStartedAt);
+  const backupServiceFinish = parseServiceTime(backupService?.lastFinishedAt);
+  const timerCausallyMatchesService = (timer: ServiceState | undefined, serviceStart: number): boolean => {
+    const trigger = parseServiceTime(timer?.lastTriggerAt);
+    return Number.isFinite(trigger) && Number.isFinite(serviceStart)
+      && Math.abs(trigger - serviceStart) <= 1_000;
+  };
   const dailyScheduledServiceSucceeded = dailyService?.result === "success"
-    && Number.isFinite(dailyServiceStart) && dailyServiceStart >= currentDailyStart.getTime();
+    && Number.isFinite(dailyServiceStart) && dailyServiceStart >= currentDailyStart.getTime()
+    && timerCausallyMatchesService(dailyTimer, dailyServiceStart)
+    && typeof dailyService.invocationId === "string"
+    && dailyService.invocationId === latestHeartbeat?.invocation_id;
   const backupScheduledServiceSucceeded = backupService?.result === "success"
-    && Number.isFinite(backupServiceStart) && backupServiceStart >= currentBackupStart.getTime();
-  const backupBoundToService = backupFiles[0] !== undefined && backupScheduledServiceSucceeded
-    && Math.abs(statSync(backupFiles[0]).mtimeMs - backupServiceStart) <= 60 * 60 * 1_000;
-  const realBackupCurrent = newestBackupAgeHours !== null && newestBackupAgeHours <= 26
-    && newestBackupAfterCurrentWindow && scheduledBackupIntegrityValid && backupBoundToService;
+    && Number.isFinite(backupServiceStart) && backupServiceStart >= currentBackupStart.getTime()
+    && timerCausallyMatchesService(backupTimer, backupServiceStart)
+    && typeof backupService.invocationId === "string"
+    && /^[a-f0-9]{32}$/u.test(backupService.invocationId);
+  const receiptPaths = existsSync(backupDirectory)
+    ? readdirSync(backupDirectory)
+      .filter((name) => /^precos-\d{8}T\d{6}-\d+\.sqlite\.receipt\.json$/u.test(name))
+      .map((name) => join(backupDirectory, name))
+    : [];
+  const liveSchema = database.prepare(`
+    SELECT COUNT(*) AS count, MAX(version) AS version FROM schema_migrations
+  `).get() as { count: number; version: number | null };
+  const parsedReceipts = receiptPaths.map((receiptPath): {
+    receiptPath: string;
+    receipt: ScheduledBackupReceipt | null;
+  } => {
+    try {
+      return { receiptPath, receipt: validateScheduledBackupReceipt(readJson(receiptPath)) };
+    } catch {
+      return { receiptPath, receipt: null };
+    }
+  });
+  const currentReceiptPaths = parsedReceipts.filter((candidate) => candidate.receipt !== null
+    && candidate.receipt.trigger === "systemd"
+    && candidate.receipt.invocationId === backupService?.invocationId
+    && candidate.receipt.databaseSchemaVersion === liveSchema.version
+    && candidate.receipt.schemaMigrationCount === liveSchema.count
+    && REQUIRED_BACKUP_TABLES.every((table) =>
+      candidate.receipt?.semanticTableCounts[table] !== undefined));
+  const scheduledPairs = currentReceiptPaths.map(({ receiptPath }) => validateScheduledBackupPair({
+    receiptPath,
+    backupDirectory,
+    sourceDatabasePath,
+  }));
+  const eligibleScheduledPairs = scheduledPairs.filter((pair): pair is ScheduledBackupPairValidation & {
+    valid: true;
+    receipt: NonNullable<ScheduledBackupPairValidation["receipt"]>;
+    artifactPath: string;
+  } => pair.valid && pair.receipt !== null && pair.artifactPath !== null
+    && pair.receipt.trigger === "systemd");
+  const onlyScheduledPair = eligibleScheduledPairs.length === 1
+    && currentReceiptPaths.length === 1
+    ? eligibleScheduledPairs[0]
+    : undefined;
+  const scheduledBackup = onlyScheduledPair !== undefined
+    && scheduledBackupPairMatchesService(onlyScheduledPair, {
+      invocationId: backupService?.invocationId,
+      startedAt: backupServiceStart,
+      finishedAt: backupServiceFinish,
+      currentWindowStart: currentBackupStart.getTime(),
+      now: now.getTime(),
+    })
+    ? onlyScheduledPair
+    : undefined;
+  const scheduledBackupCompleted = scheduledBackup === undefined
+    ? Number.NaN
+    : Date.parse(scheduledBackup.receipt.completedAt);
+  const newestBackupAgeHours = Number.isFinite(scheduledBackupCompleted)
+    ? (now.getTime() - scheduledBackupCompleted) / 3_600_000
+    : null;
+  const newestBackupAfterCurrentWindow = Number.isFinite(scheduledBackupCompleted)
+    && scheduledBackupCompleted >= currentBackupStart.getTime()
+    && scheduledBackupCompleted <= now.getTime();
+  const scheduledBackupIntegrityValid = scheduledBackup !== undefined;
+  const backupBoundToService = scheduledBackup !== undefined && backupScheduledServiceSucceeded;
+  const realBackupCurrent = newestBackupAgeHours !== null && newestBackupAgeHours >= 0
+    && newestBackupAgeHours <= 26 && newestBackupAfterCurrentWindow
+    && scheduledBackupIntegrityValid && backupBoundToService;
   const dailyWindowSatisfied = latestHeartbeat !== undefined && dailyScheduledServiceSucceeded;
   const backupWindowSatisfied = realBackupCurrent && backupScheduledServiceSucceeded;
   let backupFileHealthy = false;
@@ -2094,8 +2922,12 @@ function m7Evaluation(
     sixTimersEnabledAndActive: timersHealthy,
     timerDefinitionsValid,
     systemdInstallReceiptValid: installation.valid,
+    installedReleaseMatchesEvaluatedCommit: releaseCurrent,
     systemdInstalledAt: installation.installedAt?.toISOString() ?? null,
+    systemdDeployedAt: installation.deployedAt?.toISOString() ?? null,
+    systemdReleaseId: installation.releaseId,
     systemdUnitSetSha256: installation.unitSetSha256,
+    userLingerEnabled,
     renderedUnitFiles: timerDefinitions.installedCount,
     failedServiceUnits: serviceFailures.length,
     alertDrillMatches: alertMatches,
@@ -2110,6 +2942,17 @@ function m7Evaluation(
     currentBackupWindowElapsed: now.getTime() >= currentBackupDeadline.getTime(),
     newestRealBackupAgeHours: newestBackupAgeHours,
     newestScheduledBackupIntegrityValid: scheduledBackupIntegrityValid,
+    scheduledBackupReceiptCount: receiptPaths.length,
+    scheduledBackupCurrentReceiptCount: currentReceiptPaths.length,
+    scheduledBackupInvalidReceiptCount: parsedReceipts.filter((candidate) => candidate.receipt === null).length
+      + scheduledPairs.filter((pair) => !pair.valid).length,
+    scheduledBackupCompletedAt: scheduledBackup?.receipt.completedAt ?? null,
+    scheduledBackupArtifactSha256: scheduledBackup?.receipt.artifactSha256 ?? null,
+    scheduledBackupServiceCgroupSha256: scheduledBackup?.receipt.serviceCgroupSha256 ?? null,
+    scheduledBackupInvocationIdSha256: scheduledBackup?.receipt.invocationId === null
+      || scheduledBackup?.receipt.invocationId === undefined
+      ? null
+      : hash(scheduledBackup.receipt.invocationId),
     dailyScheduledServiceSucceeded,
     backupScheduledServiceSucceeded,
     scheduledBackupBoundToService: backupBoundToService,
@@ -2129,7 +2972,8 @@ function m7Evaluation(
   if (publication.status === "fail") {
     return { criterion: criterion(id, "fail", "Publication audit reports a public safety defect", ["SECRET_OR_PRIVATE_ARTIFACT"], criterionEvidenceIds), gates: [], evidence: evaluationEvidence };
   }
-  if (!timersHealthy || !timerDefinitionsValid || !installation.valid || serviceFailures.length > 0
+  if (!timersHealthy || !timerDefinitionsValid || !releaseCurrent || !userLingerEnabled
+    || serviceFailures.length > 0
     || (alertReceiptExists && !alertMatches)
     || (backupReceiptExists && (!backupMatches || !backupFileHealthy))
     || !freshMatches) {
@@ -2189,7 +3033,7 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     const m1Command = await options.runCommand("m1-offline", "npm", ["test", "--", "tests/normalize", "tests/strategies", "tests/collection", "tests/discovery", "tests/retailers", "tests/pipeline/collect.test.ts", "tests/pipeline/discover.test.ts"]);
     const m5Command = await options.runCommand("m5-healing", "npm", ["test", "--", "tests/healing", "tests/ops/systemd.test.ts"]);
     const m6Command = await options.runCommand("m6-index-analysis", "npm", ["test", "--", "tests/index", "tests/analysis"]);
-    const [services, publication] = await Promise.all([
+    const [services, publication, userLingerEnabled] = await Promise.all([
       options.serviceReader.read([...TIMER_UNITS, ...SERVICE_UNITS, CLASSIFICATION_SERVICE_UNIT]),
       auditPublication({
         projectRoot: root,
@@ -2199,6 +3043,7 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
         requireAcceptanceEvidence: false,
         evaluatedCommit,
       }),
+      options.serviceReader.readUserLingerEnabled?.() ?? Promise.resolve(false),
     ]);
     const cleanSource = sourceWorktreeClean(root);
     const m0 = m0Evaluation(root, database, evaluatedCommit, now, cleanSource);
@@ -2213,7 +3058,8 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     const m2 = evaluateM2(
       database,
       now,
-      systemdInstallation.valid ? systemdInstallation.installedAt : null,
+      systemdInstallation.valid ? systemdInstallation.deployedAt : null,
+      systemdInstallation.valid ? systemdInstallation.releaseId : null,
     );
     const m3 = evaluateM3(database, {
       credentialConfigured: options.credentialConfigured ?? false,
@@ -2233,6 +3079,14 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
           AND error_category IN ('http-403', 'http-429', 'captcha', 'domain-denied', 'timeout', 'network')
         ORDER BY run.retailer_id, run.collection_day
       `).all() as Array<{ retailer_id: string; collection_day: string }>),
+      ...(systemdInstallation.valid
+        && systemdInstallation.deployedAt !== null
+        && systemdInstallation.releaseId !== null
+        ? {
+            deployedAt: systemdInstallation.deployedAt,
+            releaseId: systemdInstallation.releaseId,
+          }
+        : {}),
     }, now);
     const humanReview = evaluateClassificationHumanReview(root, database, now);
     m3.criteria.push(humanReview.criterion);
@@ -2243,8 +3097,8 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     m3.gates.push(...strategyValidationReceipts.gates);
     m3.evidence.push(...strategyValidationReceipts.evidence);
     const operationsActivation = systemdInstallation.valid
-      && systemdInstallation.installedAt !== null
-      ? systemdInstallation.installedAt
+      && systemdInstallation.deployedAt !== null
+      ? systemdInstallation.deployedAt
       : now;
     const currentDailyStart = currentScheduledBoundary(scheduledBoundaryAfter(operationsActivation, 3, 0), now, 3, 0);
     const dailyState = services.find((service) => service.unit === "precos-daily.service");
@@ -2295,16 +3149,47 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     }, now);
     const m5 = commandAcceptance("m5-automatic-healing", m5Command, "Isolated sabotage, drift/blocking, recovery, and timer suites pass");
     const m5Review = reviewFindingState(root, "M5", now);
-    m5.evidence.push(m5Review.evidence);
-    m5.criterion.evidenceIds = [...m5.criterion.evidenceIds, m5Review.evidence.id].sort();
+    const m5Live = evaluateM5HealingDrill({
+      root,
+      evaluatedCommit,
+      now,
+      credentialConfigured: options.explorerCredentialConfigured
+        ?? options.credentialConfigured
+        ?? false,
+      spendAuthorized: options.spendAuthorized ?? false,
+      installation: systemdInstallation,
+    });
+    m5.evidence.push(m5Review.evidence, ...m5Live.evidence);
+    m5.gates = [...m5Live.gates];
+    const m5EvidenceIds = [
+      ...m5.criterion.evidenceIds,
+      m5Review.evidence.id,
+      ...m5Live.criterion.evidenceIds,
+    ].sort();
     const healingTimer = services.find((service) => service.unit === "precos-healing.timer");
     if (!m5Review.valid || m5Review.openCriticalOrImportant > 0) {
-      m5.criterion = criterion("m5-automatic-healing", "fail", "A critical/important M5 review finding is open or the review registry is invalid", ["REVIEW_FINDING_OPEN"], m5.criterion.evidenceIds);
-    } else if (m5.criterion.status === "pass" && (healingTimer?.enabled !== true || healingTimer.active !== true)) {
-      m5.criterion = criterion("m5-automatic-healing", "fail", "Healing tests pass but the independent worker timer is not enabled and active", ["UNSAFE_CONFIGURATION"], m5.criterion.evidenceIds);
+      m5.criterion = criterion("m5-automatic-healing", "fail", "A critical/important M5 review finding is open or the review registry is invalid", ["REVIEW_FINDING_OPEN"], m5EvidenceIds);
+      m5.gates = [];
+    } else if (m5.criterion.status !== "pass") {
+      m5.criterion = { ...m5.criterion, evidenceIds: m5EvidenceIds };
+      m5.gates = [];
+    } else if (healingTimer?.enabled !== true || healingTimer.active !== true) {
+      m5.criterion = criterion("m5-automatic-healing", "fail", "Healing tests pass but the independent worker timer is not enabled and active", ["UNSAFE_CONFIGURATION"], m5EvidenceIds);
+      m5.gates = [];
+    } else {
+      m5.criterion = { ...m5Live.criterion, evidenceIds: m5EvidenceIds };
     }
     const m6 = m6Evaluation(root, database, m6Command, evaluatedCommit, now);
-    const m7 = m7Evaluation(root, database, evaluatedCommit, now, publication, services);
+    const m7 = m7Evaluation(
+      root,
+      database,
+      databasePath,
+      evaluatedCommit,
+      now,
+      publication,
+      services,
+      userLingerEnabled,
+    );
     const evaluations: Record<MilestoneId, M3Evaluation> = {
       M0: { criteria: [m0.criterion], gates: m0.gates, evidence: m0.evidence },
       M1: { criteria: [m1.criterion], gates: m1.gates, evidence: m1.evidence },
@@ -2563,6 +3448,38 @@ export async function verifyAcceptanceSnapshot(
       if (currentDatabaseHash !== report.databaseSha256) reasonCodes.push("EVIDENCE_CONTRADICTION");
     } catch {
       reasonCodes.push("DATABASE_INTEGRITY_FAILED");
+    }
+    const recordedM5 = report.milestones.M5.criteria.find(
+      ({ id }) => id === "m5-automatic-healing",
+    );
+    if (recordedM5?.status === "pass") {
+      try {
+        const generatedAt = new Date(report.generatedAt);
+        const currentM5 = evaluateM5HealingDrill({
+          root,
+          evaluatedCommit,
+          now: generatedAt,
+          credentialConfigured: false,
+          spendAuthorized: false,
+          installation: readSystemdInstallationState(root, generatedAt),
+        });
+        const currentEvidence = currentM5.evidence.find(
+          ({ id }) => id === "receipt-m5-installed-release-healing-sabotage",
+        );
+        const recordedEvidence = report.evidence.find(
+          ({ id }) => id === "receipt-m5-installed-release-healing-sabotage",
+        );
+        if (currentM5.criterion.status !== "pass"
+          || currentM5.criterion.summary !== recordedM5.summary
+          || currentM5.criterion.reasonCodes.join("\0") !== recordedM5.reasonCodes.join("\0")
+          || currentEvidence?.source !== recordedEvidence?.source
+          || currentEvidence?.observedAt !== recordedEvidence?.observedAt
+          || currentEvidence?.sha256 !== recordedEvidence?.sha256) {
+          reasonCodes.push("EVIDENCE_CONTRADICTION");
+        }
+      } catch {
+        reasonCodes.push("EVIDENCE_CONTRADICTION");
+      }
     }
     const markdownPath = join(root, "docs/acceptance-report.md");
     if (!existsSync(markdownPath) || readFileSync(markdownPath, "utf8") !== renderAcceptanceMarkdown(report)) {

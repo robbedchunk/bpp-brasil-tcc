@@ -11,6 +11,7 @@ import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_MAX_REDIRECTS,
   DEFAULT_RESEARCH_USER_AGENT,
+  NetworkRequestBoundaryError,
   type ExtractionExecutionContext,
 } from "./http.js";
 
@@ -191,8 +192,13 @@ async function handleRequest(
 
     let response: Response;
     try {
+      await executionContext.beforeNetworkRequest?.(currentUrl);
       response = await (executionContext.fetch ?? globalThis.fetch)(currentUrl, init);
-    } catch {
+    } catch (error) {
+      if (error instanceof NetworkRequestBoundaryError
+        && error.failure.category === "domain-denied") {
+        session.policyDenied = true;
+      }
       await route.abort("failed").catch(() => undefined);
       return;
     }

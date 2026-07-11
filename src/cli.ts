@@ -33,6 +33,10 @@ import {
   readStatusReport,
   type StatusReport,
 } from "./db/repositories.js";
+import {
+  reconcileInterruptedPipelineRuns,
+  reconcileInterruptedStandaloneExplorations,
+} from "./db/runtime-reconciliation.js";
 import { runCollection } from "./pipeline/collect.js";
 import {
   runReplayReextraction,
@@ -58,7 +62,11 @@ import {
   latestSuccessfulHeartbeat,
 } from "./ops/heartbeat.js";
 import { ProcessLockError, withProcessLock } from "./ops/lock.js";
-import { BudgetGuard } from "./ops/budget.js";
+import { readScheduledDailyInvocation } from "./ops/systemd-provenance.js";
+import {
+  BudgetGuard,
+  reconcileSynchronousClassificationReservations,
+} from "./ops/budget.js";
 import {
   CodexStrategyGenerator,
   resolveExplorerApiKey,
@@ -267,6 +275,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         const summaries = await withProcessLock(
           dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock"),
           () => withDatabase(async (database) => {
+          if (options.dryRun !== true) {
+            reconcileInterruptedPipelineRuns(database, now().toISOString());
+          }
           const retailerIds = options.retailer === undefined
             ? activeRetailerIds(database)
             : [options.retailer];
@@ -353,8 +364,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       );
       const outcome = await withProcessLock(
         dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-explorer.lock"),
-        () => withDatabase((database) =>
-          (dependencies.exploreRetailer ?? runExploreRetailer)(
+        () => withDatabase((database) => {
+          reconcileInterruptedStandaloneExplorations(database, now().toISOString());
+          return (dependencies.exploreRetailer ?? runExploreRetailer)(
             options.retailer,
             options.purpose,
             {
@@ -363,7 +375,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               env: environment,
               now,
             },
-          )),
+          );
+        }),
       );
       if (!outcome.activated && (
         outcome.outcome === "provider_unavailable"
@@ -434,6 +447,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       });
       const outcome: HealingOutcome | HealingWorkerSummary = await withHealingLocks(
         () => withDatabase<HealingOutcome | HealingWorkerSummary>((database) => {
+          const reconciliationTime = now().toISOString();
+          reconcileInterruptedPipelineRuns(database, reconciliationTime);
+          reconcileInterruptedStandaloneExplorations(database, reconciliationTime);
           if (options.pending === true) {
             return (dependencies.healPendingEvents ?? runHealPendingEvents)({
               database,
@@ -482,13 +498,15 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       const applicationConfig = config();
       const result = await withProcessLock(
         pipelineLockPath(),
-        () => withDatabase((database) =>
-          (dependencies.replayReextract ?? runReplayReextraction)({
+        () => withDatabase((database) => {
+          reconcileInterruptedPipelineRuns(database, now().toISOString());
+          return (dependencies.replayReextract ?? runReplayReextraction)({
             database,
             observationId: options.observation,
             replayRoot: resolve(applicationConfig.projectRoot, "data/raw-html"),
             now,
-          })),
+          });
+        }),
       );
       stdout(options.json === true
         ? `${JSON.stringify(result)}\n`
@@ -562,6 +580,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       const output = await withProcessLock(
         classificationLockPath(),
         () => withDatabase(async (database) => {
+          if (options.dryRun !== true) {
+            reconcileSynchronousClassificationReservations(
+              database,
+              now().toISOString(),
+            );
+          }
           const summary = await classifyNewProducts({
             batchSize: options.batchSize,
             version: options.version,
@@ -826,6 +850,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .action(async (options: { limit?: number; dryRun?: boolean; json?: boolean }) => {
       const applicationConfig = config();
       const environment = dependencies.env ?? process.env;
+      const scheduledInvocation = readScheduledDailyInvocation(environment);
       const sink = dependencies.alertSink ?? createAlertSink({
         ...(applicationConfig.ntfyTopic === undefined
           ? {}
@@ -835,11 +860,13 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       });
       const result = await withProcessLock(
         pipelineLockPath(),
-        () => withDatabase((database) => (dependencies.runDaily ?? runDailyPipeline)({
-          database,
-          trigger: environment.PRECOS_SCHEDULE_SOURCE === "systemd-timer"
-            ? "systemd-timer"
-            : "manual",
+        () => withDatabase((database) => {
+          if (options.dryRun !== true) {
+            reconcileInterruptedPipelineRuns(database, now().toISOString());
+          }
+          return (dependencies.runDaily ?? runDailyPipeline)({
+            database,
+          ...(scheduledInvocation === null ? {} : { scheduledInvocation }),
           limit: Math.min(options.limit ?? applicationConfig.dailyPageCap, 2_000),
           dryRun: options.dryRun === true,
           concurrency: applicationConfig.pageConcurrency,
@@ -863,7 +890,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               : "Collection completed, but drift monitoring did not durably complete",
             details: failure,
           }),
-        })),
+          });
+        }),
       );
       stdout(options.json === true
         ? `${JSON.stringify(result)}\n`

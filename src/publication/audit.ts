@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, verify, type KeyObject } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
 import { parse } from "csv-parse/sync";
@@ -20,6 +21,15 @@ import {
   validateClassificationReviewResult,
 } from "../classify/review.js";
 import { validatePublicDrillReceipt } from "../ops/acceptance-drills.js";
+import {
+  assertHealingSabotageReceiptFresh,
+  validateHealingSabotageDrillReceipt,
+} from "../ops/healing-drill.js";
+import {
+  canonicalEvidenceJson,
+  readValidationVerificationPublicKey,
+  validationAttestationKeyId,
+} from "../strategies/validation-evidence.js";
 
 export type PublicationAuditStatus = "pass" | "fail";
 
@@ -83,13 +93,21 @@ export interface PublicationAuditOptions {
 }
 
 export interface FreshCloneReceipt {
-  schemaVersion: 1;
+  schemaVersion: 2;
   status: "pass";
   sourceCommit: string;
+  cloneCommit: string;
   completedAt: string;
+  verifierSha256: string;
   runtimes: { node: string; npm: string; python: string };
   checks: Array<{ id: string; exitCode: 0; outputSha256: string }>;
   artifacts: Array<{ path: string; sha256: string }>;
+  attestation: {
+    algorithm: "ed25519";
+    keyId: string;
+    payloadSha256: string;
+    signature: string;
+  };
 }
 
 const REQUIRED_DOCS = [
@@ -518,6 +536,51 @@ function auditManifest(
   return results;
 }
 
+function auditValidationAttemptManifest(
+  content: Uint8Array,
+  location: string,
+  prospectiveFiles: Map<string, Buffer>,
+): PublicationFinding[] {
+  const document = parseJsonContent(content);
+  const invalid = (message: string): PublicationFinding[] => [
+    finding("PUBLIC_VALIDATION_ATTEMPT_MANIFEST", "public-export", location, message),
+  ];
+  if (document === null
+    || Object.keys(document).sort().join("\0") !== ["attempts", "schemaVersion"].sort().join("\0")
+    || document.schemaVersion !== 1
+    || !Array.isArray(document.attempts)) {
+    return invalid("Failed-validation attempt registry is malformed");
+  }
+  const declared = new Set<string>();
+  for (const entry of document.attempts) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      return invalid("Failed-validation attempt entry is malformed");
+    }
+    const item = entry as Record<string, unknown>;
+    if (Object.keys(item).sort().join("\0")
+        !== ["fileSha256", "path", "receiptSha256", "strategySourceCommit"].sort().join("\0")
+      || typeof item.path !== "string"
+      || !/^data\/validation\/attempts\/[a-z0-9-]+\.json$/u.test(item.path)
+      || typeof item.fileSha256 !== "string" || !SHA256_PATTERN.test(item.fileSha256)
+      || typeof item.receiptSha256 !== "string" || !SHA256_PATTERN.test(item.receiptSha256)
+      || typeof item.strategySourceCommit !== "string" || !COMMIT_PATTERN.test(item.strategySourceCommit)
+      || declared.has(item.path)) {
+      return invalid("Failed-validation attempt entry is unsafe or incomplete");
+    }
+    const attempt = prospectiveFiles.get(item.path);
+    if (attempt === undefined || sha256(attempt) !== item.fileSha256) {
+      return invalid("Failed-validation attempt file hash does not match its registry");
+    }
+    declared.add(item.path);
+  }
+  const actual = [...prospectiveFiles.keys()].filter((path) =>
+    path !== location && /^data\/validation\/attempts\/[a-z0-9-]+\.json$/u.test(path));
+  if (actual.length !== declared.size || actual.some((path) => !declared.has(path))) {
+    return invalid("Failed-validation attempt registry coverage is incomplete");
+  }
+  return [];
+}
+
 function auditLatest(
   content: Uint8Array,
   location: string,
@@ -594,12 +657,31 @@ function documentationContentFindings(files: Map<string, Buffer>): PublicationFi
   return findings;
 }
 
-function auditAcceptanceArtifact(content: Uint8Array, path: string): PublicationFinding[] {
+function auditAcceptanceArtifact(
+  content: Uint8Array,
+  path: string,
+  root: string,
+  now: Date,
+  evaluatedCommit?: string,
+): PublicationFinding[] {
   try {
     const parsed: unknown = JSON.parse(decodeUtf8(content) ?? "");
     if (path.endsWith("fresh-clone.json")) validateFreshCloneReceipt(parsed);
     else if (path.endsWith("alert-drill.json")) validatePublicDrillReceipt(parsed, "alert");
     else if (path.endsWith("backup-drill.json")) validatePublicDrillReceipt(parsed, "backup");
+    else if (path.endsWith("healing-sabotage-drill.json")) {
+      const receipt = validateHealingSabotageDrillReceipt(
+        parsed,
+        readValidationVerificationPublicKey(
+          join(root, "ops/validation-attestation-public.pem"),
+        ),
+      );
+      assertHealingSabotageReceiptFresh(receipt, now);
+      if (evaluatedCommit !== undefined
+        && receipt.payload.release.sourceCommit !== evaluatedCommit) {
+        throw new Error("Healing sabotage receipt is bound to another implementation cut");
+      }
+    }
     else if (/classification-review-v[1-9]\d*\.json$/u.test(path)) {
       const result = ClassificationReviewResultSchema.parse(parsed);
       const version = /classification-review-v([1-9]\d*)\.json$/u.exec(path)?.[1];
@@ -750,7 +832,12 @@ function deduplicate(findings: PublicationFinding[]): PublicationFinding[] {
     `${left.scope}\0${left.location}\0${left.ruleId}`.localeCompare(`${right.scope}\0${right.location}\0${right.ruleId}`));
 }
 
-export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
+export function validateFreshCloneReceipt(
+  input: unknown,
+  verificationPublicKey: KeyObject = readValidationVerificationPublicKey(
+    fileURLToPath(new URL("../../ops/validation-attestation-public.pem", import.meta.url)),
+  ),
+): FreshCloneReceipt {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new TypeError("Fresh-clone receipt must be an object");
   }
@@ -758,18 +845,29 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
   const exactKeys = (object: Record<string, unknown>, keys: string[]): boolean =>
     Object.keys(object).sort().join("\0") === [...keys].sort().join("\0");
   if (
-    !exactKeys(value, ["artifacts", "checks", "completedAt", "runtimes", "schemaVersion", "sourceCommit", "status"])
-    || value.schemaVersion !== 1
+    !exactKeys(value, [
+      "artifacts", "attestation", "checks", "cloneCommit", "completedAt",
+      "runtimes", "schemaVersion", "sourceCommit", "status", "verifierSha256",
+    ])
+    || value.schemaVersion !== 2
     || value.status !== "pass"
     || typeof value.sourceCommit !== "string"
     || !COMMIT_PATTERN.test(value.sourceCommit)
+    || typeof value.cloneCommit !== "string"
+    || !COMMIT_PATTERN.test(value.cloneCommit)
     || typeof value.completedAt !== "string"
     || !Number.isFinite(Date.parse(value.completedAt))
     || new Date(value.completedAt).toISOString() !== value.completedAt
+    || typeof value.verifierSha256 !== "string"
+    || !SHA256_PATTERN.test(value.verifierSha256)
+    || value.verifierSha256 === "0".repeat(64)
     || typeof value.runtimes !== "object"
     || value.runtimes === null
     || !Array.isArray(value.checks)
     || !Array.isArray(value.artifacts)
+    || typeof value.attestation !== "object"
+    || value.attestation === null
+    || Array.isArray(value.attestation)
   ) {
     throw new TypeError("Fresh-clone receipt has an invalid shape");
   }
@@ -829,6 +927,29 @@ export function validateFreshCloneReceipt(input: unknown): FreshCloneReceipt {
   if (new Set(artifactPaths).size !== artifactPaths.length
     || artifactPaths.length !== 2 || analysisArtifacts.length !== 1 || exportArtifacts.length !== 1) {
     throw new TypeError("Fresh-clone receipt artifacts must be the unique generated manifests");
+  }
+  const attestation = value.attestation as Record<string, unknown>;
+  if (!exactKeys(attestation, ["algorithm", "keyId", "payloadSha256", "signature"])
+    || attestation.algorithm !== "ed25519"
+    || typeof attestation.keyId !== "string" || !SHA256_PATTERN.test(attestation.keyId)
+    || typeof attestation.payloadSha256 !== "string" || !SHA256_PATTERN.test(attestation.payloadSha256)
+    || typeof attestation.signature !== "string" || !/^[A-Za-z0-9+/]{86}==$/u.test(attestation.signature)
+    || verificationPublicKey.type !== "public"
+    || verificationPublicKey.asymmetricKeyType !== "ed25519") {
+    throw new TypeError("Fresh-clone receipt attestation is malformed");
+  }
+  const { attestation: _attestation, ...payload } = value;
+  const canonical = canonicalEvidenceJson(payload);
+  const payloadSha256 = sha256(canonical);
+  if (attestation.keyId !== validationAttestationKeyId(verificationPublicKey)
+    || attestation.payloadSha256 !== payloadSha256
+    || !verify(
+      null,
+      Buffer.from(canonical),
+      verificationPublicKey,
+      Buffer.from(attestation.signature, "base64"),
+    )) {
+    throw new TypeError("Fresh-clone receipt attestation is invalid");
   }
   return input as FreshCloneReceipt;
 }
@@ -901,28 +1022,44 @@ export async function auditPublication(
   }
 
   for (const [path, content] of prospectiveFiles) {
-    if (path.endsWith("/manifest.json")) {
+    if (path === "data/validation/attempts/manifest.json") {
+      publicDataFindings.push(...auditValidationAttemptManifest(content, path, prospectiveFiles));
+    } else if (path.endsWith("/manifest.json")) {
       publicDataFindings.push(...auditManifest(content, path, root, prospectiveFiles));
     }
     if (path === "data/exports/latest.json" || path === "analysis/output/latest.json") {
       publicDataFindings.push(...auditLatest(content, path, root, prospectiveFiles));
     }
     if (options.requireAcceptanceEvidence === true
-      && /^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill|classification-review-v[1-9]\d*)\.json)$/u.test(path)) {
-      publicDataFindings.push(...auditAcceptanceArtifact(content, path));
+      && /^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill|healing-sabotage-drill|classification-review-v[1-9]\d*)\.json)$/u.test(path)) {
+      publicDataFindings.push(...auditAcceptanceArtifact(
+        content,
+        path,
+        root,
+        options.now(),
+        options.evaluatedCommit,
+      ));
     }
   }
   for (const [path, content] of worktreeFiles) {
     if (prospectiveFiles.get(path)?.equals(content) === true) continue;
-    if (path.endsWith("/manifest.json")) {
+    if (path === "data/validation/attempts/manifest.json") {
+      publicDataFindings.push(...auditValidationAttemptManifest(content, path, worktreeFiles));
+    } else if (path.endsWith("/manifest.json")) {
       publicDataFindings.push(...auditManifest(content, path, root, worktreeFiles));
     }
     if (path === "data/exports/latest.json" || path === "analysis/output/latest.json") {
       publicDataFindings.push(...auditLatest(content, path, root, worktreeFiles));
     }
     if (options.requireAcceptanceEvidence === true
-      && /^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill|classification-review-v[1-9]\d*)\.json)$/u.test(path)) {
-      publicDataFindings.push(...auditAcceptanceArtifact(content, path));
+      && /^data\/acceptance\/(?:acceptance\.json|evidence\/(?:fresh-clone|alert-drill|backup-drill|healing-sabotage-drill|classification-review-v[1-9]\d*)\.json)$/u.test(path)) {
+      publicDataFindings.push(...auditAcceptanceArtifact(
+        content,
+        path,
+        root,
+        options.now(),
+        options.evaluatedCommit,
+      ));
     }
   }
 

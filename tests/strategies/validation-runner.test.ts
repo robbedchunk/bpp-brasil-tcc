@@ -10,6 +10,7 @@ import { initializeValidationAttestationKeyPair } from "../../scripts/init-valid
 import { openDatabase } from "../../src/db/database.js";
 import { upsertDiscoveredProduct } from "../../src/db/repositories.js";
 import { loadRetailerConfigs, type RetailerConfig } from "../../src/retailers/config.js";
+import { selectStrategyValidationChallenge } from "../../src/strategies/validation-challenge.js";
 import type { ProductRef } from "../../src/strategies/types.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
@@ -288,16 +289,22 @@ describe("trusted live-host validation runner", () => {
       sample.outcome.status === "valid"
       && sample.outcome.fields === null
       && sample.response?.bodySha256 !== undefined)).toBe(true);
-    await expect(validateConfiguredStrategy(retailer, "discovery", {
+    let resumeRequests = 0;
+    const resumed = await validateConfiguredStrategy(retailer, "discovery", {
       database,
       outputDirectory: directory,
       signingPrivateKey: TEST_SIGNING_PRIVATE_KEY,
-      fetch,
+      fetch: async () => {
+        resumeRequests += 1;
+        throw new Error("A matching immutable receipt must be reused without network I/O");
+      },
       sleep: async () => undefined,
       clock: () => 0,
       now: () => new Date("2026-07-11T06:01:01.000Z"),
       runtime: "node-v24.18.0",
-    })).rejects.toThrow(/already exists.*successor/iu);
+    });
+    expect(resumeRequests).toBe(0);
+    expect(resumed).toEqual(result);
   });
 
   it("scores a preselected discovery challenge instead of choosing 30 successes post hoc", async () => {
@@ -310,14 +317,7 @@ describe("trusted live-host validation runner", () => {
       sourceCategory: "Alimentos",
     }));
     seed(database, retailer, refs);
-    const challenge = (database.prepare(`
-      SELECT canonical_url AS canonicalUrl, retailer_product_id AS externalId,
-             source_category AS sourceCategory
-      FROM products
-      WHERE retailer_id = ? AND active = 1 AND in_scope = 1
-      ORDER BY last_seen DESC, canonical_url
-      LIMIT 30
-    `).all(retailer.id) as typeof refs);
+    const challenge = selectStrategyValidationChallenge(database, retailer.id, 30);
     const returned = refs.filter((ref) =>
       ref.canonicalUrl !== challenge[0]?.canonicalUrl).slice(0, 30);
     const directory = await outputDirectory();
@@ -348,7 +348,7 @@ describe("trusted live-host validation runner", () => {
       .toEqual(challenge.map((ref) => ref.canonicalUrl));
   });
 
-  it("selects a prepared challenge in the candidate run admission order", async () => {
+  it("selects the independent challenge regardless of candidate admission order", async () => {
     const retailer = config("extra-mercado");
     const database = openDatabase(":memory:");
     databases.push(database);
@@ -384,7 +384,7 @@ describe("trusted live-host validation runner", () => {
         canonical_url, admitted_at)
        VALUES (?, ?, ?, '2026-07-11', ?, ?, '2026-07-11T06:01:00.000Z')`,
     );
-    refs.forEach((ref, index) => admit.run(
+    [...refs].reverse().forEach((ref, index) => admit.run(
       `prepared-reference-${index}`,
       runId,
       retailer.id,
@@ -397,14 +397,14 @@ describe("trusted live-host validation runner", () => {
        WHERE id = ?`,
     ).run(runId);
     const directory = await outputDirectory();
+    const challenge = selectStrategyValidationChallenge(database, retailer.id, 30);
 
     const result = await validateConfiguredStrategy(retailer, "discovery", {
       database,
       outputDirectory: directory,
       signingPrivateKey: TEST_SIGNING_PRIVATE_KEY,
-      discoveryChallengeRunId: runId,
       fetch: async () => new Response(JSON.stringify({
-        products: refs.slice(0, 30).map((ref) => ({
+        products: challenge.map((ref) => ({
           id: Number(ref.externalId),
           urlDetails: ref.canonicalUrl,
         })),
@@ -417,7 +417,7 @@ describe("trusted live-host validation runner", () => {
 
     expect(result.evidence).toMatchObject({ valid: 30, score: 1 });
     expect(result.evidence.samples.map(({ ref }) => ref.canonicalUrl))
-      .toEqual(refs.slice(0, 30).map((ref) => ref.canonicalUrl));
+      .toEqual(challenge.map((ref) => ref.canonicalUrl));
   });
 
   it("captures St Marche browser page evidence for DOM-crawl discovery", async () => {

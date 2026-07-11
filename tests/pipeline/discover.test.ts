@@ -460,4 +460,64 @@ describe("discovery pipeline", () => {
     expect(database.prepare("SELECT category, http_status FROM run_failures").get())
       .toEqual({ category: "unknown", http_status: 503 });
   });
+
+  it.each([
+    ["API", {
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "api",
+      allowedDomains: ["shop.test"],
+      request: { method: "GET", url: "https://shop.test/private?page={page}", headers: {} },
+      itemsPath: "$.items[*]",
+      refFields: { url: "$.url" },
+      pagination: { kind: "page", start: 0, step: 1, pageSize: 10, maxPages: 1 },
+      maxProducts: 10,
+    }],
+    ["script", {
+      schemaVersion: 1,
+      purpose: "discovery",
+      tier: "script",
+      allowedDomains: ["shop.test"],
+      operations: [
+        {
+          op: "http",
+          request: { method: "GET", url: "https://shop.test/private", headers: {} },
+          saveAs: "catalog",
+        },
+        {
+          op: "extract",
+          source: "json",
+          from: "catalog",
+          itemsPath: "$.items[*]",
+          refFields: { url: "$.url" },
+        },
+      ],
+      maxProducts: 10,
+    }],
+  ] as const)("enforces robots before %s discovery traffic", async (_label, strategy) => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", strategy);
+    const requests: string[] = [];
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      executionContext: {
+        fetch: async (input) => {
+          const url = String(input);
+          requests.push(url);
+          if (!url.endsWith("/robots.txt")) {
+            throw new Error("robots denial must prevent strategy traffic");
+          }
+          return new Response("User-agent: *\nDisallow: /private\n");
+        },
+      },
+    });
+
+    expect(requests).toEqual(["https://shop.test/robots.txt"]);
+    expect(summary).toMatchObject({ attempted: 0, ok: 0, status: "failed" });
+    expect(database.prepare("SELECT category FROM run_failures WHERE run_id = ?")
+      .get(summary.id)).toEqual({ category: "domain-denied" });
+  });
 });

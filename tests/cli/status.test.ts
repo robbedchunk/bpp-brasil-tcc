@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildCli, type CliDependencies } from "../../src/cli.js";
-import { openDatabase } from "../../src/db/database.js";
+import {
+  EXPECTED_SCHEMA_MIGRATIONS,
+  openDatabase,
+} from "../../src/db/database.js";
 
 interface CliResult {
   exitCode: number;
@@ -160,7 +163,7 @@ describe("precos status", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 13 });
+    ).toEqual({ count: EXPECTED_SCHEMA_MIGRATIONS.length });
     database.close();
   });
 });

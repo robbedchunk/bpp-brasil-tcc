@@ -7,10 +7,12 @@ RefuseManualStart=yes
 
 [Service]
 Type=oneshot
-WorkingDirectory=@PROJECT_ROOT@
+WorkingDirectory=@RELEASE_ROOT@
 Environment=@RUNTIME_PATH@
 Environment=TZ=America/Sao_Paulo
+Environment=@RELEASE_ID_ENV@
 EnvironmentFile=@ENV_FILE@
 Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer
 UMask=0077
+ExecStartPre=@NODE_PATH@ @RELEASE_VERIFY_PATH@ verify @RELEASE_ROOT_QUOTED@ @PUBLIC_KEY_PATH@
 ExecStart=@NODE_PATH@ @CLI_PATH@ daily --json

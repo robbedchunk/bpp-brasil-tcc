@@ -218,6 +218,42 @@ exec "\${REAL_SQLITE3:?}" "\$@"
     });
   });
 
+  it("discovers the setup-managed pinned Node runtime on later invocations", async () => {
+    const home = await temporaryDirectory("precos-managed-node-home-");
+    const defaultBin = join(home, "default-bin");
+    const managedBin = join(home, ".local", "share", "precos", "runtime", "node-v24.18.0-linux-x64", "bin");
+    await mkdir(defaultBin, { recursive: true });
+    await mkdir(managedBin, { recursive: true });
+    await writeFile(join(defaultBin, "node"), "#!/usr/bin/env bash\nprintf '22\\n'\n", { mode: 0o755 });
+    await writeFile(join(managedBin, "node"), "#!/usr/bin/env bash\nprintf '24\\n'\n", { mode: 0o755 });
+
+    const result = await run("bash", [
+      "-c",
+      'source "$1"; select_node_24; command -v node',
+      "bash",
+      "ops/lib.sh",
+    ], { HOME: home, PATH: `${defaultBin}:/usr/bin:/bin` });
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stderr: "",
+      stdout: `${join(managedBin, "node")}\n`,
+    });
+  });
+
+  it("bootstraps every declared bare-box runtime with checksum and timezone verification", async () => {
+    const setup = await readFile(resolve("ops/setup.sh"), "utf8");
+    const bootstrap = await readFile(resolve("ops/bootstrap-runtime.sh"), "utf8");
+    expect(setup).toContain("bootstrap_runtime");
+    for (const dependency of ["python3-venv", "sqlite3", "tzdata", "build-essential", "ca-certificates"]) {
+      expect(bootstrap).toContain(dependency);
+    }
+    expect(bootstrap).toContain("America/Sao_Paulo");
+    expect(bootstrap).toContain("SHASUMS256.txt");
+    expect(bootstrap).toContain("sha256sum");
+    expect(bootstrap).toContain("nodejs.org/dist");
+  });
+
   it("installs the pinned analysis environment only when requirements change", async () => {
     const directory = await temporaryDirectory("precos-analysis-setup-");
     const fakePython = join(directory, "python3");

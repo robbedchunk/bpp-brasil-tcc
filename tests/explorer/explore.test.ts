@@ -599,7 +599,7 @@ describe("trusted strategy exploration", () => {
       validateCandidate: scoreSequence(0.9),
       maxAttempts: 1,
       healingEventId: healing.event.id,
-      now: () => new Date("2026-07-10T00:03:00.000Z"),
+      now: () => new Date("2026-07-10T00:11:00.000Z"),
     })).rejects.toThrow(/fixture healing closure failure/iu);
 
     expect(database.prepare(

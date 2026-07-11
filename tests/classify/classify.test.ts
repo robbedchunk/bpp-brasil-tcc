@@ -252,6 +252,51 @@ describe("official IPCA reference loader", () => {
 });
 
 describe("incremental classification", () => {
+  it("persists the exact paid-call reservation before invoking the provider", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seedItems(database);
+      seedProducts(database, 2);
+      const fixture = new FixtureClassifier();
+      let observedReservation: Record<string, unknown> | undefined;
+      const provider: ProductClassifier = {
+        classify: async (inputs) => {
+          observedReservation = database.prepare(`
+            SELECT status, version, model, product_ids_json AS productIdsJson
+            FROM classification_sync_reservations
+            WHERE status = 'reserved'
+          `).get() as Record<string, unknown> | undefined;
+          return fixture.classify(inputs);
+        },
+      };
+
+      await classifyNewProducts(classificationOptions(), {
+        database,
+        provider,
+        budgetGuard: new BudgetGuard(50),
+        now: () => new Date("2026-07-10T12:00:00.000Z"),
+      });
+
+      expect(observedReservation).toMatchObject({
+        status: "reserved",
+        version: 1,
+        model: "gpt-5.6-luna",
+      });
+      expect(JSON.parse(String(observedReservation?.productIdsJson)))
+        .toEqual(["product-001", "product-002"]);
+      expect(database.prepare(`
+        SELECT status, actual_cost_usd IS NOT NULL AS hasActual
+        FROM classification_sync_reservations
+      `).get()).toEqual({ status: "settled", hasActual: 1 });
+      expect(database.prepare(`
+        SELECT COUNT(*) AS count FROM cost_ledger
+        WHERE classification_reservation_id IS NOT NULL
+      `).get()).toEqual({ count: 2 });
+    } finally {
+      database.close();
+    }
+  });
+
   it("classifies 120 new products in deterministic batches of 50, 50, and 20", async () => {
     const database = openDatabase(":memory:");
     try {

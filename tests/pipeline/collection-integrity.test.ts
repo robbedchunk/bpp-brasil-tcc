@@ -147,7 +147,7 @@ describe("collection integrity", () => {
     });
   }, 20_000);
 
-  it("keeps discovery and collection attempt budgets independent", async () => {
+  it("shares one hard retailer/day network budget across discovery and collection", async () => {
     const database = databaseWithStrategies();
     seedProducts(database, 2);
     database.prepare(`
@@ -174,7 +174,7 @@ describe("collection integrity", () => {
         failure: { category: "parse", message: "fixture", responded: true },
       }),
     });
-    expect(collection.attempted).toBe(2);
+    expect(collection.attempted).toBe(0);
 
     database.prepare(`
       INSERT INTO runs
@@ -206,8 +206,8 @@ describe("collection integrity", () => {
         };
       },
     });
-    expect(discovery.attempted).toBe(1);
-    expect(executions).toBe(1);
+    expect(discovery.attempted).toBe(0);
+    expect(executions).toBe(0);
   });
 
   it("rotates never-attempted products first, then the oldest attempted cohort", () => {

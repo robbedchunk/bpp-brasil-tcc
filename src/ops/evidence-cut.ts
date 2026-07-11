@@ -8,6 +8,7 @@ const EVIDENCE_ONLY_PATHS = new Set([
   "data/acceptance/evidence/alert-drill.json",
   "data/acceptance/evidence/backup-drill.json",
   "data/acceptance/evidence/fresh-clone.json",
+  "data/acceptance/evidence/healing-sabotage-drill.json",
   "docs/acceptance-report.md",
 ]);
 
@@ -26,6 +27,72 @@ function git(root: string, args: string[]): string {
 export function isAcceptanceEvidencePath(path: string): boolean {
   return EVIDENCE_ONLY_PATHS.has(path)
     || /^data\/acceptance\/evidence\/classification-review-v[1-9]\d*\.json$/u.test(path);
+}
+
+/**
+ * Paths backed by the frozen release's mutable state links. Commits that only
+ * change these paths do not change the installed executable/configuration
+ * tree, so a release remains current across committed collection evidence.
+ */
+export function isReleaseNeutralPath(path: string): boolean {
+  return isAcceptanceEvidencePath(path)
+    || path.startsWith("data/")
+    || path.startsWith("analysis/output/");
+}
+
+function gitSucceeds(root: string, args: string[]): boolean {
+  try {
+    execFileSync("git", args, {
+      cwd: root,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A signed release can remain the current runtime across later (or earlier)
+ * commits containing only state linked into that release. Requiring literal
+ * commit equality would make it impossible to commit a scheduled SQLite run
+ * without immediately invalidating the release that produced the run.
+ */
+export function releaseSourceMatchesEvaluatedCommit(
+  rootInput: string,
+  releaseSourceCommit: string,
+  evaluatedCommit: string,
+): boolean {
+  if (!COMMIT.test(releaseSourceCommit) || !COMMIT.test(evaluatedCommit)) return false;
+  let root: string;
+  try {
+    root = realpathSync(rootInput);
+  } catch {
+    return false;
+  }
+  if (!gitSucceeds(root, ["cat-file", "-e", `${releaseSourceCommit}^{commit}`])
+    || !gitSucceeds(root, ["cat-file", "-e", `${evaluatedCommit}^{commit}`])) {
+    return false;
+  }
+  if (releaseSourceCommit === evaluatedCommit) return true;
+  const linearlyRelated = gitSucceeds(
+    root,
+    ["merge-base", "--is-ancestor", releaseSourceCommit, evaluatedCommit],
+  ) || gitSucceeds(
+    root,
+    ["merge-base", "--is-ancestor", evaluatedCommit, releaseSourceCommit],
+  );
+  if (!linearlyRelated) return false;
+  try {
+    const paths = execFileSync(
+      "git",
+      ["diff", "--name-only", "--no-renames", releaseSourceCommit, evaluatedCommit],
+      { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim().split("\n").filter(Boolean);
+    return paths.every(isReleaseNeutralPath);
+  } catch {
+    return false;
+  }
 }
 
 function commitPaths(root: string, commit: string): string[] {

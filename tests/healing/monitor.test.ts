@@ -30,6 +30,7 @@ import {
   seedRetailer,
   seedStrategy,
 } from "../pipeline/helpers.js";
+import { insertTrustedStrategyValidationEvidence } from "../helpers/strategy-validation.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 const temporaryDirectories: string[] = [];
@@ -62,19 +63,7 @@ function insertActiveSuccessor(
     VALUES (?, 'retailer-1', 'extraction', ?, 2, ?, 'fixture successor',
             30, 30, 1, 0, ?, NULL)
   `).run(id, tier, JSON.stringify(strategy), activatedAt);
-  database.prepare(`
-    INSERT INTO strategy_validation_evidence
-      (strategy_id, receipt_path, receipt_sha256, sample_set_sha256,
-       executor_json, attestation_key_id, attempted, valid, score, validated_at)
-    VALUES (?, ?, ?, ?, '{}', ?, 30, 30, 1, ?)
-  `).run(
-    id,
-    "data/validation/retailer-1-extraction-v2.json",
-    "a".repeat(64),
-    "b".repeat(64),
-    "c".repeat(64),
-    activatedAt,
-  );
+  insertTrustedStrategyValidationEvidence(database, id);
   database.prepare(
     "UPDATE strategies SET active = 1, activated_at = ? WHERE id = ?",
   ).run(activatedAt, id);
@@ -1189,20 +1178,19 @@ describe("drift monitor state machine", () => {
     const directory = await mkdtemp(join(tmpdir(), "healing-reconcile-race-"));
     temporaryDirectories.push(directory);
     const databasePath = join(directory, "precos.sqlite");
-    const firstDatabase = openDatabase(databasePath);
-    databases.push(firstDatabase);
-    seedRetailer(firstDatabase);
-    seedStrategy(firstDatabase, "extraction", extractionStrategy);
-    insertRun(firstDatabase, "concurrent-crash", [
+    const seedDatabase = openDatabase(":memory:");
+    seedRetailer(seedDatabase);
+    seedStrategy(seedDatabase, "extraction", extractionStrategy);
+    insertRun(seedDatabase, "concurrent-crash", [
       { category: "missing-fields", responded: true },
     ]);
-    const healing = beginHealingEvent(firstDatabase, {
+    const healing = beginHealingEvent(seedDatabase, {
       retailerId: "retailer-1",
       purpose: "extraction",
       onsetRunId: "concurrent-crash",
       detectedAt: "2026-07-10T00:00:00.000Z",
     });
-    const explorationRunId = beginExplorationRun(firstDatabase, {
+    const explorationRunId = beginExplorationRun(seedDatabase, {
       retailerId: "retailer-1",
       purpose: "extraction",
       trigger: "healing",
@@ -1211,6 +1199,10 @@ describe("drift monitor state machine", () => {
       maxAttempts: 3,
       startedAt: "2026-07-10T00:01:00.000Z",
     });
+    await seedDatabase.backup(databasePath);
+    seedDatabase.close();
+    const firstDatabase = openDatabase(databasePath);
+    databases.push(firstDatabase);
     const secondDatabase = openDatabase(databasePath);
     databases.push(secondDatabase);
     let modelCalls = 0;

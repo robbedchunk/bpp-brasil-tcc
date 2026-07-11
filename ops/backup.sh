@@ -2,6 +2,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PROJECT_ROOT/ops/lib.sh"
+select_node_24 backup
 DATABASE_PATH="${DATABASE_PATH:-$PROJECT_ROOT/data/precos.sqlite}"
 BACKUP_DIRECTORY="${BACKUP_DIRECTORY:-$PROJECT_ROOT/var/backups}"
 ATTESTATION_KEY_PATH="${ATTESTATION_KEY_PATH:-$PROJECT_ROOT/var/operations/validation-attestation-private.pem}"
@@ -31,12 +33,57 @@ backup_database() {
   chmod 0600 "$destination"
 }
 
+create_backup_bundle() {
+  local source="$1"
+  local artifact="$2"
+  local receipt="${artifact}.receipt.json"
+  local runtime
+  if [[ -f "$PROJECT_ROOT/dist/ops/scheduled-backup.js" ]]; then
+    runtime=(node "$PROJECT_ROOT/dist/ops/scheduled-backup.js")
+  elif [[ -x "$PROJECT_ROOT/node_modules/.bin/tsx" ]]; then
+    runtime=("$PROJECT_ROOT/node_modules/.bin/tsx" "$PROJECT_ROOT/src/ops/scheduled-backup.ts")
+  else
+    printf 'backup: scheduled backup receipt runtime is unavailable; run npm run build\n' >&2
+    return 1
+  fi
+  "${runtime[@]}" create \
+    --source "$source" \
+    --artifact "$artifact" \
+    --receipt "$receipt" \
+    --invocation-id "${INVOCATION_ID:-}"
+}
+
+remove_backup_bundle() {
+  local parent="$1"
+  # The checkpoint command owns and closes its SQLite handle before any member
+  # of the bundle is unlinked. A malformed expired artifact is still removable.
+  sqlite3 "$parent" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null 2>&1 || true
+  rm -f -- "${parent}-wal" "${parent}-shm" "${parent}.receipt.json" "$parent"
+}
+
 rotate_backups() {
   local directory="$1"
   local now_epoch="${2:-$(date +%s)}"
   local retention_cutoff=$((now_epoch - 14 * 24 * 60 * 60))
-  find "$directory" -type f -name 'precos-*.sqlite' \
-    ! -newermt "@${retention_cutoff}" -delete
+  local parent sidecar
+  while IFS= read -r -d '' parent; do
+    remove_backup_bundle "$parent"
+  done < <(find "$directory" -type f -name 'precos-*.sqlite' \
+    ! -newermt "@${retention_cutoff}" -print0)
+  while IFS= read -r -d '' sidecar; do
+    parent="${sidecar%-wal}"
+    parent="${parent%-shm}"
+    if [[ ! -f "$parent" ]]; then
+      rm -f -- "$sidecar"
+    fi
+  done < <(find "$directory" -type f \
+    \( -name 'precos-*.sqlite-wal' -o -name 'precos-*.sqlite-shm' \) -print0)
+  while IFS= read -r -d '' sidecar; do
+    parent="${sidecar%.receipt.json}"
+    if [[ ! -f "$parent" ]]; then
+      rm -f -- "$sidecar"
+    fi
+  done < <(find "$directory" -type f -name 'precos-*.sqlite.receipt.json' -print0)
   find "$directory" -type f -name 'validation-attestation-private-*.pem' \
     ! -newermt "@${retention_cutoff}" -delete
 }
@@ -72,18 +119,44 @@ if [[ ! -f "$DATABASE_PATH" ]]; then
   printf 'backup: database not found: %s\n' "$DATABASE_PATH" >&2
   exit 1
 fi
+if [[ -n "${INVOCATION_ID:-}" && ! "${INVOCATION_ID}" =~ ^[[:xdigit:]]{32}$ ]]; then
+  printf 'backup: INVOCATION_ID must be 32 hexadecimal characters\n' >&2
+  exit 1
+fi
 install -d -m 0700 "$BACKUP_DIRECTORY"
 timestamp="$(TZ=America/Sao_Paulo date +%Y%m%dT%H%M%S)"
 destination="$BACKUP_DIRECTORY/precos-$timestamp-$$.sqlite"
-backup_database "$DATABASE_PATH" "$destination"
+temporary_key=""
+key_destination=""
+receipt_complete=0
+cleanup() {
+  if [[ -n "$temporary_key" ]]; then
+    rm -f -- "$temporary_key"
+  fi
+  if [[ "$receipt_complete" != "1" ]]; then
+    rm -f -- "$destination" "${destination}-wal" "${destination}-shm" "${destination}.receipt.json"
+    if [[ -n "$key_destination" ]]; then
+      rm -f -- "$key_destination"
+    fi
+  fi
+}
+trap cleanup EXIT
 if [[ -f "$ATTESTATION_KEY_PATH" ]]; then
   if [[ "$(stat -c '%a' "$ATTESTATION_KEY_PATH")" != "600" ]] \
     || ! grep -q -- 'BEGIN PRIVATE KEY' "$ATTESTATION_KEY_PATH"; then
     printf 'backup: validation signing key must be a mode-0600 private PEM file\n' >&2
     exit 1
   fi
-  install -m 0600 "$ATTESTATION_KEY_PATH" \
-    "$BACKUP_DIRECTORY/validation-attestation-private-$timestamp-$$.pem"
+  key_destination="$BACKUP_DIRECTORY/validation-attestation-private-$timestamp-$$.pem"
+  temporary_key="${key_destination}.tmp"
+  install -m 0600 "$ATTESTATION_KEY_PATH" "$temporary_key"
+  mv -f -- "$temporary_key" "$key_destination"
+  temporary_key=""
 fi
+if ! create_backup_bundle "$DATABASE_PATH" "$destination"; then
+  exit 1
+fi
+receipt_complete=1
 rotate_backups "$BACKUP_DIRECTORY"
+trap - EXIT
 printf 'backup: %s\n' "$destination"

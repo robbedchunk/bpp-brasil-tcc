@@ -57,6 +57,20 @@ export function latestSuccessfulHeartbeat(
        AND (? = 0 OR (
          json_extract(details_json, '$.trigger') = 'systemd-timer'
          AND json_extract(details_json, '$.timerUnit') = 'precos-daily.timer'
+         AND json_extract(details_json, '$.serviceUnit') = 'precos-daily.service'
+         AND json_extract(details_json, '$.provenanceVersion') = 1
+         AND length(json_extract(details_json, '$.invocationId')) = 32
+         AND json_extract(details_json, '$.invocationId') NOT GLOB '*[^a-f0-9]*'
+         AND length(json_extract(details_json, '$.cgroupSha256')) = 64
+         AND json_extract(details_json, '$.cgroupSha256') NOT GLOB '*[^a-f0-9]*'
+         AND length(json_extract(details_json, '$.releaseId')) = 32
+         AND json_extract(details_json, '$.releaseId') NOT GLOB '*[^a-f0-9]*'
+         AND datetime(json_extract(details_json, '$.timerLastTriggerAt')) IS NOT NULL
+         AND datetime(json_extract(details_json, '$.serviceStartedAt')) IS NOT NULL
+         AND abs(julianday(json_extract(details_json, '$.timerLastTriggerAt'))
+           - julianday(json_extract(details_json, '$.serviceStartedAt'))) * 86400 <= 1
+         AND length(json_extract(details_json, '$.timerCausalitySha256')) = 64
+         AND json_extract(details_json, '$.timerCausalitySha256') NOT GLOB '*[^a-f0-9]*'
        ))
      ORDER BY completed_at DESC, id DESC
      LIMIT 1`,

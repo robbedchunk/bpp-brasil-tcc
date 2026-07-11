@@ -125,6 +125,38 @@ interface ObservationRange {
   last_day: string | null;
 }
 
+const DATABASE_EVIDENCE_TABLES = [
+  "retailers", "strategies", "products", "observations", "runs", "run_failures",
+  "ipca_items", "classifications", "exploration_runs", "healing_events",
+  "retailer_state_events", "cost_ledger",
+] as const;
+
+export function databaseSourceSnapshotSha256(database: Database.Database): string {
+  const digest = createHash("sha256");
+  for (const table of DATABASE_EVIDENCE_TABLES) {
+    const columns = database.pragma(`table_info(${table})`) as Array<{
+      cid: number;
+      name: string;
+      pk: number;
+    }>;
+    if (columns.length === 0) throw new Error(`Database evidence table ${table} is absent`);
+    const orderedColumns = [...columns].sort((left, right) => left.cid - right.cid);
+    const primaryKey = columns.filter(({ pk }) => pk > 0).sort((left, right) => left.pk - right.pk);
+    const order = primaryKey.length === 0 ? orderedColumns : primaryKey;
+    const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+    const select = orderedColumns.map(({ name }) => quote(name)).join(", ");
+    const orderBy = order.map(({ name }) => quote(name)).join(", ");
+    digest.update(`${table}\0${orderedColumns.map(({ name }) => name).join("\0")}\n`);
+    for (const row of database.prepare(
+      `SELECT ${select} FROM ${quote(table)} ORDER BY ${orderBy}`,
+    ).iterate() as Iterable<Record<string, unknown>>) {
+      digest.update(JSON.stringify(orderedColumns.map(({ name }) => row[name])));
+      digest.update("\n");
+    }
+  }
+  return digest.digest("hex");
+}
+
 function observationRange(database: Database.Database): ObservationRange {
   return database.prepare(
     "SELECT MIN(collection_day) AS first_day, MAX(collection_day) AS last_day FROM observations",
@@ -132,13 +164,8 @@ function observationRange(database: Database.Database): ObservationRange {
 }
 
 function databaseEvidence(database: Database.Database): ExportManifest["sources"]["database"] {
-  const tables = [
-    "retailers", "strategies", "products", "observations", "runs", "run_failures",
-    "ipca_items", "classifications", "exploration_runs", "healing_events",
-    "retailer_state_events", "cost_ledger",
-  ] as const;
   const counts: Record<string, number> = {};
-  for (const table of tables) {
+  for (const table of DATABASE_EVIDENCE_TABLES) {
     const row = database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
     counts[table] = row.count;
   }
@@ -147,11 +174,15 @@ function databaseEvidence(database: Database.Database): ExportManifest["sources"
       (SELECT MAX(observed_at) FROM observations) AS observations,
       (SELECT MAX(finished_at) FROM runs) AS runs,
       (SELECT MAX(created_at) FROM classifications) AS classifications,
-      (SELECT MAX(recovered_at) FROM healing_events) AS healing_events,
+      (SELECT MAX(COALESCE(recovered_at, detected_at)) FROM healing_events) AS healing_events,
       (SELECT MAX(effective_at) FROM retailer_state_events) AS retailer_state_events,
       (SELECT MAX(occurred_at) FROM cost_ledger) AS cost_ledger
   `).get() as Record<string, string | null>;
-  return { counts, maxima: maximaRow };
+  return {
+    counts,
+    maxima: maximaRow,
+    snapshotSha256: databaseSourceSnapshotSha256(database),
+  };
 }
 
 function ipcaEvidence(database: Database.Database): ExportManifest["sources"]["ipcaWeights"] {

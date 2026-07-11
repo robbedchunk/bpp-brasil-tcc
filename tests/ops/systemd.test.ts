@@ -1,6 +1,9 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  chmod,
   cp,
+  lstat,
   mkdtemp,
   mkdir,
   readFile,
@@ -15,11 +18,33 @@ import { dirname, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  createScheduledBackupBundle,
+  scheduledBackupPairMatchesService,
+  validateScheduledBackupPair,
+} from "../../src/ops/scheduled-backup.js";
+
 const temporaryDirectories: string[] = [];
 const projectRoot = resolve(".");
+const sourceTreeClean = execFileSync(
+  "git",
+  ["status", "--porcelain=v1", "--untracked-files=all"],
+  { cwd: projectRoot, encoding: "utf8" },
+).trim() === "";
 
-afterEach(async () => Promise.all(temporaryDirectories.splice(0).map((path) =>
-  rm(path, { recursive: true, force: true }))));
+async function removeReadOnlyTree(path: string): Promise<void> {
+  const entry = await lstat(path).catch(() => null);
+  if (entry === null) return;
+  if (entry.isDirectory() && !entry.isSymbolicLink()) {
+    await chmod(path, 0o700);
+    await Promise.all((await readdir(path)).map((name) => removeReadOnlyTree(join(path, name))));
+  } else if (!entry.isSymbolicLink()) await chmod(path, 0o600);
+}
+
+afterEach(async () => Promise.all(temporaryDirectories.splice(0).map(async (path) => {
+  await removeReadOnlyTree(path);
+  await rm(path, { recursive: true, force: true });
+})));
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), prefix));
@@ -69,17 +94,31 @@ describe("production schedules", () => {
     }
     expect(result.stdout).toContain("precos-classification.service");
     expect(result.stdout).not.toContain("precos-classification.timer");
-    expect((await readdir(destination)).filter((path) => path.endsWith(".timer")))
+    const renderedNames = await readdir(destination);
+    expect(renderedNames.filter((path) => path.endsWith(".timer")))
       .toHaveLength(6);
+    for (const name of renderedNames.filter((path) => path.endsWith(".service"))) {
+      const rendered = await readFile(join(destination, name), "utf8");
+      expect(rendered).toContain(`WorkingDirectory=${projectRoot}`);
+      expect(rendered).toContain("Environment=\"PRECOS_RELEASE_ID=00000000000000000000000000000000\"");
+      expect(rendered).toContain(
+        `ExecStartPre="${process.execPath}" "${projectRoot}/dist/ops/release-manifest.js" verify "${projectRoot}" "${projectRoot}/ops/validation-attestation-public.pem"`,
+      );
+      expect(rendered).not.toMatch(/@[A-Z][A-Z_]+@/u);
+    }
 
     const service = await readFile(join(destination, "precos-daily.service"), "utf8");
     expect(service).toContain(`WorkingDirectory=${projectRoot}`);
     expect(service).toContain(`ExecStart="${process.execPath}" "${projectRoot}/dist/cli.js" daily --json`);
+    expect(service).toContain(`ExecStartPre="${process.execPath}" "${projectRoot}/dist/ops/release-manifest.js" verify "${projectRoot}" "${projectRoot}/ops/validation-attestation-public.pem"`);
+    expect(service).toContain("Environment=\"PRECOS_RELEASE_ID=00000000000000000000000000000000\"");
     expect(service).toContain("Environment=TZ=America/Sao_Paulo");
     expect(service).toContain("Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer");
     expect(service).toContain(`EnvironmentFile=-${projectRoot}/.env`);
     expect(service).toContain("OnSuccess=precos-classification.service");
     expect(service).toContain("RefuseManualStart=yes");
+    const backupService = await readFile(join(destination, "precos-backup.service"), "utf8");
+    expect(backupService).toContain("RefuseManualStart=yes");
     const classificationService = await readFile(
       join(destination, "precos-classification.service"),
       "utf8",
@@ -140,16 +179,19 @@ describe("production schedules", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("preserves the original schedule activation while refreshing installed-unit hashes", async () => {
+  it.skipIf(!sourceTreeClean)("preserves schedule activation while binding each deployment to a new frozen release", async () => {
     const home = await temporaryDirectory("precos-systemd-refresh-");
     const destination = join(home, "units");
     const receiptPath = join(home, "operations", "systemd-install.json");
     const bin = join(home, "bin");
     await mkdir(bin, { recursive: true });
-    for (const name of ["npm", "systemctl"]) {
+    for (const name of ["systemctl", "sudo"]) {
       const path = join(bin, name);
       await writeFile(path, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
     }
+    await writeFile(join(bin, "loginctl"), `#!/usr/bin/env bash
+if [[ "$1" == "show-user" ]]; then printf 'yes\\n'; fi
+`, { mode: 0o755 });
     const env = {
       ...process.env,
       HOME: home,
@@ -161,7 +203,13 @@ describe("production schedules", () => {
     const first = await run("bash", ["ops/install-systemd.sh"], env);
     expect(first).toMatchObject({ exitCode: 0, stderr: "" });
     const initial = JSON.parse(await readFile(receiptPath, "utf8")) as {
-      installedAt: string;
+      schemaVersion: number;
+      scheduleActivatedAt: string;
+      deployedAt: string;
+      sourceCommit: string;
+      releaseId: string;
+      releasePath: string;
+      releaseManifestSha256: string;
       unitSetSha256: string;
     };
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
@@ -169,9 +217,22 @@ describe("production schedules", () => {
     expect(second).toMatchObject({ exitCode: 0, stderr: "" });
     const refreshed = JSON.parse(await readFile(receiptPath, "utf8")) as typeof initial;
 
-    expect(refreshed.installedAt).toBe(initial.installedAt);
-    expect(refreshed.unitSetSha256).toBe(initial.unitSetSha256);
+    expect(initial.schemaVersion).toBe(2);
+    expect(refreshed.scheduleActivatedAt).toBe(initial.scheduleActivatedAt);
+    expect(Date.parse(refreshed.deployedAt)).toBeGreaterThan(Date.parse(initial.deployedAt));
+    expect(refreshed.releaseId).not.toBe(initial.releaseId);
+    expect(refreshed.releasePath).not.toBe(initial.releasePath);
+    expect(refreshed.sourceCommit).toBe(initial.sourceCommit);
+    expect(refreshed.releaseManifestSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(refreshed.unitSetSha256).not.toBe(initial.unitSetSha256);
     expect((await stat(receiptPath)).mode & 0o777).toBe(0o600);
+
+    const installedDaily = await readFile(join(destination, "precos-daily.service"), "utf8");
+    const dryRun = await run("bash", ["ops/install-systemd.sh", "--dry-run"], env);
+    expect(dryRun).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(dryRun.stdout).toContain(`release ${refreshed.releaseId} ${refreshed.releasePath}`);
+    expect(await readFile(join(destination, "precos-daily.service"), "utf8"))
+      .toBe(installedDaily);
   });
 
   it("quotes paths containing systemd syntax characters", async () => {
@@ -226,6 +287,202 @@ describe("production schedules", () => {
     expect(result).toEqual({ exitCode: 0, stderr: "", stdout: "backup: self-test ok\n" });
   });
 
+  it("atomically binds the exact backup artifact to its systemd invocation receipt", async () => {
+    const directory = await temporaryDirectory("precos-backup-receipt-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    const artifactPath = join(backups, "precos-20260711T041500-41.sqlite");
+    const receiptPath = `${artifactPath}.receipt.json`;
+    const invocationId = "0123456789abcdef0123456789abcdef";
+    await mkdir(backups, { recursive: true });
+    expect((await run("sqlite3", [database, `
+      CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY);
+      INSERT INTO schema_migrations VALUES (14);
+      CREATE TABLE runs(id TEXT PRIMARY KEY);
+      INSERT INTO runs VALUES ('scheduled-run');
+      CREATE TABLE observations(id TEXT);
+      CREATE TABLE run_failures(id TEXT);
+      CREATE TABLE classifications(id TEXT);
+      CREATE TABLE exploration_runs(id TEXT);
+      CREATE TABLE exploration_attempts(id TEXT);
+      CREATE TABLE healing_events(id TEXT);
+      CREATE TABLE retailer_state_events(id TEXT);
+      CREATE TABLE heartbeats(id TEXT);
+      CREATE TABLE cost_ledger(id TEXT);
+    `])).exitCode).toBe(0);
+
+    await createScheduledBackupBundle({
+      sourceDatabasePath: database,
+      artifactPath,
+      receiptPath,
+      invocationId,
+      cgroupText: "0::/user.slice/user-1001.slice/user@1001.service/app.slice/precos-backup.service\n",
+    });
+
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as {
+      invocationId: string;
+      serviceCgroupSha256: string;
+      artifactName: string;
+      artifactSha256: string;
+      completedAt: string;
+      semanticTableCounts: Record<string, number>;
+      sourceSnapshotFingerprintSha256: string;
+      integrityCheck: string;
+      quickCheck: string;
+      foreignKeyViolations: number;
+    };
+    expect(receipt).toMatchObject({
+      invocationId,
+      serviceCgroupSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      integrityCheck: "ok",
+      quickCheck: "ok",
+      foreignKeyViolations: 0,
+      semanticTableCounts: { runs: 1, schema_migrations: 1 },
+    });
+    expect(receipt.artifactSha256).toBe(createHash("sha256")
+      .update(await readFile(artifactPath)).digest("hex"));
+    expect(receipt.sourceSnapshotFingerprintSha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect((await stat(artifactPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(receiptPath)).mode & 0o777).toBe(0o600);
+    expect((await readdir(backups)).some((name) => name.includes(".part") || name.includes(".tmp")))
+      .toBe(false);
+    const validation = validateScheduledBackupPair({
+      receiptPath,
+      backupDirectory: backups,
+      sourceDatabasePath: database,
+    });
+    expect(validation.valid).toBe(true);
+    const completedAt = Date.parse(receipt.completedAt);
+    expect(scheduledBackupPairMatchesService(validation, {
+      invocationId,
+      startedAt: completedAt - 500,
+      finishedAt: completedAt + 500,
+      currentWindowStart: completedAt - 60_000,
+      now: completedAt + 1_000,
+    })).toBe(true);
+    expect(scheduledBackupPairMatchesService(validation, {
+      invocationId: "f".repeat(32),
+      startedAt: completedAt - 500,
+      finishedAt: completedAt + 500,
+      currentWindowStart: completedAt - 60_000,
+      now: completedAt + 1_000,
+    })).toBe(false);
+
+    await writeFile(artifactPath, "not the receipted database");
+    expect(validateScheduledBackupPair({
+      receiptPath,
+      backupDirectory: backups,
+      sourceDatabasePath: database,
+    }).valid).toBe(false);
+  });
+
+  it("rejects a manually spoofed systemd invocation ID outside the backup service cgroup", async () => {
+    const directory = await temporaryDirectory("precos-backup-cgroup-spoof-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    await mkdir(backups, { recursive: true });
+    expect((await run("sqlite3", [database, "CREATE TABLE evidence(value INTEGER);"])).exitCode)
+      .toBe(0);
+
+    const result = await run("bash", ["ops/backup.sh"], {
+      ...process.env,
+      DATABASE_PATH: database,
+      BACKUP_DIRECTORY: backups,
+      ATTESTATION_KEY_PATH: join(directory, "absent-private-key.pem"),
+      INVOCATION_ID: "0123456789abcdef0123456789abcdef",
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/exact precos-backup\.service cgroup/u);
+    expect(await readdir(backups)).toEqual([]);
+  });
+
+  it("binds the artifact to the pinned source snapshot when the live source changes before receipt", async () => {
+    const directory = await temporaryDirectory("precos-backup-source-race-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    const artifactPath = join(backups, "precos-20260711T041500-42.sqlite");
+    const receiptPath = `${artifactPath}.receipt.json`;
+    await mkdir(backups, { recursive: true });
+    expect((await run("sqlite3", [database, `
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE evidence(value INTEGER NOT NULL);
+      INSERT INTO evidence VALUES (1);
+    `])).exitCode).toBe(0);
+
+    const receipt = await createScheduledBackupBundle({
+      sourceDatabasePath: database,
+      artifactPath,
+      receiptPath,
+      invocationId: "0123456789abcdef0123456789abcdef",
+      cgroupText: "0::/user.slice/user-1001.slice/user@1001.service/app.slice/precos-backup.service\n",
+      afterBackup: async () => {
+        const mutation = await run("sqlite3", [database, "INSERT INTO evidence VALUES (2);"]);
+        expect(mutation.exitCode, mutation.stderr).toBe(0);
+      },
+    });
+
+    expect(receipt.semanticTableCounts).toEqual({ evidence: 1 });
+    expect((await run("sqlite3", [artifactPath, "SELECT COUNT(*) FROM evidence;"])).stdout).toBe("1\n");
+    expect((await run("sqlite3", [database, "SELECT COUNT(*) FROM evidence;"])).stdout).toBe("2\n");
+    expect(validateScheduledBackupPair({
+      receiptPath,
+      backupDirectory: backups,
+      sourceDatabasePath: database,
+    }).valid).toBe(true);
+  });
+
+  it("refuses a copied artifact that diverges from the pinned source snapshot", async () => {
+    const directory = await temporaryDirectory("precos-backup-copy-race-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    const artifactPath = join(backups, "precos-20260711T041500-43.sqlite");
+    await mkdir(backups, { recursive: true });
+    expect((await run("sqlite3", [database, `
+      CREATE TABLE evidence(value INTEGER NOT NULL);
+      INSERT INTO evidence VALUES (1);
+    `])).exitCode).toBe(0);
+
+    await expect(createScheduledBackupBundle({
+      sourceDatabasePath: database,
+      artifactPath,
+      receiptPath: `${artifactPath}.receipt.json`,
+      invocationId: "0123456789abcdef0123456789abcdef",
+      cgroupText: "0::/user.slice/user-1001.slice/user@1001.service/app.slice/precos-backup.service\n",
+      afterBackup: async ({ temporaryArtifactPath }) => {
+        const mutation = await run("sqlite3", [
+          temporaryArtifactPath,
+          "INSERT INTO evidence VALUES (2);",
+        ]);
+        expect(mutation.exitCode, mutation.stderr).toBe(0);
+      },
+    })).rejects.toThrow(/does not match the coherently captured source snapshot/u);
+    expect(await readdir(backups)).toEqual([]);
+  });
+
+  it("publishes no artifact or receipt when coherent backup evidence fails", async () => {
+    const directory = await temporaryDirectory("precos-backup-invalid-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    await mkdir(backups, { recursive: true });
+    expect((await run("sqlite3", [database, `
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE parent(id INTEGER PRIMARY KEY);
+      CREATE TABLE child(parent_id INTEGER REFERENCES parent(id));
+      INSERT INTO child VALUES (99);
+    `])).exitCode).toBe(0);
+
+    const result = await run("bash", ["ops/backup.sh"], {
+      ...process.env,
+      DATABASE_PATH: database,
+      BACKUP_DIRECTORY: backups,
+      ATTESTATION_KEY_PATH: join(directory, "absent-private-key.pem"),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(await readdir(backups)).toEqual([]);
+  });
+
   it("deletes backups immediately after the exact 14-day retention boundary", async () => {
     const directory = await temporaryDirectory("precos-backup-retention-");
     const database = join(directory, "precos.sqlite");
@@ -236,6 +493,16 @@ describe("production schedules", () => {
     const retained = join(backups, "precos-retained.sqlite");
     await writeFile(expired, "expired");
     await writeFile(retained, "retained");
+    for (const suffix of ["-wal", "-shm", ".receipt.json"]) {
+      await writeFile(`${expired}${suffix}`, `expired${suffix}`);
+      await writeFile(`${retained}${suffix}`, `retained${suffix}`);
+    }
+    const orphanWal = join(backups, "precos-orphan.sqlite-wal");
+    const orphanShm = join(backups, "precos-orphan.sqlite-shm");
+    const orphanReceipt = join(backups, "precos-orphan.sqlite.receipt.json");
+    await writeFile(orphanWal, "orphan wal");
+    await writeFile(orphanShm, "orphan shm");
+    await writeFile(orphanReceipt, "orphan receipt");
     const now = Date.now();
     const day = 24 * 60 * 60 * 1_000;
     await utimes(expired, new Date(now - 15 * day), new Date(now - 14 * day - 60 * 60 * 1_000));
@@ -249,6 +516,13 @@ describe("production schedules", () => {
 
     expect(result.exitCode).toBe(0);
     await expect(stat(expired)).rejects.toMatchObject({ code: "ENOENT" });
+    for (const suffix of ["-wal", "-shm", ".receipt.json"]) {
+      await expect(stat(`${expired}${suffix}`)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(`${retained}${suffix}`, "utf8")).resolves.toBe(`retained${suffix}`);
+    }
+    for (const orphan of [orphanWal, orphanShm, orphanReceipt]) {
+      await expect(stat(orphan)).rejects.toMatchObject({ code: "ENOENT" });
+    }
     await expect(readFile(retained, "utf8")).resolves.toBe("retained");
   });
 

@@ -1,8 +1,8 @@
 [Unit]
-Description=Refresh product discovery every Sunday
+Description=Refresh product discovery after Sunday's daily collection window
 
 [Timer]
-OnCalendar=Sun *-*-* 02:00:00 America/Sao_Paulo
+OnCalendar=Sun *-*-* 18:00:00 America/Sao_Paulo
 RandomizedDelaySec=30m
 Persistent=true
 Unit=precos-weekly-discovery.service
