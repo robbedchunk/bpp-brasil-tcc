@@ -260,7 +260,6 @@ function candidateForRetailer(
   value: unknown,
   purpose: StrategyPurpose,
   allowedDomains: readonly string[],
-  previousStrategy: Strategy | null,
 ): Strategy | null {
   const parsed = StrategySchema.safeParse(value);
   if (!parsed.success || parsed.data.purpose !== purpose) return null;
@@ -270,21 +269,12 @@ function candidateForRetailer(
     && parsed.data.regionalContext !== undefined
     && parsed.data.regionalContext.catalogSellerId === undefined
   ) return null;
-  const previousRegional = previousStrategy?.purpose === "extraction"
-    && previousStrategy.tier === "api"
-    ? previousStrategy.regionalContext
-    : undefined;
-  if (previousRegional !== undefined) {
-    if (
-      parsed.data.purpose !== "extraction"
-      || parsed.data.tier !== "api"
-      || parsed.data.regionalContext === undefined
-      || parsed.data.regionalContext.kind !== previousRegional.kind
-      || parsed.data.regionalContext.regionId !== previousRegional.regionId
-      || parsed.data.regionalContext.salesChannel !== previousRegional.salesChannel
-      || parsed.data.regionalContext.catalogSellerId !== previousRegional.catalogSellerId
-    ) return null;
-  }
+  // A regional strategy's identity is evidence about that immutable version,
+  // not a permanent constraint on every successor. The trusted validator
+  // independently binds the candidate strategy (including a new regional
+  // context, when present) to its signed 30-sample receipt before activation.
+  // Keeping the old context here would prevent the healer from recovering via
+  // a different tier or from following a legitimate regional remapping.
   if (containsSensitiveMaterial(parsed.data)) return null;
   const allowed = new Set(allowedDomains.map((domain) => domain.toLowerCase()));
   if (parsed.data.allowedDomains.some((domain) => !allowed.has(domain.toLowerCase()))) {
@@ -715,7 +705,6 @@ export async function exploreRetailer(
         result.strategy,
         purpose,
         context.allowedDomains,
-        context.previousStrategy?.strategy ?? null,
       );
       if (strategy === null) {
         outcome = "invalid_candidate";

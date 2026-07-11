@@ -12,7 +12,11 @@ import type { RunSummary } from "../../src/pipeline/discover.js";
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 afterEach(() => databases.splice(0).forEach((database) => database.close()));
 
-function summary(retailerId: string, stage: "discover" | "collect"): RunSummary {
+function summary(
+  retailerId: string,
+  stage: "discover" | "collect",
+  dryRun = true,
+): RunSummary {
   return {
     id: `${stage}-${retailerId}`,
     retailerId,
@@ -24,7 +28,7 @@ function summary(retailerId: string, stage: "discover" | "collect"): RunSummary 
     status: "completed",
     startedAt: "2026-07-10T06:00:00.000Z",
     finishedAt: "2026-07-10T06:00:01.000Z",
-    dryRun: true,
+    dryRun,
   };
 }
 
@@ -79,6 +83,39 @@ describe("pipeline CLI", () => {
     expect(calls).toEqual([{ retailerId: "r1", options: { limit: 3_000, dryRun: true } }]);
     expect(JSON.parse(result.stdout)).toMatchObject([{ stage: "discover", retailerId: "r1" }]);
     expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+  });
+
+  it("monitors each persisted discovery run before the weekly command succeeds", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    database.prepare(
+      `INSERT INTO retailers (id, name, base_url, cep, domains_json)
+       VALUES ('r1', 'R1', 'https://r1.test', '01310-100', '["r1.test"]')`,
+    ).run();
+    const monitored: Array<{ runId: string; database: unknown }> = [];
+
+    const result = await invoke(["discover", "--retailer", "r1", "--json"], {
+      database,
+      env: { PROJECT_ROOT: "/tmp/discovery-monitor-project" },
+      alertSink: { send: async () => {} },
+      runDiscovery: async (retailerId) => summary(retailerId, "discover", false),
+      monitorRun: async (runId, dependencies) => {
+        monitored.push({ runId, database: dependencies.database });
+        return {
+          runId,
+          retailerId: "r1",
+          purpose: "discovery",
+          health: "healthy",
+          action: "none",
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+    expect(monitored).toEqual([{ runId: "discover-r1", database }]);
+    expect(JSON.parse(result.stdout)).toMatchObject([
+      { id: "discover-r1", stage: "discover", dryRun: false },
+    ]);
   });
 
   it("runs collection for all active retailers when retailer is omitted", async () => {

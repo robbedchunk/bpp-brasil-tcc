@@ -43,6 +43,7 @@ for (const asset of [
   resolve(root, "dist/scripts/schema.sql"),
   resolve(root, "dist/scripts/migrations/014_strategy_validation_authorization.sql"),
   resolve(root, "dist/scripts/migrations/015_runtime_safety_reconciliation.sql"),
+  resolve(root, "dist/scripts/migrations/016_discovery_tier_semantics.sql"),
 ]) {
   if (!existsSync(asset)) {
     throw new Error(`Trusted validator runtime asset is absent: ${asset}`);

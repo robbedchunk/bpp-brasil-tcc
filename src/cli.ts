@@ -29,7 +29,7 @@ import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/database.js";
 import {
   activeRetailerIds,
-  latestTerminalCollectionRunId,
+  latestTerminalStrategyRunId,
   readStatusReport,
   type StatusReport,
 } from "./db/repositories.js";
@@ -137,6 +137,7 @@ export interface CliDependencies {
   healPendingEvents?: (
     dependencies: HealPendingEventsDependencies,
   ) => Promise<HealingWorkerSummary>;
+  monitorRun?: typeof monitorRun;
   runDiscovery?: (
     retailerId: string,
     options: PipelineCliOptions,
@@ -168,13 +169,13 @@ function formatHumanStatus(report: StatusReport): string {
     retailer.name,
     retailer.active ? "yes" : "no",
     retailer.degraded ? "yes" : "no",
-    retailer.latestRun?.collectionDay ?? "-",
-    String(retailer.latestRun?.attempted ?? 0),
-    String(retailer.latestRun?.ok ?? 0),
-    String(retailer.latestRun?.failed ?? 0),
-    retailer.latestRun === null
+    retailer.yesterdayRun?.collectionDay ?? report.reportDay,
+    String(retailer.yesterdayRun?.attempted ?? 0),
+    String(retailer.yesterdayRun?.ok ?? 0),
+    String(retailer.yesterdayRun?.failed ?? 0),
+    retailer.yesterdayRun === null
       ? "-"
-      : `${(retailer.latestRun.successRate * 100).toFixed(1)}%`,
+      : `${(retailer.yesterdayRun.successRate * 100).toFixed(1)}%`,
   ]);
   const widths = headings.map((heading, index) =>
     Math.max(heading.length, ...rows.map((row) => row[index]?.length ?? 0)),
@@ -288,7 +289,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           const results: RunSummary[] = [];
           for (const retailerId of retailerIds) {
             if (name === "discover") {
-              results.push(
+              const summary =
                 dependencies.runDiscovery === undefined
                   ? await runDiscovery(retailerId, {
                       database,
@@ -296,8 +297,24 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
                       logDirectory: resolve(config().projectRoot, "var/log/runs"),
                       ...retailerOptions(retailerId),
                     })
-                  : await dependencies.runDiscovery(retailerId, pipelineOptions),
-              );
+                  : await dependencies.runDiscovery(retailerId, pipelineOptions);
+              results.push(summary);
+              if (!summary.dryRun) {
+                const applicationConfig = config();
+                const sink = dependencies.alertSink ?? createAlertSink({
+                  ...(applicationConfig.ntfyTopic === undefined
+                    ? {}
+                    : { ntfyTopic: applicationConfig.ntfyTopic }),
+                  fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+                  now,
+                });
+                await (dependencies.monitorRun ?? monitorRun)(summary.id, {
+                  database,
+                  alertSink: sink,
+                  env: dependencies.env ?? process.env,
+                  now,
+                });
+              }
             } else {
               results.push(
                 dependencies.runCollection === undefined
@@ -413,13 +430,20 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
 
   command
     .command("heal")
-    .description("Regenerate a drifted extraction strategy through trusted exploration")
+    .description("Regenerate a drifted discovery or extraction strategy through trusted exploration")
     .option("--retailer <id>", "registered retailer ID or pending-event filter")
-    .option("--run <id>", "terminal collection run that detected drift")
+    .option(
+      "--purpose <purpose>",
+      "strategy purpose for direct healing: discovery or extraction",
+      strategyPurpose,
+      "extraction",
+    )
+    .option("--run <id>", "terminal strategy run that detected drift")
     .option("--pending", "process queued healing events")
     .option("--json", "emit only JSON")
     .action(async (options: {
       retailer?: string;
+      purpose: StrategyPurpose;
       run?: string;
       pending?: boolean;
       json?: boolean;
@@ -463,13 +487,15 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           }
           const retailerId = options.retailer!;
           const onsetRunId = options.run
-            ?? latestTerminalCollectionRunId(database, retailerId);
+            ?? latestTerminalStrategyRunId(database, retailerId, options.purpose);
           if (onsetRunId === null) {
-            throw new Error(`No terminal collection run exists for ${retailerId}`);
+            throw new Error(
+              `No terminal ${options.purpose} run exists for ${retailerId}`,
+            );
           }
           return (dependencies.healRetailer ?? runHealRetailer)(
             retailerId,
-            "extraction",
+            options.purpose,
             {
               database,
               onsetRunId,
@@ -486,7 +512,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         ? `${JSON.stringify(outcome)}\n`
         : options.pending === true
           ? `heal pending: ${(outcome as HealingWorkerSummary).processed} event(s) processed\n`
-          : `heal ${options.retailer}/extraction: ${(outcome as HealingOutcome).status}; ${(outcome as HealingOutcome).attempts} attempt(s)\n`);
+          : `heal ${options.retailer}/${options.purpose}: ${(outcome as HealingOutcome).status}; ${(outcome as HealingOutcome).attempts} attempt(s)\n`);
     });
 
   command

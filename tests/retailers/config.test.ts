@@ -10,6 +10,7 @@ import { decideFoodAtHomeScope } from "../../src/catalog/scope.js";
 import { executeExtraction } from "../../src/collection/executor.js";
 import { openDatabase } from "../../src/db/database.js";
 import { upsertDiscoveredProduct } from "../../src/db/repositories.js";
+import { classifyRunHealth } from "../../src/healing/classify-failure.js";
 import {
   loadRetailerConfigs,
   registerRetailerConfigs as registerRetailerConfigsWithEvidence,
@@ -303,6 +304,47 @@ describe("live retailer configuration", () => {
     ]));
   });
 
+  it("classifies every retailer mutation as extraction drift", async () => {
+    const covered = new Set<string>();
+    for (const config of loadRetailerConfigs("retailers")) {
+      const mutations = config.fixtureProvenance.filter(({ synthetic }) => synthetic);
+      expect(mutations, `${config.id} must bind exactly one mutation fixture`).toHaveLength(1);
+      const mutation = mutations[0]!;
+      const body = await readFile(resolve(mutation.path), "utf8");
+      const result = await executeExtraction(config.extraction, config.fixtureRef, {
+        fetch: async () => new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": mutation.path.endsWith(".html")
+              ? "text/html; charset=utf-8"
+              : "application/json",
+          },
+        }),
+      });
+
+      expect(result.ok, `${config.id} mutation must break its current extraction strategy`)
+        .toBe(false);
+      expect(result.failure, `${config.id} mutation must retain categorized failure evidence`)
+        .toMatchObject({ responded: true });
+      const failure = result.failure!;
+      expect(classifyRunHealth(
+        { attempted: 30, ok: 0, failed: 30, status: "failed" },
+        Array.from({ length: 30 }, () => ({
+          category: failure.category,
+          responded: failure.responded,
+        })),
+      ), `${config.id} mutation must reach the automatic-healing drift path`).toBe("drift");
+      covered.add(config.id);
+    }
+    expect(covered).toEqual(new Set([
+      "carrefour",
+      "extra-mercado",
+      "pao-de-acucar",
+      "sonda",
+      "st-marche",
+    ]));
+  });
+
   it("binds St Marché price and availability to the covered public store", async () => {
     const config = loadRetailerConfigs("retailers")
       .find(({ id }) => id === "st-marche");
@@ -390,6 +432,17 @@ describe("live retailer configuration", () => {
       { id: "extra-mercado" },
       { id: "pao-de-acucar" },
       { id: "st-marche" },
+    ]);
+    expect(database.prepare(
+      `SELECT retailer_id AS retailerId, tier
+       FROM strategies
+       WHERE purpose = 'discovery' AND active = 1
+       ORDER BY retailer_id`,
+    ).all()).toEqual([
+      { retailerId: "carrefour", tier: 2 },
+      { retailerId: "extra-mercado", tier: 2 },
+      { retailerId: "pao-de-acucar", tier: 2 },
+      { retailerId: "st-marche", tier: 3 },
     ]);
     const provenance = database.prepare(
       `SELECT purpose, provenance FROM strategies

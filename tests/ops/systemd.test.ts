@@ -122,6 +122,7 @@ describe("production schedules", () => {
     expect(service).toContain("Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer");
     expect(service).toContain(`EnvironmentFile=-${projectRoot}/.env`);
     expect(service).toContain("OnSuccess=precos-classification.service");
+    expect(service).toContain("OnFailure=precos-classification.service");
     expect(service).toContain("RefuseManualStart=yes");
     const backupService = await readFile(join(destination, "precos-backup.service"), "utf8");
     expect(backupService).toContain("RefuseManualStart=yes");
@@ -158,6 +159,11 @@ describe("production schedules", () => {
       "After=network-online.target precos-daily.service precos-weekly-discovery.service",
     );
     expect(weeklyIndexService).toContain("UMask=0077");
+    const weeklyIndexRunner = await readFile(
+      join(projectRoot, "ops", "run-weekly-index.sh"),
+      "utf8",
+    );
+    expect(weeklyIndexRunner).toContain("--classification-version 1");
     const weeklyDiscoveryService = await readFile(
       join(destination, "precos-weekly-discovery.service"),
       "utf8",

@@ -429,7 +429,12 @@ def save_index_comparison(
     monthly: pd.DataFrame,
 ) -> tuple[bool, bool]:
     fig, (ax_index, ax_monthly) = plt.subplots(2, 1, figsize=(16, 12), dpi=100, gridspec_kw={"height_ratios": [2, 1]})
-    no_index = aggregate.empty or not (aggregate["index_level"] != "").any()
+    movement = (
+        (aggregate["daily_relative"] != "") & (aggregate["index_level"] != "")
+        if not aggregate.empty
+        else pd.Series(dtype="bool")
+    )
+    no_index = aggregate.empty or not movement.any()
     if no_index:
         ax_index.text(0.5, 0.55, "Índice ainda indisponível", ha="center", va="center", transform=ax_index.transAxes, fontsize=17)
         ax_index.text(0.5, 0.46, "Não há pares de preços classificados suficientes", ha="center", va="center", transform=ax_index.transAxes, color=COLORS["gray"])

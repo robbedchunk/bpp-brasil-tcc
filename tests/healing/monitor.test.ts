@@ -121,6 +121,10 @@ function insertRun(
 function insertDiscoveryRun(
   database: ReturnType<typeof openDatabase>,
   id: string,
+  failure: { category: string; responded: boolean } = {
+    category: "missing-fields",
+    responded: true,
+  },
 ): void {
   database.prepare(`
     INSERT INTO runs
@@ -135,9 +139,9 @@ function insertDiscoveryRun(
     INSERT INTO run_failures
       (id, run_id, retailer_id, category, responded, message, strategy_id,
        strategy_version, occurred_at)
-    VALUES (?, ?, 'retailer-1', 'missing-fields', 1, 'discovery drift',
+    VALUES (?, ?, 'retailer-1', ?, ?, 'discovery drift',
             'retailer-1-discovery-v1', 1, '2026-07-10T00:00:30.000Z')
-  `).run(`${id}-failure`, id);
+  `).run(`${id}-failure`, id, failure.category, failure.responded ? 1 : 0);
   database.prepare(`
     UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
                     finished_at = '2026-07-10T00:01:00.000Z'
@@ -262,6 +266,106 @@ describe("drift monitor state machine", () => {
       previous_strategy_id: "retailer-1-extraction-v1",
       status: "open",
     });
+  });
+
+  it("queues and heals discovery drift with discovery-purpose evidence", async () => {
+    const database = seed();
+    seedStrategy(database, "discovery", discoveryStrategy);
+    insertDiscoveryRun(database, "discovery-drift");
+
+    const decision = await monitorRun("discovery-drift", {
+      database,
+      now: () => new Date("2026-07-10T00:02:00.000Z"),
+    });
+
+    expect(decision).toMatchObject({
+      runId: "discovery-drift",
+      retailerId: "retailer-1",
+      purpose: "discovery",
+      health: "drift",
+      action: "queued",
+    });
+    expect(database.prepare(`
+      SELECT purpose, onset_run_id, previous_strategy_id, status
+      FROM healing_events
+    `).get()).toEqual({
+      purpose: "discovery",
+      onset_run_id: "discovery-drift",
+      previous_strategy_id: "retailer-1-discovery-v1",
+      status: "open",
+    });
+
+    const exploredPurposes: string[] = [];
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async (_retailerId, purpose) => {
+        exploredPurposes.push(purpose);
+        return {
+          explorationRunId: "discovery-provider-unavailable",
+          activated: false,
+          attempts: 1,
+          externalScore: null,
+          outcome: "provider_unavailable",
+          costUsd: 0,
+        };
+      },
+    });
+
+    expect(exploredPurposes).toEqual(["discovery"]);
+    expect(summary).toMatchObject({ processed: 1, providerUnavailable: 1 });
+    expect(database.prepare(
+      "SELECT purpose, status FROM healing_events",
+    ).get()).toEqual({ purpose: "discovery", status: "provider_unavailable" });
+    expect(database.prepare(
+      "SELECT id FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1 ORDER BY purpose",
+    ).all()).toEqual([
+      { id: "retailer-1-discovery-v1" },
+      { id: "retailer-1-extraction-v1" },
+    ]);
+  });
+
+  it("alerts on blocked discovery without opening a healing event", async () => {
+    const database = seed();
+    seedStrategy(database, "discovery", discoveryStrategy);
+    insertDiscoveryRun(database, "blocked-discovery", {
+      category: "http-403",
+      responded: true,
+    });
+    const alerts: AlertEvent[] = [];
+
+    const decision = await monitorRun("blocked-discovery", {
+      database,
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(decision).toMatchObject({
+      purpose: "discovery",
+      health: "blocking",
+      action: "alerted",
+    });
+    expect(alerts).toEqual([expect.objectContaining({
+      title: "Retailer discovery is blocked",
+      details: expect.objectContaining({
+        purpose: "discovery",
+        stage: "discover",
+      }),
+    })]);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM healing_events").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("rejects healing when the requested purpose does not match the onset run", async () => {
+    const database = seed();
+    seedStrategy(database, "discovery", discoveryStrategy);
+    insertDiscoveryRun(database, "discovery-purpose-mismatch");
+
+    await expect(healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "discovery-purpose-mismatch",
+    })).rejects.toThrow(/purpose does not match/iu);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM healing_events").get())
+      .toEqual({ count: 0 });
   });
 
   it("anchors a queued event to the onset run strategy, not a newer active strategy", async () => {
@@ -1575,7 +1679,7 @@ describe("drift monitor state machine", () => {
     (database as any).prepare = (source: string) => {
       if (
         failOnsetRead
-        && source.includes("FROM runs WHERE id = ? AND stage = 'collect'")
+        && source.includes("WHERE runs.id = ?")
       ) {
         failOnsetRead = false;
         throw new Error("fixture transient onset evidence read failure");
@@ -1678,7 +1782,7 @@ describe("drift monitor state machine", () => {
     (database as any).prepare = (source: string) => {
       if (
         failOnsetRead
-        && source.includes("FROM runs WHERE id = ? AND stage = 'collect'")
+        && source.includes("WHERE runs.id = ?")
       ) {
         failOnsetRead = false;
         throw new Error("fixture generic worker failure");
@@ -1741,7 +1845,7 @@ describe("drift monitor state machine", () => {
     (database as any).prepare = (source: string) => {
       if (
         failOnsetRead
-        && source.includes("FROM runs WHERE id = ? AND stage = 'collect'")
+        && source.includes("WHERE runs.id = ?")
       ) {
         failOnsetRead = false;
         throw new Error("fixture generic worker failure without linked recovery");

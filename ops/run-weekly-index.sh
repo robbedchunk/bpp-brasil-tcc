@@ -21,6 +21,7 @@ trap 'rm -f "$INDEX_SUMMARY" "$ANALYSIS_SUMMARY"' EXIT
 
 node "$PROJECT_ROOT/dist/cli.js" index \
   --export \
+  --classification-version 1 \
   --output "$EXPORT_ROOT" \
   --json > "$INDEX_SUMMARY"
 MPLCONFIGDIR="$PROJECT_ROOT/var/matplotlib" \

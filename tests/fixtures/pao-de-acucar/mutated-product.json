@@ -7,7 +7,7 @@
     "id": "synthetic-41329",
     "name": "Arroz CAMIL Pacote 5 kg",
     "brand": "CAMIL",
-    "sellInfos": [
+    "syntheticOfferLayout": [
       { "storeId": 61, "currentPrice": "R$ 23,99", "sellPrice": null, "stock": false }
     ]
   }

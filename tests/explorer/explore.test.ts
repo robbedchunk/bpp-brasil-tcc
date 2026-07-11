@@ -761,7 +761,7 @@ describe("trusted strategy exploration", () => {
     expect(validated).toBe(false);
   });
 
-  it("rejects a successor that drops the active regional identity before validation", async () => {
+  it("allows a trusted successor to move from a regional API to another tier", async () => {
     const previousRegional = {
       ...extractionStrategy,
       regionalContext: {
@@ -772,35 +772,62 @@ describe("trusted strategy exploration", () => {
       },
     } satisfies ExtractionStrategy;
     const database = seedExploration(previousRegional);
-    let validated = false;
-    const plainCandidate = {
-      ...extractionStrategy,
-      fields: {
-        title: "$[0].productName",
-        brand: "$[0].brand",
-        price: "$[0].items[0].sellers[0].commertialOffer.Price",
-        promoPrice: "$[0].items[0].sellers[0].commertialOffer.PromotionPrice",
-        unit: "$[0].items[0].measurementUnit",
-        availability: "$[0].items[0].sellers[0].commertialOffer.IsAvailable",
-      },
-    };
 
     const outcome = await exploreRetailer("retailer-1", "extraction", {
       database,
-      generator: new FixtureGenerator([generated(plainCandidate)]),
-      validateCandidate: async () => {
-        validated = true;
-        return { attempted: 30, valid: 30, score: 1, activatable: true };
-      },
+      generator: new FixtureGenerator([generated(candidate)]),
+      validateCandidate: scoreSequence(1),
       maxAttempts: 1,
       now: () => new Date("2026-07-10T12:00:00.000Z"),
     });
 
-    expect(outcome).toMatchObject({ activated: false, outcome: "invalid_candidate" });
-    expect(validated).toBe(false);
+    expect(outcome).toMatchObject({ activated: true, outcome: "activated" });
     expect(database.prepare(
-      "SELECT id FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1",
-    ).all()).toEqual([{ id: "retailer-1-extraction-v1" }]);
+      `SELECT json_extract(strategy_json, '$.tier') AS tier
+       FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1`,
+    ).get()).toEqual({ tier: "dom" });
+  });
+
+  it("allows a trusted regional successor to bind a newly validated context", async () => {
+    const previousRegional = {
+      ...extractionStrategy,
+      regionalContext: {
+        kind: "vtex-segment" as const,
+        regionId: "v2.OLD-REGION",
+        salesChannel: "2",
+        catalogSellerId: "old-seller",
+      },
+    } satisfies ExtractionStrategy;
+    const nextRegional = {
+      ...extractionStrategy,
+      regionalContext: {
+        kind: "vtex-segment" as const,
+        regionId: "v2.NEW-REGION",
+        salesChannel: "3",
+        catalogSellerId: "new-seller",
+      },
+    } satisfies ExtractionStrategy;
+    const database = seedExploration(previousRegional);
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: new FixtureGenerator([generated(nextRegional)]),
+      validateCandidate: scoreSequence(1),
+      maxAttempts: 1,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+    });
+
+    expect(outcome).toMatchObject({ activated: true, outcome: "activated" });
+    const active = database.prepare(
+      "SELECT strategy_json AS strategyJson FROM strategies WHERE retailer_id = 'retailer-1' AND active = 1",
+    ).get() as { strategyJson: string };
+    expect(JSON.parse(active.strategyJson)).toMatchObject({
+      regionalContext: {
+        regionId: "v2.NEW-REGION",
+        salesChannel: "3",
+        catalogSellerId: "new-seller",
+      },
+    });
   });
 
   it("rejects schema-valid candidate credentials before validation or persistence", async () => {

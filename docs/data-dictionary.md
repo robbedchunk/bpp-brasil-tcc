@@ -70,10 +70,13 @@ manifest and the exact schemas below. In the column lists, `text`, `id`, and
 ISO 8601; `count` is a non-negative integer; `ratio` is dimensionless; `BRL
 centavos` is an integer; `percent` is percentage points; and `USD` is dollars.
 `nullable` is stated explicitly; every other column is required and non-null.
+The manifest records `classificationPolicy=single_version` and the positive
+`classificationVersion` used for the entire snapshot; runtime environment
+variables cannot silently change that automated publication frame.
 
 | File | Exact ordered columns, unit, and null meaning |
 |---|---|
-| `product_relatives.csv` | `date` (date); `previous_date` (date); `retailer_id`, `product_id`, `ipca_item_id`, `ipca_code`, `classification_id` (id); `classification_version` (count); `numerator_cents`, `denominator_cents` (BRL centavos); `numerator_source_date`, `denominator_source_date` (date); `numerator_carried`, `denominator_carried` (boolean); `relative` (ratio). No nullable columns. |
+| `product_relatives.csv` | `date` (date); `previous_date` (date); `retailer_id`, `product_id`, `ipca_item_id`, `ipca_code`, `classification_id` (id); `classification_version` (count); `numerator_cents`, `denominator_cents` (BRL centavos); `numerator_source_date`, `denominator_source_date` (date); `numerator_carried`, `denominator_carried` (boolean); `numerator_carry_reason`, `denominator_carry_reason` (`missing_observation` or `unavailable`, nullable when that side is not carried); `relative` (ratio). |
 | `retailer_subitem_daily.csv` | `date`, `previous_date` (date); `retailer_id`, `ipca_item_id`, `ipca_code` (id); `retailer_name` (text); `relative` (Jevons ratio); `product_pair_count` (count). No nullable columns. |
 | `subitem_daily.csv` | `date`, `previous_date` (date); `ipca_item_id`, `ipca_code` (id); `ipca_name` (text); `weight_pct_total_ipca` (percent); `relative` (equal-retailer ratio); `retailer_count`, `product_pair_count` (count); `retailer_min_relative`, `retailer_max_relative` (ratio). No nullable columns. |
 | `aggregate_daily.csv` | `date`, `previous_date` (date); `chain_segment` (count); `daily_relative`, `index_level` (ratio/index points); `covered_weight_pct_total_ipca`, `total_food_at_home_weight_pct_total_ipca` (percent); `coverage_fraction` (ratio); `covered_subitem_count`, `retailer_count`, `product_pair_count` (count); `descriptive_low_relative`, `descriptive_high_relative` (ratio); `method_version` (text). No nullable columns. |

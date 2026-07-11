@@ -70,6 +70,7 @@ describe("precos status", () => {
     });
 
     expect(JSON.parse(result.stdout)).toMatchObject({
+      reportDay: "2026-07-09",
       retailers: [],
       staleHeartbeat: true,
     });
@@ -77,7 +78,7 @@ describe("precos status", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("reports each retailer's latest collection run and fresh heartbeat", async () => {
+  it("reports yesterday separately from the latest collection run and fresh heartbeat", async () => {
     const databasePath = await temporaryDatabasePath();
     const database = openDatabase(databasePath);
     database
@@ -86,7 +87,9 @@ describe("precos status", () => {
            (id, name, base_url, cep, domains_json, active, degraded)
          VALUES
            ('retailer-1', 'Mercado Teste', 'https://mercado.example',
-            '01310-100', '["mercado.example"]', 1, 0)`,
+            '01310-100', '["mercado.example"]', 1, 0),
+           ('retailer-2', 'Zeta Teste', 'https://zeta.example',
+            '01310-100', '["zeta.example"]', 1, 0)`,
       )
       .run();
     database
@@ -98,6 +101,8 @@ describe("precos status", () => {
            ('run-1', 'retailer-1', 'collect', '2026-07-09', 'completed', 10, 9, 1,
             '2026-07-09T06:00:00.000Z', '2026-07-09T06:05:00.000Z'),
            ('run-2', 'retailer-1', 'collect', '2026-07-10', 'completed', 20, 18, 2,
+            '2026-07-10T06:00:00.000Z', '2026-07-10T06:05:00.000Z'),
+           ('run-3', 'retailer-2', 'collect', '2026-07-10', 'completed', 5, 5, 0,
             '2026-07-10T06:00:00.000Z', '2026-07-10T06:05:00.000Z')`,
       )
       .run();
@@ -119,6 +124,7 @@ describe("precos status", () => {
 
     expect(JSON.parse(result.stdout)).toEqual({
       generatedAt: "2026-07-10T12:00:00.000Z",
+      reportDay: "2026-07-09",
       staleHeartbeat: false,
       retailers: [
         {
@@ -133,6 +139,27 @@ describe("precos status", () => {
             failed: 2,
             successRate: 0.9,
           },
+          yesterdayRun: {
+            collectionDay: "2026-07-09",
+            attempted: 10,
+            ok: 9,
+            failed: 1,
+            successRate: 0.9,
+          },
+        },
+        {
+          id: "retailer-2",
+          name: "Zeta Teste",
+          active: true,
+          degraded: false,
+          latestRun: {
+            collectionDay: "2026-07-10",
+            attempted: 5,
+            ok: 5,
+            failed: 0,
+            successRate: 1,
+          },
+          yesterdayRun: null,
         },
       ],
     });

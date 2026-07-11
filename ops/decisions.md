@@ -83,6 +83,8 @@
   excluded from Git.
 - Collection heartbeats become stale after 24 hours. `precos status` reads only
   SQLite and therefore cannot trigger collection, alerts, or any network call.
+  Its operator table reports the previous São Paulo calendar day explicitly;
+  JSON also retains the latest run separately so a missed day is never hidden.
 - Setup installs a Playwright Chromium browser only when absent and invokes the
   operating-system dependency installer only when `ldd` reports a missing
   shared library.
@@ -268,7 +270,8 @@
   `navigator.webdriver`. No proxy, challenge bypass, or broad fingerprint
   emulation was added.
 - Incremental synchronous classification is a separate oneshot started by the
-  daily service's `OnSuccess`. It runs batches of 50 at append-only version 1,
+  daily service's `OnSuccess` or `OnFailure`, so a partial terminal collection
+  still classifies products committed by healthy retailers. It runs batches of 50 at append-only version 1,
   adds no seventh timer, remains exit-zero/pending without a key, and cannot roll
   back the heartbeat already committed by daily collection.
 

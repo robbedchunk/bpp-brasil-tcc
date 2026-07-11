@@ -24,6 +24,10 @@ export function signedCandidateReport(
   score: number,
 ): CandidateValidationReport {
   const valid = Math.round(score * 30);
+  const regionalSellerId = strategy.purpose === "extraction"
+    && strategy.tier === "api"
+    ? strategy.regionalContext?.catalogSellerId ?? null
+    : null;
   const samples = refs.slice(0, 30).map((ref, index) => {
     const request = { method: "GET" as const, url: ref.canonicalUrl, bodySha256: null };
     const outcome = index < valid
@@ -68,8 +72,8 @@ export function signedCandidateReport(
       outcomeSha256: evidenceValueSha256(outcome),
       validatedFacts: {
         returnedProductId: context.purpose === "extraction" ? ref.externalId : null,
-        catalogSellerId: null,
-        catalogSellerMatchCount: null,
+        catalogSellerId: regionalSellerId,
+        catalogSellerMatchCount: regionalSellerId === null ? null : 1,
       },
     };
   });

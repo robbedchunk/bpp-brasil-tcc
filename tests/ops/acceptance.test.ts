@@ -290,8 +290,9 @@ function seedCollection(
     retailerFailures?: Array<Record<string, unknown>>;
   } = {},
   createHeartbeat = true,
+  idSuffix = "",
 ): void {
-  const runId = `run-${retailerId}-${day}`;
+  const runId = `run-${retailerId}-${day}${idSuffix}`;
   const scheduledAt = `${day}T${scheduledTime}`;
   const completedAt = new Date(Date.parse(scheduledAt) + 10 * 60_000).toISOString();
   const observedAt = new Date(Date.parse(scheduledAt) + 5 * 60_000).toISOString();
@@ -1161,7 +1162,7 @@ describe("acceptance status and evidence", () => {
     ]);
   });
 
-  it("treats a newer manual heartbeat as a panel contradiction and rejects stale scheduled proof", () => {
+  it("keeps a manual-only panel pending and rejects stale scheduled proof", () => {
     const manual = fixture();
     for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
       seedRetailer(manual, retailer, 1);
@@ -1171,9 +1172,9 @@ describe("acceptance status and evidence", () => {
       credentialConfigured: false,
       siteValidated: true,
     }, new Date("2026-07-10T12:00:00.000Z"));
-    expect(m3Criterion(manualResult, "m3-live-panel").status).toBe("fail");
+    expect(m3Criterion(manualResult, "m3-live-panel").status).toBe("pending");
     expect(m3Criterion(manualResult, "m3-live-panel").reasonCodes)
-      .toContain("EVIDENCE_CONTRADICTION");
+      .toContain("SCHEDULED_RUN_NOT_YET_DUE");
 
     const stale = fixture();
     for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
@@ -1187,6 +1188,58 @@ describe("acceptance status and evidence", () => {
     expect(m3Criterion(staleResult, "m3-live-panel").status).toBe("fail");
     expect(m3Criterion(staleResult, "m3-live-panel").reasonCodes)
       .toContain("MISSED_SCHEDULED_RUN");
+  });
+
+  it("keeps the latest qualifying scheduled panel when a newer manual heartbeat exists", () => {
+    const database = fixture();
+    const scheduledRunIds: string[] = [];
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(database, retailer, 1);
+      seedCollection(
+        database,
+        retailer,
+        "2026-07-10",
+        1,
+        1,
+        "06:00:00.000Z",
+        "systemd-timer",
+        {},
+        false,
+      );
+      scheduledRunIds.push(`run-${retailer}-2026-07-10`);
+    }
+    database.prepare(`
+      INSERT INTO heartbeats(id, pipeline, scheduled_for, completed_at, status, details_json)
+      VALUES ('scheduled-panel', 'collect', '2026-07-10T06:00:00.000Z',
+        '2026-07-10T06:10:00.000Z', 'completed', ?)
+    `).run(JSON.stringify({
+      ...scheduledProvenance("2026-07-10T06:00:00.000Z"),
+      runIds: scheduledRunIds,
+      monitorFailedRunIds: [],
+      retailerFailures: [],
+    }));
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedCollection(
+        database,
+        retailer,
+        "2026-07-10",
+        0,
+        0,
+        "10:00:00.000Z",
+        "manual",
+        {},
+        true,
+        "-manual",
+      );
+    }
+
+    const result = evaluateM3(database, {
+      credentialConfigured: false,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    expect(m3Criterion(result, "m3-live-panel").status).toBe("pass");
+    expect(result.evidence.find((item) => item.id === "db-m3-live-panel")?.facts)
+      .toMatchObject({ latestHeartbeatId: "scheduled-panel", contradictoryHeartbeats: 0 });
   });
 
   it("requires a healthy substantive scheduled run for every panel retailer", () => {
@@ -1730,7 +1783,7 @@ describe("acceptance status and evidence", () => {
     }
   });
 
-  it("rejects a stale rendered daily service without the classification OnSuccess link", async () => {
+  it("rejects a stale rendered daily service without either classification outcome link", async () => {
     const installed = await mkdtemp(join(tmpdir(), "acceptance-rendered-units-"));
     try {
       const root = resolve(".");
@@ -1743,6 +1796,8 @@ describe("acceptance status and evidence", () => {
       const dailyPath = join(installed, "precos-daily.service");
       const daily = await readFile(dailyPath, "utf8");
       await writeFile(dailyPath, daily.replace("OnSuccess=precos-classification.service\n", ""));
+      expect(validateTimerDefinitions(root, installed).valid).toBe(false);
+      await writeFile(dailyPath, daily.replace("OnFailure=precos-classification.service\n", ""));
       expect(validateTimerDefinitions(root, installed).valid).toBe(false);
     } finally {
       await rm(installed, { recursive: true, force: true });
@@ -1764,6 +1819,26 @@ describe("acceptance status and evidence", () => {
       dailyRunObserved: true,
     });
     expect(classificationAutomationIsCurrent({ ...base, dailyActive: false }).current).toBe(false);
+  });
+
+  it("requires post-collection classification after a partial daily service result", () => {
+    const currentDailyStart = new Date("2026-07-11T06:00:00.000Z");
+    const base = {
+      dailyActive: false,
+      dailyResult: "exit-code",
+      dailyStartedAt: "2026-07-11T06:02:00.000Z",
+      classificationActive: false,
+      classificationResult: "success",
+      currentDailyStart,
+    } as const;
+    expect(classificationAutomationIsCurrent({
+      ...base,
+      classificationStartedAt: "2026-07-11T06:03:00.000Z",
+    })).toEqual({ current: true, dailyRunObserved: true });
+    expect(classificationAutomationIsCurrent({
+      ...base,
+      classificationStartedAt: "2026-07-10T06:03:00.000Z",
+    })).toEqual({ current: false, dailyRunObserved: true });
   });
 
   it("fails contradictory heartbeat JSON before executing json_each", () => {

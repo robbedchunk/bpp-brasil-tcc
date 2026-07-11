@@ -75,6 +75,10 @@ const RUNTIME_SAFETY_RECONCILIATION_SQL = readFileSync(
   new URL("./migrations/015_runtime_safety_reconciliation.sql", import.meta.url),
   "utf8",
 );
+const DISCOVERY_TIER_SEMANTICS_SQL = readFileSync(
+  new URL("./migrations/016_discovery_tier_semantics.sql", import.meta.url),
+  "utf8",
+);
 
 export interface StrategyValidationEvidenceInsert {
   strategy_id: string;
@@ -344,6 +348,11 @@ const MIGRATIONS = [
     version: 15,
     name: "runtime_safety_reconciliation",
     sql: RUNTIME_SAFETY_RECONCILIATION_SQL,
+  },
+  {
+    version: 16,
+    name: "discovery_tier_semantics",
+    sql: DISCOVERY_TIER_SEMANTICS_SQL,
   },
 ] as const;
 

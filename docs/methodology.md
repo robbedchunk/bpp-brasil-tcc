@@ -95,7 +95,10 @@ coverage counts and is excluded from index aggregation. A stratified review
 sample supports a separate thesis precision check. Classification eligibility
 starts only after a successful observation supplies a descriptive title; a
 numeric external ID, URL slug, or pending-title placeholder is never sent to the
-model.
+model. Every published research snapshot pins one declared classification
+version for all products; the automated publication frame is version 1 until a
+reviewed implementation change advances it. A partial newer reclassification
+therefore cannot create a hybrid historical series.
 
 ## Experimental index
 
@@ -104,8 +107,10 @@ The fixed method version is `tcc-food-at-home-v1`:
 1. use a positive promotion price when present, otherwise regular integer cents;
 2. form same-product daily relatives without future look-ahead;
 3. exclude collection runs whose start falls in a degraded interval;
-4. carry a missing product price for at most seven calendar days, and only when
-   the retailer has a healthy target-day run;
+4. carry a missing product price, including an explicit unavailable result, for
+   at most seven calendar days and only when the retailer has a healthy
+   target-day run; exported relatives distinguish unavailable from an absent
+   observation as the carry reason;
 5. take an unweighted geometric mean within retailer/sub-item (Jevons);
 6. take an equal arithmetic mean across contributing retailers;
 7. renormalize the exact POF weights over covered sub-items;

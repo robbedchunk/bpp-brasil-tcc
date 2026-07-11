@@ -403,6 +403,62 @@ describe("database foundation", () => {
     expect(() => openMemoryDatabase()).not.toThrow();
   });
 
+  it("repairs legacy discovery tier numbers and their healing transition evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-tier-migration-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "precos.sqlite");
+    const legacy = openDatabase(databasePath);
+    legacy.exec(`
+      INSERT INTO retailers (id, name, base_url, cep, domains_json)
+      VALUES ('tier-shop', 'Tier shop', 'https://tier.test', '01310-100', '["tier.test"]');
+      INSERT INTO strategies
+        (id, retailer_id, purpose, tier, version, strategy_json, provenance)
+      VALUES
+        ('tier-api', 'tier-shop', 'discovery', 2, 1,
+         '{"purpose":"discovery","tier":"api"}', 'fixture'),
+        ('tier-dom', 'tier-shop', 'discovery', 3, 2,
+         '{"purpose":"discovery","tier":"dom-crawl"}', 'fixture');
+      INSERT INTO runs
+        (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+         status, attempted, ok, failed, started_at, finished_at)
+      VALUES
+        ('tier-run', 'tier-shop', 'discover', '2026-07-10', 'tier-api', 1,
+         'failed', 1, 0, 1, '2026-07-10T03:00:00.000Z',
+         '2026-07-10T03:01:00.000Z');
+      INSERT INTO healing_events
+        (id, retailer_id, purpose, onset_run_id, previous_strategy_id,
+         successor_strategy_id, category, status, attempts, tier_from, tier_to,
+         drift_started_at, detected_at, recovered_at)
+      VALUES
+        ('tier-healing', 'tier-shop', 'discovery', 'tier-run', 'tier-api',
+         'tier-dom', 'drift', 'recovered', 1, 2, 3,
+         '2026-07-10T03:00:00.000Z', '2026-07-10T03:02:00.000Z',
+         '2026-07-10T03:03:00.000Z');
+
+      DROP TRIGGER strategies_restrict_update;
+      DROP TRIGGER healing_events_restrict_update;
+      UPDATE strategies SET tier = CASE id WHEN 'tier-api' THEN 1 ELSE 2 END;
+      UPDATE healing_events SET tier_from = 1, tier_to = 2 WHERE id = 'tier-healing';
+      DELETE FROM schema_migrations WHERE version = 16;
+    `);
+    legacy.close();
+
+    const migrated = openDatabase(databasePath);
+    databases.push(migrated);
+    expect(migrated.prepare(
+      "SELECT id, tier FROM strategies WHERE retailer_id = 'tier-shop' ORDER BY id",
+    ).all()).toEqual([
+      { id: "tier-api", tier: 2 },
+      { id: "tier-dom", tier: 3 },
+    ]);
+    expect(migrated.prepare(
+      "SELECT tier_from AS tierFrom, tier_to AS tierTo FROM healing_events WHERE id = 'tier-healing'",
+    ).get()).toEqual({ tierFrom: 2, tierTo: 3 });
+    expect(() => migrated.prepare(
+      "UPDATE strategies SET tier = 1 WHERE id = 'tier-api'",
+    ).run()).toThrow(/immutable/iu);
+  });
+
   it("serializes concurrent first-time migrations", async () => {
     const directory = await mkdtemp(join(tmpdir(), "precos-migration-"));
     temporaryDirectories.push(directory);

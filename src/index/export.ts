@@ -22,6 +22,7 @@ import {
 import { OfficialSidraClient, SIDRA_ENDPOINT } from "./sidra.js";
 import {
   INDEX_METHOD_VERSION,
+  PUBLISHED_CLASSIFICATION_VERSION,
   TOTAL_FOOD_AT_HOME_WEIGHT,
   type ExportManifest,
   type ExportResearchOptions,
@@ -382,8 +383,8 @@ function indexCsv(
   return [
     {
       name: "product_relatives.csv",
-      columns: ["date", "previous_date", "retailer_id", "product_id", "ipca_item_id", "ipca_code", "classification_id", "classification_version", "numerator_cents", "denominator_cents", "numerator_source_date", "denominator_source_date", "numerator_carried", "denominator_carried", "relative"],
-      rows: series.productRelatives.map((point) => [point.day, point.previousDay, point.retailerId, point.productId, point.ipcaItemId, point.ipcaCode, point.classificationId, point.classificationVersion, point.numeratorCents, point.denominatorCents, point.numeratorSourceDay, point.denominatorSourceDay, point.numeratorCarried, point.denominatorCarried, point.relative]),
+      columns: ["date", "previous_date", "retailer_id", "product_id", "ipca_item_id", "ipca_code", "classification_id", "classification_version", "numerator_cents", "denominator_cents", "numerator_source_date", "denominator_source_date", "numerator_carried", "denominator_carried", "numerator_carry_reason", "denominator_carry_reason", "relative"],
+      rows: series.productRelatives.map((point) => [point.day, point.previousDay, point.retailerId, point.productId, point.ipcaItemId, point.ipcaCode, point.classificationId, point.classificationVersion, point.numeratorCents, point.denominatorCents, point.numeratorSourceDay, point.denominatorSourceDay, point.numeratorCarried, point.denominatorCarried, point.numeratorCarryReason, point.denominatorCarryReason, point.relative]),
     },
     {
       name: "retailer_subitem_daily.csv",
@@ -439,14 +440,14 @@ export async function exportResearchData(
   await assertSafeOutputPath(outputRoot);
   await assertSafeOutputPath(snapshotsRoot);
   const currentMonth = monthFromDay(saoPauloDay(now));
+  const classificationVersion = options.classificationVersion
+    ?? PUBLISHED_CLASSIFICATION_VERSION;
   const databaseSnapshot = database.transaction(() => {
     const range = observationRange(database);
     const series = buildDailyIndex(database, {
       cutoffAt: now.toISOString(),
       ...(options.throughDay === undefined ? {} : { throughDay: options.throughDay }),
-      ...(options.classificationVersion === undefined
-        ? {}
-        : { classificationVersion: options.classificationVersion }),
+      classificationVersion,
     });
     return {
       range,
@@ -550,6 +551,8 @@ export async function exportResearchData(
         database: databaseSnapshot.database,
       },
       parameters: {
+        classificationPolicy: "single_version",
+        classificationVersion,
         promoPreferred: true,
         carryForwardDays: 7,
         withinRetailer: "jevons",

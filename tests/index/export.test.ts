@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { parse } from "csv-parse/sync";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -55,6 +56,10 @@ describe("research snapshot export", () => {
     });
 
     expect(manifest.status).toBe("no_index_data");
+    expect(manifest.parameters).toMatchObject({
+      classificationPolicy: "single_version",
+      classificationVersion: 1,
+    });
     expect(manifest.files).toHaveLength(12);
     expect(manifest.snapshotDirectory).not.toMatch(/^\//u);
     const latest = JSON.parse(await readFile(join(outputRoot, "latest.json"), "utf8"));
@@ -75,6 +80,64 @@ describe("research snapshot export", () => {
     const serialized = JSON.stringify(manifest);
     expect(serialized).not.toContain(process.cwd());
     expect(serialized).not.toMatch(/raw-html|canonical_url|response_path|details_json/u);
+  });
+
+  it("pins one declared classification version across a partial newer rollout", async () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedAuthoritativeWeights(database);
+    seedRetailer(database, "r1");
+    for (const productId of ["p1", "p2"]) {
+      seedProduct(database, {
+        id: productId,
+        retailerId: "r1",
+        itemId: "ipca-sp-1101002",
+        version: 1,
+      });
+    }
+    database.prepare(`
+      INSERT INTO classifications
+        (id, product_id, ipca_item_id, version, decision, confidence, method,
+         created_at)
+      VALUES
+        ('p1-classification-v2', 'p1', NULL, 2, 'unclassified', 0.4, 'rule',
+         '2026-06-03T00:00:00.000Z')
+    `).run();
+    for (const day of ["2026-06-01", "2026-06-02"]) {
+      seedRun(database, { id: `run-${day}`, retailerId: "r1", day, attempted: 2 });
+      for (const [index, productId] of ["p1", "p2"].entries()) {
+        seedObservation(database, {
+          id: `${productId}-${day}`,
+          productId,
+          runId: `run-${day}`,
+          day,
+          price: 1_000 + index * 100 + (day.endsWith("02") ? 100 : 0),
+        });
+      }
+    }
+    finalizeSeedRuns(database);
+    const outputRoot = await mkdtemp(join(tmpdir(), "precos-export-version-"));
+    directories.push(outputRoot);
+
+    const manifest = await exportResearchData(database, {
+      outputRoot,
+      sidraClient: emptySidra,
+      now: () => new Date("2026-07-13T11:00:00.000Z"),
+    });
+    const rows = parse(await readFile(
+      join(outputRoot, manifest.snapshotDirectory, "product_relatives.csv"),
+    ), { columns: true, skip_empty_lines: true }) as Array<Record<string, string>>;
+
+    expect(manifest.parameters).toMatchObject({
+      classificationPolicy: "single_version",
+      classificationVersion: 1,
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.classification_version)).toEqual(["1", "1"]);
+    expect(rows.map((row) => row.classification_id).sort()).toEqual([
+      "p1-classification-v1",
+      "p2-classification-v1",
+    ]);
   });
 
   it("publishes an honest unavailable snapshot before require-official fails", async () => {

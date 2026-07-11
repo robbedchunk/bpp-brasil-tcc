@@ -130,6 +130,15 @@ export async function healRetailer(
   if (evidence.run.retailerId !== retailerId) {
     throw new Error("Healing onset run belongs to a different retailer");
   }
+  if (evidence.run.purpose !== purpose) {
+    throw new Error("Healing purpose does not match the onset run strategy");
+  }
+  if (
+    evidence.run.finishedAt === null
+    || !["completed", "partial", "failed"].includes(evidence.run.status)
+  ) {
+    throw new Error("Automatic healing requires a terminal onset run");
+  }
   if (classifyRunHealth(evidence.run, evidence.failures) !== "drift") {
     throw new Error("Automatic healing requires a terminal drift-classified onset run");
   }

@@ -156,7 +156,7 @@ export function classificationAutomationIsCurrent(input: ClassificationAutomatio
 } {
   const dailyStartedAt = Date.parse(input.dailyStartedAt ?? "");
   const classificationStartedAt = Date.parse(input.classificationStartedAt ?? "");
-  const dailyRunObserved = input.dailyResult === "success" && Number.isFinite(dailyStartedAt)
+  const dailyRunObserved = input.dailyResult !== null && Number.isFinite(dailyStartedAt)
     && dailyStartedAt >= input.currentDailyStart.getTime();
   return {
     dailyRunObserved,
@@ -994,19 +994,31 @@ export function evaluateM3(
           && Date.parse(row.scheduled_for) >= options.deployedAt.getTime()))
         && row.collection_day === saoPauloDay(row.scheduled_for))
     : [];
-  const latestHeartbeat = database.prepare(`
-    SELECT id, completed_at, status, details_json
+  const heartbeatCandidates = database.prepare(`
+    SELECT id, scheduled_for, completed_at, status, details_json
     FROM heartbeats
     WHERE pipeline = 'collect'
     ORDER BY completed_at DESC, id DESC
-    LIMIT 1
-  `).get() as { id: string; completed_at: string; status: string; details_json: string } | undefined;
-  const latestHeartbeatInDeploymentWindow = latestHeartbeat !== undefined
-    && (options.deployedAt === undefined
-      || Date.parse(latestHeartbeat.completed_at) >= options.deployedAt.getTime());
-  const latestHeartbeatId = latestHeartbeatInDeploymentWindow ? latestHeartbeat.id : null;
+  `).all() as Array<{
+    id: string;
+    scheduled_for: string;
+    completed_at: string;
+    status: string;
+    details_json: string;
+  }>;
+  const latestHeartbeat = heartbeatCandidates.find((heartbeat) => {
+    if (options.deployedAt !== undefined
+      && Date.parse(heartbeat.scheduled_for) < options.deployedAt.getTime()) return false;
+    try {
+      const parsed = JSON.parse(heartbeat.details_json) as Record<string, unknown>;
+      return parsed.trigger === "systemd-timer";
+    } catch {
+      return false;
+    }
+  });
+  const latestHeartbeatId = latestHeartbeat?.id ?? null;
   let latestHeartbeatScheduled = false;
-  if (latestHeartbeatInDeploymentWindow && latestHeartbeat.status === "completed") {
+  if (latestHeartbeat !== undefined && latestHeartbeat.status === "completed") {
     try {
       const parsed = JSON.parse(latestHeartbeat.details_json);
       latestHeartbeatScheduled = scheduledHeartbeatDetails(parsed)
@@ -1037,7 +1049,7 @@ export function evaluateM3(
   const duplicateLatestRetailers = latestHeartbeatRows.length
     - new Set(latestHeartbeatRows.map((row) => row.retailer_id)).size;
   const retailersWithCollectionEvidence = substantiveRetailers.size;
-  const latestScheduledAt = latestHeartbeatInDeploymentWindow ? latestHeartbeat.completed_at : null;
+  const latestScheduledAt = latestHeartbeat?.completed_at ?? null;
   const latestHeartbeatCoversPanel = latestHeartbeatRows.length === retailerFacts.activeRetailers
     && substantiveRows.length === retailerFacts.activeRetailers
     && retailersWithCollectionEvidence === retailerFacts.activeRetailers
@@ -2073,15 +2085,50 @@ function m1Inventory(root: string, now: Date): AcceptanceEvidence {
     "tests/collection/browser-security.test.ts",
     "tests/retailers/config.test.ts",
   ];
-  const fixtureRoot = join(root, "tests/fixtures");
-  const mutatedFixtures = existsSync(fixtureRoot)
-    ? readdirSync(fixtureRoot, { recursive: true }).filter((path) => String(path).includes("mutated-product")).length
-    : 0;
+  const retailerRoot = join(root, "retailers");
+  const retailerConfigs = existsSync(retailerRoot)
+    ? readdirSync(retailerRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => join(retailerRoot, entry.name))
+    : [];
+  const mutationPaths: string[] = [];
+  let fixtureBindingsComplete = retailerConfigs.length > 0;
+  for (const path of retailerConfigs) {
+    const config = readJson(path) as { fixtureProvenance?: unknown } | null;
+    const provenance = Array.isArray(config?.fixtureProvenance)
+      ? config.fixtureProvenance as Array<Record<string, unknown>>
+      : [];
+    const mutations = provenance.filter((fixture) => fixture.synthetic === true
+      && typeof fixture.path === "string"
+      && /(?:^|\/)mutated-product\.(?:html|json)$/u.test(fixture.path));
+    if (mutations.length !== 1) fixtureBindingsComplete = false;
+    for (const mutation of mutations) {
+      const relative = mutation.path as string;
+      mutationPaths.push(relative);
+      const absolute = resolve(root, relative);
+      if (!absolute.startsWith(`${root}${sep}`)
+        || !existsSync(absolute)
+        || !/synthetic/iu.test(readFileSync(absolute, "utf8"))) {
+        fixtureBindingsComplete = false;
+      }
+    }
+  }
+  if (new Set(mutationPaths).size !== mutationPaths.length) fixtureBindingsComplete = false;
+  const retailerRegressionPath = join(root, "tests/retailers/config.test.ts");
+  const mutationRegressionPresent = existsSync(retailerRegressionPath)
+    && /classifies every retailer mutation as extraction drift/u.test(
+      readFileSync(retailerRegressionPath, "utf8"),
+    );
   return evidence("file-m1-fixture-inventory", "file", "tests/fixtures", now.toISOString(), {
     requiredOfflineTestFiles: requiredFiles.length,
     requiredOfflineTestFilesPresent: requiredFiles.filter((path) => existsSync(join(root, path))).length,
-    mutatedRetailerFixtures: mutatedFixtures,
-    inventoryComplete: requiredFiles.every((path) => existsSync(join(root, path))) && mutatedFixtures >= 5,
+    retailerConfigs: retailerConfigs.length,
+    mutatedRetailerFixtures: mutationPaths.length,
+    fixtureBindingsComplete,
+    mutationRegressionPresent,
+    inventoryComplete: requiredFiles.every((path) => existsSync(join(root, path)))
+      && fixtureBindingsComplete
+      && mutationRegressionPresent,
   });
 }
 
@@ -2643,6 +2690,8 @@ export function validateTimerDefinitions(
     const installed = readFileSync(classificationInstalledPath, "utf8");
     valid &&= /OnSuccess=precos-classification\.service/u.test(daily)
       && /OnSuccess=precos-classification\.service/u.test(installedDaily)
+      && /OnFailure=precos-classification\.service/u.test(daily)
+      && /OnFailure=precos-classification\.service/u.test(installedDaily)
       && /RefuseManualStart=yes/u.test(daily)
       && /RefuseManualStart=yes/u.test(installedDaily)
       && /Environment=PRECOS_SCHEDULE_SOURCE=systemd-timer/u.test(daily)

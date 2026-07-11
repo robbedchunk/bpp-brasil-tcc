@@ -3,6 +3,7 @@ Description=Collect daily supermarket prices
 After=network-online.target
 Wants=network-online.target
 OnSuccess=precos-classification.service
+OnFailure=precos-classification.service
 RefuseManualStart=yes
 
 [Service]

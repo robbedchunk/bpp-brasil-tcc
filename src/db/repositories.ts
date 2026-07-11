@@ -140,6 +140,8 @@ export interface GeneratedStrategyActivationInput {
 export interface StoredRunHealth {
   id: string;
   retailerId: string;
+  stage: "discover" | "collect";
+  purpose: StrategyPurpose;
   strategyId: string | null;
   collectionDay: string;
   status: string;
@@ -925,17 +927,19 @@ export function finalizeDiscoveryRun(
 }
 
 export function strategyTierNumber(strategy: Strategy): number {
+  if (strategy.purpose === "discovery") {
+    switch (strategy.tier) {
+      case "sitemap": return 1;
+      case "api": return 2;
+      case "dom-crawl": return 3;
+      case "script": return 4;
+    }
+  }
   switch (strategy.tier) {
-    case "api":
-    case "sitemap":
-      return 1;
-    case "embedded-json":
-    case "dom-crawl":
-      return 2;
-    case "dom":
-      return 3;
-    case "script":
-      return 4;
+    case "api": return 1;
+    case "embedded-json": return 2;
+    case "dom": return 3;
+    case "script": return 4;
   }
 }
 
@@ -1332,13 +1336,18 @@ export function findRunHealthEvidence(
   runId: string,
 ): { run: StoredRunHealth; failures: StoredRunFailureEvidence[] } {
   const row = database.prepare(
-    `SELECT id, retailer_id, strategy_id, collection_day, status,
-            attempted, ok, failed, started_at,
-            finished_at, metadata_json
-     FROM runs WHERE id = ? AND stage = 'collect'`,
+    `SELECT runs.id, runs.retailer_id, runs.stage, strategies.purpose,
+            runs.strategy_id, runs.collection_day, runs.status,
+            runs.attempted, runs.ok, runs.failed, runs.started_at,
+            runs.finished_at, runs.metadata_json
+     FROM runs
+     JOIN strategies ON strategies.id = runs.strategy_id
+     WHERE runs.id = ?`,
   ).get(runId) as {
     id: string;
     retailer_id: string | null;
+    stage: "discover" | "collect";
+    purpose: StrategyPurpose;
     strategy_id: string | null;
     collection_day: string;
     status: string;
@@ -1350,7 +1359,11 @@ export function findRunHealthEvidence(
     metadata_json: string;
   } | undefined;
   if (row === undefined || row.retailer_id === null) {
-    throw new Error(`Collection run ${runId} was not found`);
+    throw new Error(`Strategy run ${runId} was not found`);
+  }
+  const expectedPurpose = row.stage === "discover" ? "discovery" : "extraction";
+  if (row.purpose !== expectedPurpose) {
+    throw new Error(`Strategy run ${runId} has mismatched stage and purpose evidence`);
   }
   let responseHints: boolean[] = [];
   let planned: number | null = null;
@@ -1406,6 +1419,8 @@ export function findRunHealthEvidence(
     run: {
       id: row.id,
       retailerId: row.retailer_id,
+      stage: row.stage,
+      purpose: row.purpose,
       strategyId: row.strategy_id,
       collectionDay: row.collection_day,
       status: row.status,
@@ -1500,14 +1515,26 @@ export function latestTerminalCollectionRunId(
   database: Database.Database,
   retailerId: string,
 ): string | null {
+  return latestTerminalStrategyRunId(database, retailerId, "extraction");
+}
+
+export function latestTerminalStrategyRunId(
+  database: Database.Database,
+  retailerId: string,
+  purpose: StrategyPurpose,
+): string | null {
+  const stage = purpose === "discovery" ? "discover" : "collect";
   const row = database.prepare(
-    `SELECT id FROM runs
-     WHERE retailer_id = ? AND stage = 'collect'
-       AND finished_at IS NOT NULL
-       AND status IN ('completed', 'partial', 'failed')
-     ORDER BY collection_day DESC, finished_at DESC, id DESC
+    `SELECT runs.id
+     FROM runs
+     JOIN strategies ON strategies.id = runs.strategy_id
+     WHERE runs.retailer_id = ? AND runs.stage = ?
+       AND strategies.purpose = ?
+       AND runs.finished_at IS NOT NULL
+       AND runs.status IN ('completed', 'partial', 'failed')
+     ORDER BY runs.collection_day DESC, runs.finished_at DESC, runs.id DESC
      LIMIT 1`,
-  ).get(retailerId) as { id: string } | undefined;
+  ).get(retailerId, stage, purpose) as { id: string } | undefined;
   return row?.id ?? null;
 }
 
@@ -2730,6 +2757,7 @@ export function insertHeartbeat(
 
 export interface StatusReport {
   generatedAt: string;
+  reportDay: string;
   staleHeartbeat: boolean;
   retailers: Array<{
     id: string;
@@ -2737,6 +2765,13 @@ export interface StatusReport {
     active: boolean;
     degraded: boolean;
     latestRun: null | {
+      collectionDay: string;
+      attempted: number;
+      ok: number;
+      failed: number;
+      successRate: number;
+    };
+    yesterdayRun: null | {
       collectionDay: string;
       attempted: number;
       ok: number;
@@ -2751,10 +2786,14 @@ interface StatusRow {
   name: string;
   active: number;
   degraded: number;
-  collection_day: string | null;
-  attempted: number | null;
-  ok: number | null;
-  failed: number | null;
+  latest_collection_day: string | null;
+  latest_attempted: number | null;
+  latest_ok: number | null;
+  latest_failed: number | null;
+  yesterday_collection_day: string | null;
+  yesterday_attempted: number | null;
+  yesterday_ok: number | null;
+  yesterday_failed: number | null;
 }
 
 interface HeartbeatRow {
@@ -2763,10 +2802,26 @@ interface HeartbeatRow {
 
 const HEARTBEAT_STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
 
+function saoPauloCalendarDay(value: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
+function previousCalendarDay(day: string): string {
+  const value = new Date(`${day}T12:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() - 1);
+  return value.toISOString().slice(0, 10);
+}
+
 export function readStatusReport(
   database: Database.Database,
   now: Date = new Date(),
 ): StatusReport {
+  const reportDay = previousCalendarDay(saoPauloCalendarDay(now));
   const rows = database
     .prepare(
       `SELECT
@@ -2774,10 +2829,14 @@ export function readStatusReport(
          retailer.name,
          retailer.active,
          retailer.degraded,
-         latest.collection_day,
-         latest.attempted,
-         latest.ok,
-         latest.failed
+         latest.collection_day AS latest_collection_day,
+         latest.attempted AS latest_attempted,
+         latest.ok AS latest_ok,
+         latest.failed AS latest_failed,
+         yesterday.collection_day AS yesterday_collection_day,
+         yesterday.attempted AS yesterday_attempted,
+         yesterday.ok AS yesterday_ok,
+         yesterday.failed AS yesterday_failed
        FROM retailers AS retailer
        LEFT JOIN runs AS latest
          ON latest.id = (
@@ -2791,9 +2850,21 @@ export function readStatusReport(
              candidate.id DESC
            LIMIT 1
          )
+       LEFT JOIN runs AS yesterday
+         ON yesterday.id = (
+           SELECT candidate.id
+           FROM runs AS candidate
+           WHERE candidate.retailer_id = retailer.id
+             AND candidate.stage = 'collect'
+             AND candidate.collection_day = @reportDay
+           ORDER BY
+             COALESCE(candidate.finished_at, candidate.started_at) DESC,
+             candidate.id DESC
+           LIMIT 1
+         )
        ORDER BY retailer.name COLLATE NOCASE, retailer.id`,
     )
-    .all() as StatusRow[];
+    .all({ reportDay }) as StatusRow[];
 
   const heartbeat = database
     .prepare(
@@ -2808,18 +2879,33 @@ export function readStatusReport(
 
   return {
     generatedAt: now.toISOString(),
+    reportDay,
     staleHeartbeat:
       !Number.isFinite(completedAt) || now.getTime() - completedAt > HEARTBEAT_STALE_AFTER_MS,
     retailers: rows.map((row) => {
-      const attempted = row.attempted ?? 0;
-      const latestRun = row.collection_day === null
+      const latestAttempted = row.latest_attempted ?? 0;
+      const latestRun = row.latest_collection_day === null
         ? null
         : {
-            collectionDay: row.collection_day,
-            attempted,
-            ok: row.ok ?? 0,
-            failed: row.failed ?? 0,
-            successRate: attempted === 0 ? 0 : (row.ok ?? 0) / attempted,
+            collectionDay: row.latest_collection_day,
+            attempted: latestAttempted,
+            ok: row.latest_ok ?? 0,
+            failed: row.latest_failed ?? 0,
+            successRate: latestAttempted === 0
+              ? 0
+              : (row.latest_ok ?? 0) / latestAttempted,
+          };
+      const yesterdayAttempted = row.yesterday_attempted ?? 0;
+      const yesterdayRun = row.yesterday_collection_day === null
+        ? null
+        : {
+            collectionDay: row.yesterday_collection_day,
+            attempted: yesterdayAttempted,
+            ok: row.yesterday_ok ?? 0,
+            failed: row.yesterday_failed ?? 0,
+            successRate: yesterdayAttempted === 0
+              ? 0
+              : (row.yesterday_ok ?? 0) / yesterdayAttempted,
           };
 
       return {
@@ -2828,6 +2914,7 @@ export function readStatusReport(
         active: row.active === 1,
         degraded: row.degraded === 1,
         latestRun,
+        yesterdayRun,
       };
     }),
   };

@@ -4,6 +4,11 @@ import type { AlertSink } from "../ops/alerts.js";
 
 export const INDEX_METHOD_VERSION = "tcc-food-at-home-v1" as const;
 export const TOTAL_FOOD_AT_HOME_WEIGHT = "12.1181" as const;
+/**
+ * Publication is deliberately pinned to one reviewed classification frame.
+ * Advancing this value is an implementation change, not a runtime/env choice.
+ */
+export const PUBLISHED_CLASSIFICATION_VERSION = 1 as const;
 
 export interface BuildDailyIndexOptions {
   throughDay?: string;
@@ -26,6 +31,8 @@ export interface ProductRelative {
   denominatorSourceDay: string;
   numeratorCarried: boolean;
   denominatorCarried: boolean;
+  numeratorCarryReason: "missing_observation" | "unavailable" | null;
+  denominatorCarryReason: "missing_observation" | "unavailable" | null;
   relative: string;
 }
 
@@ -177,6 +184,8 @@ export interface ExportManifest {
     database: DatabaseSourceEvidence;
   };
   parameters: {
+    classificationPolicy: "single_version";
+    classificationVersion: number;
     promoPreferred: true;
     carryForwardDays: 7;
     withinRetailer: "jevons";

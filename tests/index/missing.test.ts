@@ -41,7 +41,7 @@ describe("index missingness", () => {
       .toBeGreaterThan(0);
   });
 
-  it("combines healthy same-day runs, excludes unhealthy runs, and honors latest rows", () => {
+  it("carries the prior price when the latest healthy same-day row is unavailable", () => {
     const database = baseDatabase();
     seedRun(database, { id: "d1", retailerId: "r1", day: "2026-06-01" });
     seedRun(database, { id: "bad", retailerId: "r1", day: "2026-06-02", attempted: 10, ok: 6, status: "partial" });
@@ -54,9 +54,16 @@ describe("index missingness", () => {
 
     const series = buildDailyIndex(database);
     const relative = series.productRelatives.find((point) => point.day === "2026-06-02");
-    expect(relative).toBeUndefined();
+    expect(relative).toMatchObject({
+      numeratorCents: 1_000,
+      denominatorCents: 1_000,
+      numeratorCarried: true,
+      numeratorSourceDay: "2026-06-01",
+      numeratorCarryReason: "unavailable",
+      relative: "1.000000000000",
+    });
     expect(series.coverage.find((point) => point.day === "2026-06-02"))
-      .toMatchObject({ unavailableCount: 1, productPairCount: 0 });
+      .toMatchObject({ unavailableCount: 0, productPairCount: 1 });
   });
 
   it("does not carry an absent retailer and starts a new chain after a panel gap", () => {

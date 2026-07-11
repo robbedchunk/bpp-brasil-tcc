@@ -9,7 +9,12 @@ import { openDatabase } from "../../src/db/database.js";
 import { beginHealingEvent } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
 import { withProcessLock } from "../../src/ops/lock.js";
-import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
+import {
+  discoveryStrategy,
+  extractionStrategy,
+  seedRetailer,
+  seedStrategy,
+} from "../pipeline/helpers.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 const directories: string[] = [];
@@ -44,6 +49,35 @@ function seedDrift() {
     UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
                     finished_at = '2026-07-10T00:01:00.000Z'
     WHERE id = 'drift-run'
+  `).run();
+  return database;
+}
+
+function seedDiscoveryDrift() {
+  const database = openDatabase(":memory:");
+  databases.push(database);
+  seedRetailer(database);
+  seedStrategy(database, "discovery", discoveryStrategy);
+  database.prepare(
+    `INSERT INTO runs
+       (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+        status, attempted, ok, failed, started_at, finished_at)
+     VALUES ('discovery-drift', 'retailer-1', 'discover', '2026-07-10',
+             'retailer-1-discovery-v1', 1, 'running', 0, 0, 0,
+             '2026-07-10T00:00:00.000Z', NULL)`,
+  ).run();
+  database.prepare(
+    `INSERT INTO run_failures
+       (id, run_id, retailer_id, category, responded, message, strategy_id,
+        strategy_version, occurred_at)
+     VALUES ('discovery-failure-1', 'discovery-drift', 'retailer-1', 'parse', 1,
+             'fixture discovery drift', 'retailer-1-discovery-v1', 1,
+             '2026-07-10T00:00:30.000Z')`,
+  ).run();
+  database.prepare(`
+    UPDATE runs SET status = 'failed', attempted = 1, failed = 1,
+                    finished_at = '2026-07-10T00:01:00.000Z'
+    WHERE id = 'discovery-drift'
   `).run();
   return database;
 }
@@ -122,11 +156,14 @@ describe("heal CLI", () => {
     expect(workerCalls).toBe(1);
   });
 
-  it("documents extraction-only healing and rejects the discovery option", async () => {
+  it("selects and heals the latest terminal discovery run", async () => {
     const cli = buildCli();
     const heal = cli.commands.find((command) => command.name() === "heal");
     expect(heal?.helpInformation()).toContain("extraction");
-    expect(heal?.helpInformation()).not.toContain("--purpose");
+    expect(heal?.helpInformation()).toContain("discovery");
+    expect(heal?.helpInformation()).toContain("--purpose");
+
+    const database = seedDiscoveryDrift();
 
     const result = await invoke([
       "heal",
@@ -134,9 +171,27 @@ describe("heal CLI", () => {
       "retailer-1",
       "--purpose",
       "discovery",
-    ], { database: seedDrift() });
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toMatch(/unknown option.*--purpose/iu);
+      "--json",
+    ], {
+      database,
+      env: {},
+      now: () => new Date("2026-07-10T00:05:00.000Z"),
+      alertSink: { send: async () => {} },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "provider_unavailable",
+      activated: false,
+    });
+    expect(database.prepare(
+      "SELECT purpose, onset_run_id, previous_strategy_id, status FROM healing_events",
+    ).get()).toEqual({
+      purpose: "discovery",
+      onset_run_id: "discovery-drift",
+      previous_strategy_id: "retailer-1-discovery-v1",
+      status: "provider_unavailable",
+    });
   });
 
   it("records provider-unavailable attempt/event/alert evidence without retiring active strategy", async () => {

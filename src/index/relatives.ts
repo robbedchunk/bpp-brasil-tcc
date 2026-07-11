@@ -39,6 +39,7 @@ export interface EffectivePrice {
   cents: number;
   sourceDay: string;
   carried: boolean;
+  carryReason: "missing_observation" | "unavailable" | null;
 }
 
 type MissingPriceReason = "unavailable" | "invalid" | "expired" | "absent";
@@ -264,14 +265,20 @@ function resolveEffectivePrice(
 ): PriceResolution {
   const sameDay = [...actuals].reverse().find((actual) => actual.day === targetDay);
   if (sameDay !== undefined) {
-    if (!sameDay.available) return { price: null, missingReason: "unavailable" };
-    const cents = effectiveCents(sameDay);
-    return cents === null
-      ? { price: null, missingReason: "invalid" }
-      : {
-          price: { cents, sourceDay: sameDay.day, carried: false },
-          missingReason: null,
-        };
+    if (sameDay.available) {
+      const cents = effectiveCents(sameDay);
+      return cents === null
+        ? { price: null, missingReason: "invalid" }
+        : {
+            price: {
+              cents,
+              sourceDay: sameDay.day,
+              carried: false,
+              carryReason: null,
+            },
+            missingReason: null,
+          };
+    }
   }
 
   for (let index = actuals.length - 1; index >= 0; index -= 1) {
@@ -282,11 +289,19 @@ function resolveEffectivePrice(
     const age = dayDifference(targetDay, actual.day);
     if (age > 7) return { price: null, missingReason: "expired" };
     return {
-      price: { cents, sourceDay: actual.day, carried: true },
+      price: {
+        cents,
+        sourceDay: actual.day,
+        carried: true,
+        carryReason: sameDay === undefined ? "missing_observation" : "unavailable",
+      },
       missingReason: null,
     };
   }
-  return { price: null, missingReason: "absent" };
+  return {
+    price: null,
+    missingReason: sameDay === undefined ? "absent" : "unavailable",
+  };
 }
 
 function recordNumeratorExclusion(
@@ -344,6 +359,8 @@ export function buildProductRelativesForDay(
       denominatorSourceDay: denominator.sourceDay,
       numeratorCarried: numerator.carried,
       denominatorCarried: denominator.carried,
+      numeratorCarryReason: numerator.carryReason,
+      denominatorCarryReason: denominator.carryReason,
       relative: new D(numerator.cents).div(denominator.cents).toFixed(12),
     });
   }

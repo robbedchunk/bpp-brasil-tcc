@@ -1,6 +1,10 @@
 import type Database from "better-sqlite3";
 
-import { beginHealingEvent, findRunHealthEvidence } from "../db/repositories.js";
+import {
+  beginHealingEvent,
+  findRunHealthEvidence,
+  type StrategyPurpose,
+} from "../db/repositories.js";
 import type { StrategyGenerator } from "../explorer/provider.js";
 import type { AlertSink } from "../ops/alerts.js";
 import type { ExtractionStrategy } from "../strategies/schema.js";
@@ -17,7 +21,7 @@ export interface MonitorRunDependencies {
   ) => Promise<ExtractionResult>;
   heal?: (
     retailerId: string,
-    purpose: "extraction",
+    purpose: StrategyPurpose,
     dependencies: HealRetailerDependencies,
   ) => Promise<HealingOutcome>;
   alertSink?: AlertSink;
@@ -28,6 +32,7 @@ export interface MonitorRunDependencies {
 export interface MonitorDecision {
   runId: string;
   retailerId: string;
+  purpose: StrategyPurpose;
   health: RunHealth;
   action: "none" | "not_terminal" | "alerted" | "queued" | "healing_pending";
   healing?: HealingOutcome;
@@ -48,6 +53,7 @@ export async function monitorRun(
     return {
       runId,
       retailerId: evidence.run.retailerId,
+      purpose: evidence.run.purpose,
       health: "mixed",
       action: "not_terminal",
     };
@@ -57,20 +63,26 @@ export async function monitorRun(
     return {
       runId,
       retailerId: evidence.run.retailerId,
+      purpose: evidence.run.purpose,
       health,
       action: "none",
     };
   }
   if (health === "blocking" || health === "mixed") {
+    const workload = evidence.run.purpose === "discovery"
+      ? "discovery"
+      : "collection";
     await dependencies.alertSink?.send({
       severity: "warning",
       title: health === "blocking"
-        ? "Retailer collection is blocked"
-        : "Retailer collection has mixed access evidence",
+        ? `Retailer ${workload} is blocked`
+        : `Retailer ${workload} has mixed access evidence`,
       message: "Automatic strategy generation was not invoked to avoid wasted model spend",
       details: {
         runId,
         retailerId: evidence.run.retailerId,
+        purpose: evidence.run.purpose,
+        stage: evidence.run.stage,
         health,
         attempted: evidence.run.attempted,
         ok: evidence.run.ok,
@@ -83,6 +95,7 @@ export async function monitorRun(
     return {
       runId,
       retailerId: evidence.run.retailerId,
+      purpose: evidence.run.purpose,
       health,
       action: "alerted",
     };
@@ -90,7 +103,7 @@ export async function monitorRun(
 
   const opened = beginHealingEvent(dependencies.database, {
     retailerId: evidence.run.retailerId,
-    purpose: "extraction",
+    purpose: evidence.run.purpose,
     onsetRunId: runId,
     detectedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
     queued: true,
@@ -98,6 +111,7 @@ export async function monitorRun(
   return {
     runId,
     retailerId: evidence.run.retailerId,
+    purpose: evidence.run.purpose,
     health,
     action: opened.created ? "queued" : "healing_pending",
     healingEventId: opened.event.id,

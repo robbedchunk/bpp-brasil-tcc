@@ -37,11 +37,11 @@ timers in `America/Sao_Paulo`:
 - weekly index/analysis Monday around 08:00;
 - hourly heartbeat check.
 
-All timers are persistent and randomized. A successful daily collection service
-starts the non-timer `precos-classification.service` through `OnSuccess`; that
-oneshot runs incremental batches of 50 after the collection heartbeat has already
-committed. A missing model credential remains a safe pending exit, while a later
-classification failure cannot roll back or erase collection evidence. Collection,
+All timers are persistent and randomized. Every terminal daily collection outcome
+starts the non-timer `precos-classification.service` through `OnSuccess` or
+`OnFailure`; that oneshot runs incremental batches of 50 after any collection
+evidence has already committed. A missing model credential remains a safe pending
+exit, while a later classification failure cannot roll back or erase collection evidence. Collection,
 classification, healing, and index work use separate locks. Never kill a live
 owner or start duplicate daily work merely to improve acceptance metrics.
 

@@ -247,17 +247,19 @@ export async function validateFixtureStrategy(
 }
 
 function strategyTier(strategy: DiscoveryStrategy | ExtractionStrategy): number {
+  if (strategy.purpose === "discovery") {
+    switch (strategy.tier) {
+      case "sitemap": return 1;
+      case "api": return 2;
+      case "dom-crawl": return 3;
+      case "script": return 4;
+    }
+  }
   switch (strategy.tier) {
-    case "api":
-    case "sitemap":
-      return 1;
-    case "embedded-json":
-    case "dom-crawl":
-      return 2;
-    case "dom":
-      return 3;
-    case "script":
-      return 4;
+    case "api": return 1;
+    case "embedded-json": return 2;
+    case "dom": return 3;
+    case "script": return 4;
   }
 }
 
