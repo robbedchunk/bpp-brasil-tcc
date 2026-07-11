@@ -217,6 +217,76 @@
       "severity": "important",
       "status": "resolved",
       "fixCommit": "af9a2b4ecbf3a86b86a47b048dfab76c2960ab35"
+    },
+    {
+      "id": "m5-cross-tier-regional-healing",
+      "milestone": "M5",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m5-discovery-purpose-healing",
+      "milestone": "M5",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m3-discovery-tier-metric",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m1-mutation-fixture-execution",
+      "milestone": "M1",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m6-baseline-only-status",
+      "milestone": "M6",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m6-unavailable-carry-forward",
+      "milestone": "M6",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m6-single-classification-frame",
+      "milestone": "M6",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m3-manual-heartbeat-panel-order",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m3-partial-classification-handoff",
+      "milestone": "M3",
+      "severity": "important",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
+    },
+    {
+      "id": "m0-yesterday-status",
+      "milestone": "M0",
+      "severity": "minor",
+      "status": "resolved",
+      "fixCommit": "de08f8a2b95a602b9ed83d36be32db787778667d"
     }
   ]
 }
