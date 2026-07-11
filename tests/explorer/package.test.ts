@@ -139,8 +139,33 @@ describe("disposable exploration package", () => {
     expect(extraction).toContain("strategy.json");
     expect(extraction).toContain("shop.test");
     expect(extraction).toContain("USD 5");
+    expect(extraction).toContain("{productUrl}, {externalId}, {sourceCategory}");
+    expect(discovery).toContain("{page}, {pageSize}, {offset}, {from}, {to}, {cursor}, {segment}");
     expect(extraction).not.toMatch(/self[- ]?certif|activation score/iu);
     expect(extraction.length).toBeLessThan(1_500);
+  });
+
+  it("redacts bounded prior exploration attempts in failures.json", async () => {
+    const sandbox = await createSandboxPackage({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      samples: [{ canonicalUrl: "https://shop.test/products/1" }],
+      failureAttempts: Array.from({ length: 4 }, (_, index) => ({
+        outcome: "validation_failed",
+        errorMessage: `Authorization: Bearer prior-secret-${index}`,
+        candidate: {
+          request: { headers: { authorization: `Bearer candidate-secret-${index}` } },
+        },
+      })),
+    });
+    packages.push(sandbox);
+
+    const failures = await readFile(join(sandbox.workspacePath, "failures.json"), "utf8");
+    expect(failures).not.toContain("prior-secret");
+    expect(failures).not.toContain("candidate-secret");
+    expect(JSON.parse(failures).priorAttempts).toHaveLength(3);
+    expect(failures).toContain("[REDACTED]");
   });
 
   it("validates the closed strategy shape and rejects stored credentials or code", async () => {

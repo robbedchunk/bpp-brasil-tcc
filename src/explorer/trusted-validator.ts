@@ -31,8 +31,22 @@ import type {
   CandidateValidationContext,
   CandidateValidationReport,
 } from "./explore.js";
+import { redactSandboxText } from "./package.js";
 
 const execFileAsync = promisify(execFile);
+const RUNNER_OUTPUT_TAIL = 2_000;
+
+function runnerOutputTails(error: { stdout?: unknown; stderr?: unknown }): string {
+  const tail = (value: unknown): string => typeof value === "string"
+    ? redactSandboxText(value).slice(-RUNNER_OUTPUT_TAIL)
+    : "";
+  const stdout = tail(error.stdout);
+  const stderr = tail(error.stderr);
+  return [
+    ...(stdout.length === 0 ? [] : [`stdout tail:\n${stdout}`]),
+    ...(stderr.length === 0 ? [] : [`stderr tail:\n${stderr}`]),
+  ].join("\n");
+}
 
 export interface TrustedCandidateValidatorOptions {
   database: Database.Database;
@@ -241,27 +255,37 @@ export function createTrustedCandidateValidator(
         const result = await execFileAsync(executable, [...arguments_], runOptions);
         return { stdout: result.stdout, stderr: result.stderr };
       });
-      const result = await execute(process.execPath, [
-        runner,
-        "--retailer",
-        context.retailerId,
-        "--purpose",
-        context.purpose,
-        "--database",
-        databaseFile(options.database),
-        "--configs",
-        configsDirectory,
-        "--output-directory",
-        outputDirectory,
-        "--signing-private-key",
-        resolve(
-          options.signingPrivateKeyPath
-            ?? join(projectRoot, "var/operations/validation-attestation-private.pem"),
-        ),
-      ], { cwd: projectRoot, maxBuffer: 4 * 1024 * 1024 });
+      let result: { stdout: string; stderr: string };
+      try {
+        result = await execute(process.execPath, [
+          runner,
+          "--retailer",
+          context.retailerId,
+          "--purpose",
+          context.purpose,
+          "--database",
+          databaseFile(options.database),
+          "--configs",
+          configsDirectory,
+          "--output-directory",
+          outputDirectory,
+          "--signing-private-key",
+          resolve(
+            options.signingPrivateKeyPath
+              ?? join(projectRoot, "var/operations/validation-attestation-private.pem"),
+          ),
+        ], { cwd: projectRoot, maxBuffer: 4 * 1024 * 1024 });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error) || "Trusted validation runner failed";
+        const tails = runnerOutputTails(error as { stdout?: unknown; stderr?: unknown });
+        throw new Error(tails.length === 0 ? message : `${message}\n${tails}`, { cause: error });
+      }
       const output = result.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1);
       if (output === undefined) {
-        throw new Error(`Trusted validation runner returned no receipt summary: ${result.stderr}`);
+        const tails = runnerOutputTails(result);
+        throw new Error(
+          `Trusted validation runner returned no receipt summary${tails.length === 0 ? "" : `\n${tails}`}`,
+        );
       }
       const summary = JSON.parse(output) as { path?: unknown };
       if (typeof summary.path !== "string") {

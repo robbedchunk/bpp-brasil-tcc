@@ -37,6 +37,7 @@ import { explorerModelFromEnv } from "./codex-provider.js";
 import {
   createSandboxPackage,
   redactSandboxText,
+  type SandboxFailureAttempt,
   type SandboxFailureSample,
   type SandboxPackage,
   type SandboxPackageInput,
@@ -53,7 +54,7 @@ import { createTrustedCandidateValidator } from "./trusted-validator.js";
 
 const TRUSTED_SAMPLE_SIZE = 30;
 const TRUSTED_ACTIVATION_SCORE = 0.9;
-export const EXPLORER_PROMPT_VERSION = "strategy-explorer-v1";
+export const EXPLORER_PROMPT_VERSION = "strategy-explorer-v2";
 
 export interface ExplorerRate {
   inputUsdPerMillion: number;
@@ -539,6 +540,18 @@ export async function exploreRetailer(
       ...refs.map((ref) => ({ canonicalUrl: ref.canonicalUrl })),
       ...(dependencies.sandboxSamples ?? []),
     ];
+    const priorFailures: SandboxFailureAttempt[] = [];
+    const rememberFailure = (
+      failureOutcome: ExplorationOutcomeName,
+      errorMessage: string,
+      candidate?: unknown,
+    ): void => {
+      priorFailures.push({
+        outcome: redactSandboxText(failureOutcome),
+        errorMessage: redactSandboxText(errorMessage).slice(0, 2_000),
+        ...(candidate === undefined ? {} : { candidate }),
+      });
+    };
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       attempts = attempt;
@@ -572,6 +585,7 @@ export async function exploreRetailer(
           ...(dependencies.failureSampleTotal === undefined
             ? {}
             : { failureSampleTotal: dependencies.failureSampleTotal }),
+          ...(priorFailures.length === 0 ? {} : { failureAttempts: priorFailures }),
         });
         generatorInvoked = true;
         result = await dependencies.generator.generate({
@@ -698,6 +712,7 @@ export async function exploreRetailer(
         outcome = "provider_failed";
         finalError = result.error;
         record(attempt, prompt, result, outcome, { errorMessage: finalError });
+        rememberFailure(outcome, finalError);
         continue;
       }
 
@@ -710,6 +725,7 @@ export async function exploreRetailer(
         outcome = "invalid_candidate";
         finalError = "Candidate failed the strict host schema or domain policy";
         record(attempt, prompt, result, outcome, { errorMessage: finalError });
+        rememberFailure(outcome, finalError, result.strategy);
         continue;
       }
 
@@ -727,6 +743,7 @@ export async function exploreRetailer(
           artifact: { strategy },
           errorMessage: finalError,
         });
+        rememberFailure(outcome, finalError, strategy);
         continue;
       }
       externalScore = Number.isFinite(report.score) ? report.score : null;
@@ -739,6 +756,7 @@ export async function exploreRetailer(
           artifact: { strategy },
           errorMessage: finalError,
         });
+        rememberFailure(outcome, finalError, strategy);
         continue;
       }
 

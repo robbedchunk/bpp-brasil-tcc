@@ -260,6 +260,35 @@ describe("trusted strategy exploration", () => {
     expect(generator.requests).toHaveLength(2);
   });
 
+  it("gives the next sandbox redacted context from the prior failed candidate", async () => {
+    const database = seedExploration();
+    const packages: Array<Record<string, unknown>> = [];
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator: new FixtureGenerator([generated(candidate), generated(candidate)]),
+      validateCandidate: scoreSequence(0.8, 0.9),
+      maxAttempts: 2,
+      createSandbox: async (input) => {
+        packages.push(input as Record<string, unknown>);
+        return {
+          workspacePath: "/tmp/fixture-prior-failure-sandbox",
+          files: [],
+          async dispose() {},
+        };
+      },
+    });
+
+    expect(outcome).toMatchObject({ activated: true, attempts: 2 });
+    expect(packages[0]).not.toHaveProperty("failureAttempts");
+    expect(packages[1]).toMatchObject({
+      failureAttempts: [{
+        outcome: "validation_failed",
+        errorMessage: "Candidate did not pass the exact trusted 30-sample gate",
+        candidate,
+      }],
+    });
+  });
+
   it("fails closed when a turn crosses the USD 5 event cap", async () => {
     const database = seedExploration();
     const alerts: Array<{ title: string }> = [];

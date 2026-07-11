@@ -28,6 +28,12 @@ export interface SandboxFailureSample {
   message?: string | null;
 }
 
+export interface SandboxFailureAttempt {
+  outcome: string;
+  errorMessage?: string | null;
+  candidate?: unknown;
+}
+
 export interface SandboxPackageInput {
   retailerId: string;
   purpose: StrategyPurpose;
@@ -36,6 +42,7 @@ export interface SandboxPackageInput {
   oldStrategy?: Strategy | Record<string, unknown>;
   failureSamples?: readonly SandboxFailureSample[];
   failureSampleTotal?: number;
+  failureAttempts?: readonly SandboxFailureAttempt[];
   temporaryRoot?: string;
 }
 
@@ -202,14 +209,16 @@ export async function createSandboxPackage(
         { encoding: "utf8", mode: 0o600 },
       );
     }
-    if (input.failureSamples !== undefined && input.failureSamples.length > 0) {
-      const failures = representativeFailureSamples(input.failureSamples);
+    const failures = representativeFailureSamples(input.failureSamples ?? []);
+    const priorAttempts = (input.failureAttempts ?? []).slice(-3);
+    if (failures.length > 0 || priorAttempts.length > 0) {
       await writeFile(
         join(workspacePath, "failures.json"),
         sanitizedJson({
-          total: Math.max(input.failureSampleTotal ?? input.failureSamples.length, failures.length),
+          total: Math.max(input.failureSampleTotal ?? input.failureSamples?.length ?? 0, failures.length),
           included: failures.length,
           samples: failures,
+          priorAttempts,
         }),
         { encoding: "utf8", mode: 0o600 },
       );

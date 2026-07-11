@@ -16,6 +16,12 @@ Extraction tier order:
 3. `dom`: URL template plus ordered selector lists for all six fields.
 4. `script`: only the closed, typed operation list documented by the host schema; never arbitrary JavaScript.
 
+Extraction API and URL templates may use only `{productUrl}`, `{externalId}`, and
+`{sourceCategory}` placeholders, for example
+`https://host/api/products/{externalId}/offers`. An extraction request template
+MUST reference the sampled product through one of these placeholders: each of
+the 30 validation samples binds to a different product.
+
 Discovery tier order is `sitemap`, `api`, `dom-crawl`, then the same restricted
 operation-list `script` tier. API discovery may use `{page}`, `{pageSize}`,
 `{offset}`, `{from}`, `{to}`, `{cursor}`, and `{segment}` placeholders. When

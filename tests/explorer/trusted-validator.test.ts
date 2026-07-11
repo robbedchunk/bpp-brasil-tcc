@@ -78,6 +78,26 @@ describe("generated-strategy trusted validator bridge", () => {
       { mode: 0o644 },
     );
 
+    const diagnostic = createTrustedCandidateValidator({
+      database,
+      projectRoot: root,
+      executeRunner: async () => {
+        throw Object.assign(new Error("Command failed: validation runner"), {
+          stdout: "sample summary: 24/30 valid\nAuthorization: Bearer runner-secret",
+          stderr: "Refusing to bind non-activatable validation evidence",
+        });
+      },
+    });
+    await diagnostic(config.extraction, refs, context).then(
+      () => { throw new Error("Expected runner failure"); },
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        expect(message).toContain("sample summary: 24/30 valid");
+        expect(message).toContain("Refusing to bind non-activatable validation evidence");
+        expect(message).not.toContain("runner-secret");
+      },
+    );
+
     const validate = createTrustedCandidateValidator({
       database,
       projectRoot: root,
