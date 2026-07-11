@@ -9,7 +9,7 @@ select_node_24 smoke
 
 npm run typecheck
 npm test
-npm run audit:publication -- --json >/dev/null
+npm run audit:publication -- --json --implementation-cut >/dev/null
 install -d -m 0700 var var/backups var/log var/replay
 npm run --silent cli -- db init >/dev/null
 
