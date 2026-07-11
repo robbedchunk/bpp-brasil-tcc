@@ -1073,8 +1073,8 @@ export function reconcileHealingExploration(
     }
 
     const attempts = database.prepare(
-      `SELECT attempt_number, outcome, input_tokens, output_tokens, cost_usd,
-              error_message
+      `SELECT attempt_number, outcome, input_tokens, cached_input_tokens,
+              output_tokens, reasoning_output_tokens, cost_usd, error_message
        FROM exploration_attempts
        WHERE exploration_run_id = ?
        ORDER BY attempt_number`,
@@ -1082,49 +1082,201 @@ export function reconcileHealingExploration(
       attempt_number: number;
       outcome: string;
       input_tokens: number;
+      cached_input_tokens: number;
       output_tokens: number;
+      reasoning_output_tokens: number;
       cost_usd: number;
       error_message: string | null;
     }>;
     const ledger = database.prepare(
-      `SELECT input_tokens, output_tokens, cost_usd
+      `SELECT id, category, provider, model, input_tokens, output_tokens,
+              cost_usd
        FROM cost_ledger WHERE exploration_run_id = ?
        ORDER BY occurred_at, id`,
     ).all(run.id) as Array<{
+      id: string;
+      category: string;
+      provider: string;
+      model: string | null;
       input_tokens: number;
       output_tokens: number;
       cost_usd: number;
     }>;
+    const adjustment = database.prepare(
+      `SELECT a.id, a.cost_ledger_id, a.reserved_amount_usd, a.amount_usd,
+              l.id AS linked_ledger_id,
+              l.exploration_run_id AS ledger_exploration_run_id,
+              l.category AS ledger_category, l.provider AS ledger_provider,
+              l.model AS ledger_model, l.input_tokens AS ledger_input_tokens,
+              l.output_tokens AS ledger_output_tokens,
+              l.cost_usd AS ledger_cost_usd,
+              json_extract(l.details_json, '$.recoveryAdjustmentId')
+                AS details_adjustment_id
+       FROM exploration_recovery_adjustments AS a
+       LEFT JOIN cost_ledger AS l ON l.id = a.cost_ledger_id
+       WHERE a.exploration_run_id = ?`,
+    ).get(run.id) as {
+      id: string;
+      cost_ledger_id: string;
+      reserved_amount_usd: number;
+      amount_usd: number;
+      linked_ledger_id: string | null;
+      ledger_exploration_run_id: string | null;
+      ledger_category: string | null;
+      ledger_provider: string | null;
+      ledger_model: string | null;
+      ledger_input_tokens: number | null;
+      ledger_output_tokens: number | null;
+      ledger_cost_usd: number | null;
+      details_adjustment_id: string | null;
+    } | undefined;
     const attemptInputTokens = attempts.reduce((sum, row) => sum + row.input_tokens, 0);
     const attemptOutputTokens = attempts.reduce((sum, row) => sum + row.output_tokens, 0);
+    const attemptHasUsage = attempts.some((row) =>
+      row.input_tokens > 0
+      || row.cached_input_tokens > 0
+      || row.output_tokens > 0
+      || row.reasoning_output_tokens > 0
+    );
     const attemptCost = attempts.reduce(
       (sum, row) => sum.plus(row.cost_usd),
       new Decimal(0),
     ).toDecimalPlaces(12);
+    let recoveryAdjustment = new Decimal(adjustment?.amount_usd ?? 0).toDecimalPlaces(12);
+    const evidenceCost = attemptCost.plus(recoveryAdjustment).toDecimalPlaces(12);
     const ledgerInputTokens = ledger.reduce((sum, row) => sum + row.input_tokens, 0);
     const ledgerOutputTokens = ledger.reduce((sum, row) => sum + row.output_tokens, 0);
     const ledgerCost = ledger.reduce(
       (sum, row) => sum.plus(row.cost_usd),
       new Decimal(0),
     ).toDecimalPlaces(12);
+    const recoveryLedger = ledger.filter(
+      ({ category }) => category === "strategy-exploration-recovery",
+    );
+    const adjustmentLinkDisagrees = adjustment === undefined
+      ? recoveryLedger.length !== 0
+      : recoveryLedger.length !== 1
+        || adjustment.linked_ledger_id !== adjustment.cost_ledger_id
+        || adjustment.ledger_exploration_run_id !== run.id
+        || adjustment.ledger_category !== "strategy-exploration-recovery"
+        || adjustment.ledger_provider !== "internal-recovery"
+        || adjustment.ledger_model !== null
+        || adjustment.ledger_input_tokens !== 0
+        || adjustment.ledger_output_tokens !== 0
+        || adjustment.details_adjustment_id !== adjustment.id
+        || !new Decimal(adjustment.ledger_cost_usd ?? -1)
+          .toDecimalPlaces(12).equals(recoveryAdjustment);
     if (
       run.events_used !== attempts.length
       || run.input_tokens !== attemptInputTokens
       || run.output_tokens !== attemptOutputTokens
-      || !new Decimal(run.cost_usd).toDecimalPlaces(12).equals(attemptCost)
+      || !new Decimal(run.cost_usd).toDecimalPlaces(12).equals(evidenceCost)
       || ledgerInputTokens !== attemptInputTokens
       || ledgerOutputTokens !== attemptOutputTokens
-      || !ledgerCost.equals(attemptCost)
+      || !ledgerCost.equals(evidenceCost)
+      || adjustmentLinkDisagrees
     ) {
-      throw new Error("Healing exploration attempt, run, and cost-ledger evidence disagree");
+      throw new Error(
+        "Healing exploration attempt, adjustment, run, and cost-ledger evidence disagree",
+      );
     }
 
     const lastAttempt = attempts.at(-1);
     const outcome = run.status === "finished" && run.outcome !== null
       ? run.outcome
       : lastAttempt?.outcome ?? "recovery_zero_attempt";
-    const costUsd = attemptCost.toNumber();
     const existingTerminalStatus = terminalHealingStatus(event.status);
+    const reservation = database.prepare(
+      `SELECT amount_usd, status, actual_cost_usd
+       FROM model_budget_reservations WHERE exploration_run_id = ?`,
+    ).get(run.id) as {
+      amount_usd: number;
+      status: string;
+      actual_cost_usd: number;
+    } | undefined;
+    if (reservation === undefined) {
+      if (attemptHasUsage || adjustment !== undefined || !evidenceCost.isZero()) {
+        throw new Error("Healing exploration paid evidence has no budget reservation");
+      }
+    } else if (adjustment !== undefined) {
+      const expectedAdjustment = Decimal.max(
+        new Decimal(reservation.amount_usd).minus(attemptCost),
+        0,
+      ).toDecimalPlaces(12);
+      if (
+        !new Decimal(adjustment.reserved_amount_usd).toDecimalPlaces(12)
+          .equals(new Decimal(reservation.amount_usd).toDecimalPlaces(12))
+        || !recoveryAdjustment.equals(expectedAdjustment)
+      ) {
+        throw new Error("Healing exploration recovery adjustment disagrees with its reservation");
+      }
+    }
+
+    if (reservation?.status === "reserved" && adjustment === undefined) {
+      if (existingTerminalStatus !== null || event.status !== "open" || run.status !== "running") {
+        throw new Error("Active healing reservation cannot adjust terminal lifecycle evidence");
+      }
+      recoveryAdjustment = Decimal.max(
+        new Decimal(reservation.amount_usd).minus(attemptCost),
+        0,
+      ).toDecimalPlaces(12);
+      const adjustmentId = randomUUID();
+      const costLedgerId = randomUUID();
+      const adjustmentCostUsd = recoveryAdjustment.toNumber();
+      const details = {
+        recoveryAdjustmentId: adjustmentId,
+        reason: "interrupted-healing-active-reservation",
+        reservedAmountUsd: reservation.amount_usd,
+        attemptCostUsd: attemptCost.toNumber(),
+        unaccountedRemainderUsd: adjustmentCostUsd,
+      };
+      database.prepare(
+        `INSERT INTO cost_ledger
+           (id, category, retailer_id, exploration_run_id, provider, model,
+            input_tokens, output_tokens, cost_usd, occurred_at, details_json)
+         VALUES (?, 'strategy-exploration-recovery', ?, ?,
+                 'internal-recovery', NULL, 0, 0, ?, ?, ?)`,
+      ).run(
+        costLedgerId,
+        run.retailer_id,
+        run.id,
+        adjustmentCostUsd,
+        input.finishedAt,
+        JSON.stringify(details),
+      );
+      database.prepare(
+        `INSERT INTO exploration_recovery_adjustments
+           (id, exploration_run_id, cost_ledger_id, reserved_amount_usd,
+            amount_usd, created_at, details_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        adjustmentId,
+        run.id,
+        costLedgerId,
+        reservation.amount_usd,
+        adjustmentCostUsd,
+        input.finishedAt,
+        JSON.stringify(details),
+      );
+      const totalCost = attemptCost.plus(recoveryAdjustment).toDecimalPlaces(12);
+      const updated = database.prepare(
+        `UPDATE exploration_runs SET cost_usd = ?
+         WHERE id = ? AND status = 'running'`,
+      ).run(totalCost.toNumber(), run.id);
+      if (updated.changes !== 1) {
+        throw new Error("Healing exploration recovery cost could not update its running run");
+      }
+    }
+
+    const totalCost = attemptCost.plus(recoveryAdjustment).toDecimalPlaces(12);
+    const costUsd = totalCost.toNumber();
+    if (
+      reservation !== undefined
+      && reservation.status !== "reserved"
+      && !new Decimal(reservation.actual_cost_usd).toDecimalPlaces(12).equals(totalCost)
+    ) {
+      throw new Error("Healing exploration reservation disagrees with immutable cost evidence");
+    }
     if (existingTerminalStatus !== null) {
       return {
         explorationRunId: run.id,
@@ -1145,8 +1297,10 @@ export function reconcileHealingExploration(
         artifact: {
           reconciled: true,
           attempts: attempts.length,
+          attemptCostUsd: attemptCost.toNumber(),
+          recoveryAdjustmentUsd: recoveryAdjustment.toNumber(),
           costUsd,
-          source: "immutable-attempt-and-cost-ledger-evidence",
+          source: "immutable-attempt-adjustment-and-cost-ledger-evidence",
         },
         errorMessage: lastAttempt?.error_message
           ?? (attempts.length === 0
@@ -1157,31 +1311,56 @@ export function reconcileHealingExploration(
       throw new Error(`Healing exploration ${run.id} has an unknown lifecycle status`);
     }
 
-    const reservation = database.prepare(
-      `SELECT status, actual_cost_usd
-       FROM model_budget_reservations WHERE exploration_run_id = ?`,
-    ).get(run.id) as { status: string; actual_cost_usd: number } | undefined;
     if (reservation?.status === "reserved") {
       const settled = database.prepare(
         `UPDATE model_budget_reservations
-         SET status = ?, actual_cost_usd = ?, settled_at = ?,
-             details_json = json_set(details_json, '$.actualCostUsd', ?, '$.reconciled', json('true'))
+         SET status = 'settled', actual_cost_usd = ?, settled_at = ?,
+             details_json = json_set(
+               details_json,
+               '$.actualCostUsd', ?,
+               '$.reconciled', json('true'),
+               '$.attemptCostUsd', ?,
+               '$.recoveryAdjustmentUsd', ?
+             )
          WHERE exploration_run_id = ? AND status = 'reserved'`,
       ).run(
-        costUsd === 0 ? "released" : "settled",
         costUsd,
         input.finishedAt,
         costUsd,
+        attemptCost.toNumber(),
+        recoveryAdjustment.toNumber(),
         run.id,
       );
       if (settled.changes !== 1) {
         throw new Error("Healing exploration reservation changed during reconciliation");
       }
-    } else if (
-      reservation !== undefined
-      && !new Decimal(reservation.actual_cost_usd).toDecimalPlaces(12).equals(attemptCost)
+    }
+
+    const finalRun = database.prepare(
+      `SELECT cost_usd FROM exploration_runs WHERE id = ? AND status = 'finished'`,
+    ).get(run.id) as { cost_usd: number } | undefined;
+    const finalLedger = database.prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd
+       FROM cost_ledger WHERE exploration_run_id = ?`,
+    ).get(run.id) as { cost_usd: number };
+    const finalReservation = database.prepare(
+      `SELECT status, actual_cost_usd
+       FROM model_budget_reservations WHERE exploration_run_id = ?`,
+    ).get(run.id) as { status: string; actual_cost_usd: number } | undefined;
+    if (
+      finalRun === undefined
+      || !new Decimal(finalRun.cost_usd).toDecimalPlaces(12).equals(totalCost)
+      || !new Decimal(finalLedger.cost_usd).toDecimalPlaces(12).equals(totalCost)
+      || (
+        finalReservation !== undefined
+        && (
+          finalReservation.status !== "settled"
+          || !new Decimal(finalReservation.actual_cost_usd).toDecimalPlaces(12)
+            .equals(totalCost)
+        )
+      )
     ) {
-      throw new Error("Healing exploration reservation disagrees with immutable cost evidence");
+      throw new Error("Healing exploration reconciliation bundle failed its cost proof");
     }
 
     const healingStatus = reconciliationHealingStatus(outcome);
@@ -1194,8 +1373,10 @@ export function reconcileHealingExploration(
         reconciled: true,
         explorationRunId: run.id,
         explorationOutcome: outcome,
+        attemptCostUsd: attemptCost.toNumber(),
+        recoveryAdjustmentUsd: recoveryAdjustment.toNumber(),
         costUsd,
-        evidenceSource: "immutable-attempt-and-cost-ledger-evidence",
+        evidenceSource: "immutable-attempt-adjustment-and-cost-ledger-evidence",
       },
     });
     return {

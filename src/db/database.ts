@@ -36,6 +36,10 @@ const HEALING_EXPLORATION_RECOVERY_SQL = readFileSync(
   new URL("./migrations/009_healing_exploration_recovery.sql", import.meta.url),
   "utf8",
 );
+const EXPLORATION_RECOVERY_ADJUSTMENTS_SQL = readFileSync(
+  new URL("./migrations/010_exploration_recovery_adjustments.sql", import.meta.url),
+  "utf8",
+);
 
 const MIGRATIONS = [
   { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
@@ -62,6 +66,11 @@ const MIGRATIONS = [
     version: 9,
     name: "healing_exploration_recovery",
     sql: HEALING_EXPLORATION_RECOVERY_SQL,
+  },
+  {
+    version: 10,
+    name: "exploration_recovery_adjustments",
+    sql: EXPLORATION_RECOVERY_ADJUSTMENTS_SQL,
   },
 ] as const;
 

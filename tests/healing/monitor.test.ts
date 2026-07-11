@@ -7,11 +7,19 @@ import { openDatabase } from "../../src/db/database.js";
 import {
   beginExplorationRun,
   beginHealingEvent,
+  reconcileHealingExploration,
   recordExplorationAttempt,
 } from "../../src/db/repositories.js";
 import type { AlertEvent } from "../../src/ops/alerts.js";
-import { reserveExplorationBudget } from "../../src/ops/budget.js";
-import { healPendingEvents, healRetailer } from "../../src/healing/heal.js";
+import {
+  classificationMonthlyCommittedUsd,
+  reserveExplorationBudget,
+} from "../../src/ops/budget.js";
+import {
+  HealingRecoveryPendingError,
+  healPendingEvents,
+  healRetailer,
+} from "../../src/healing/heal.js";
 import { ExplorationEvidenceError } from "../../src/explorer/explore.js";
 import { monitorRun } from "../../src/healing/monitor.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "../pipeline/helpers.js";
@@ -597,7 +605,7 @@ describe("drift monitor state machine", () => {
     ]);
   });
 
-  it("reconciles a crashed paid exploration from immutable evidence without another model call", async () => {
+  it("charges the unaccounted reservation remainder when a paid exploration crashes", async () => {
     const database = seed();
     insertRun(database, "paid-crash", [{ category: "missing-fields", responded: true }]);
     const healing = beginHealingEvent(database, {
@@ -662,11 +670,31 @@ describe("drift monitor state machine", () => {
       status: "finished",
       outcome: "validation_failed",
       events_used: 1,
-      cost_usd: 0.75,
+      cost_usd: 5,
+    });
+    const adjustment = database.prepare(
+      `SELECT a.amount_usd, a.reserved_amount_usd, a.cost_ledger_id,
+              l.category, l.provider, l.input_tokens, l.output_tokens,
+              l.cost_usd
+       FROM exploration_recovery_adjustments AS a
+       JOIN cost_ledger AS l ON l.id = a.cost_ledger_id
+       WHERE a.exploration_run_id = ?`,
+    ).get(explorationRunId);
+    expect(adjustment).toMatchObject({
+      amount_usd: 4.25,
+      reserved_amount_usd: 5,
+      category: "strategy-exploration-recovery",
+      provider: "internal-recovery",
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 4.25,
     });
     expect(database.prepare(
+      "SELECT SUM(cost_usd) AS cost_usd FROM cost_ledger WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ cost_usd: 5 });
+    expect(database.prepare(
       "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
-    ).get(explorationRunId)).toEqual({ status: "settled", actual_cost_usd: 0.75 });
+    ).get(explorationRunId)).toEqual({ status: "settled", actual_cost_usd: 5 });
     const event = database.prepare(
       "SELECT status, attempts, details_json FROM healing_events WHERE id = ?",
     ).get(healing.event.id) as { status: string; attempts: number; details_json: string };
@@ -675,11 +703,31 @@ describe("drift monitor state machine", () => {
       reconciled: true,
       explorationRunId,
       explorationOutcome: "validation_failed",
-      costUsd: 0.75,
+      attemptCostUsd: 0.75,
+      recoveryAdjustmentUsd: 4.25,
+      costUsd: 5,
     });
+    expect(classificationMonthlyCommittedUsd(
+      database,
+      new Date("2026-07-10T00:20:00.000Z"),
+    )).toBe(5);
+
+    const retried = reconcileHealingExploration(database, {
+      healingEventId: healing.event.id,
+      finishedAt: "2026-07-10T00:21:00.000Z",
+    });
+    expect(retried).toMatchObject({
+      explorationRunId,
+      attempts: 1,
+      costUsd: 5,
+      status: "failed",
+    });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_recovery_adjustments WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 1 });
   });
 
-  it("releases an active reservation for a crashed zero-attempt exploration", async () => {
+  it("charges the full active reservation for a crashed zero-attempt exploration", async () => {
     const database = seed();
     insertRun(database, "zero-crash", [{ category: "missing-fields", responded: true }]);
     const healing = beginHealingEvent(database, {
@@ -723,14 +771,26 @@ describe("drift monitor state machine", () => {
       status: "finished",
       outcome: "recovery_zero_attempt",
       events_used: 0,
-      cost_usd: 0,
+      cost_usd: 5,
     });
     expect(database.prepare(
       "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
-    ).get(explorationRunId)).toEqual({ status: "released", actual_cost_usd: 0 });
+    ).get(explorationRunId)).toEqual({ status: "settled", actual_cost_usd: 5 });
     expect(database.prepare(
-      "SELECT status, attempts FROM healing_events WHERE id = ?",
-    ).get(healing.event.id)).toEqual({ status: "deferred", attempts: 0 });
+      `SELECT a.amount_usd, l.cost_usd
+       FROM exploration_recovery_adjustments AS a
+       JOIN cost_ledger AS l ON l.id = a.cost_ledger_id
+       WHERE a.exploration_run_id = ?`,
+    ).get(explorationRunId)).toEqual({ amount_usd: 5, cost_usd: 5 });
+    const event = database.prepare(
+      "SELECT status, attempts, details_json FROM healing_events WHERE id = ?",
+    ).get(healing.event.id) as { status: string; attempts: number; details_json: string };
+    expect(event).toMatchObject({ status: "deferred", attempts: 0 });
+    expect(JSON.parse(event.details_json)).toMatchObject({
+      attemptCostUsd: 0,
+      recoveryAdjustmentUsd: 5,
+      costUsd: 5,
+    });
   });
 
   it("reconciles a zero-attempt pre-reservation crash once across concurrent workers", async () => {
@@ -794,6 +854,298 @@ describe("drift monitor state machine", () => {
     expect(firstDatabase.prepare(
       "SELECT COUNT(*) AS count FROM exploration_runs WHERE healing_event_id = ?",
     ).get(healing.event.id)).toEqual({ count: 1 });
+    expect(firstDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_recovery_adjustments WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+    expect(firstDatabase.prepare(
+      "SELECT COALESCE(SUM(cost_usd), 0) AS cost_usd FROM cost_ledger WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ cost_usd: 0 });
+  });
+
+  it("reconciles a provably free pre-reservation attempt without inventing spend", () => {
+    const database = seed();
+    insertRun(database, "free-attempt-crash", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "free-attempt-crash",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: healing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:01:00.000Z",
+    });
+    recordExplorationAttempt(database, {
+      explorationRunId,
+      attemptNumber: 1,
+      model: "fixture-model",
+      promptVersion: "fixture-prompt",
+      promptHash: "c".repeat(64),
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      costUsd: 0,
+      costEstimated: false,
+      estimateSource: "provider-unavailable-before-call",
+      rateVersion: "fixture-v1",
+      outcome: "provider_unavailable",
+      errorMessage: "credentials unavailable before invocation",
+      createdAt: "2026-07-10T00:02:00.000Z",
+    });
+
+    const result = reconcileHealingExploration(database, {
+      healingEventId: healing.event.id,
+      finishedAt: "2026-07-10T00:20:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      explorationRunId,
+      outcome: "provider_unavailable",
+      status: "provider_unavailable",
+      attempts: 1,
+      costUsd: 0,
+    });
+    expect(database.prepare(
+      "SELECT status, events_used, input_tokens, output_tokens, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({
+      status: "finished",
+      events_used: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cost_usd: 0,
+    });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_recovery_adjustments WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+  });
+
+  it("rolls back the recovery adjustment bundle and retries it idempotently", () => {
+    const database = seed();
+    insertRun(database, "rollback-crash", [
+      { category: "missing-fields", responded: true },
+    ]);
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "rollback-crash",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: healing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:01:00.000Z",
+    });
+    reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 50,
+      now: new Date("2026-07-10T00:01:00.000Z"),
+    });
+    database.exec(`
+      CREATE TEMP TRIGGER fixture_block_reservation_settlement
+      BEFORE UPDATE ON model_budget_reservations
+      BEGIN
+        SELECT RAISE(ABORT, 'fixture settlement failure');
+      END;
+    `);
+
+    expect(() => reconcileHealingExploration(database, {
+      healingEventId: healing.event.id,
+      finishedAt: "2026-07-10T00:20:00.000Z",
+    })).toThrow(/fixture settlement failure/iu);
+    expect(database.prepare(
+      "SELECT status, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({ status: "running", cost_usd: 0 });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "reserved", actual_cost_usd: 0 });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_recovery_adjustments WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM cost_ledger WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+    expect(database.prepare(
+      "SELECT status FROM healing_events WHERE id = ?",
+    ).get(healing.event.id)).toEqual({ status: "open" });
+
+    database.exec("DROP TRIGGER fixture_block_reservation_settlement");
+    const result = reconcileHealingExploration(database, {
+      healingEventId: healing.event.id,
+      finishedAt: "2026-07-10T00:21:00.000Z",
+    });
+    expect(result).toMatchObject({ costUsd: 5, attempts: 0, status: "deferred" });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_recovery_adjustments WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 1 });
+  });
+
+  it("keeps reconciliation mismatches recovery-pending, continues later retailers, and retries", async () => {
+    const database = seed();
+    seedRetailer(database, "retailer-2");
+    seedStrategy(database, "extraction", extractionStrategy, "retailer-2");
+    insertRun(database, "mismatch-recovery", [
+      { category: "missing-fields", responded: true },
+    ]);
+    insertRun(database, "later-recovery", [
+      { category: "missing-fields", responded: true },
+    ], 0, "failed", "retailer-2");
+    const mismatchHealing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "mismatch-recovery",
+      detectedAt: "2026-07-10T00:00:00.000Z",
+    });
+    beginHealingEvent(database, {
+      retailerId: "retailer-2",
+      purpose: "extraction",
+      onsetRunId: "later-recovery",
+      detectedAt: "2026-07-10T00:01:00.000Z",
+    });
+    const explorationRunId = beginExplorationRun(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      trigger: "healing",
+      previousStrategyId: "retailer-1-extraction-v1",
+      healingEventId: mismatchHealing.event.id,
+      maxAttempts: 3,
+      startedAt: "2026-07-10T00:02:00.000Z",
+    });
+    reserveExplorationBudget(database, {
+      explorationRunId,
+      retailerId: "retailer-1",
+      eventAllowanceUsd: 5,
+      monthlyLimitUsd: 50,
+      now: new Date("2026-07-10T00:02:00.000Z"),
+    });
+    recordExplorationAttempt(database, {
+      explorationRunId,
+      attemptNumber: 1,
+      model: "fixture-model",
+      promptVersion: "fixture-prompt",
+      promptHash: "b".repeat(64),
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 50,
+      reasoningOutputTokens: 0,
+      costUsd: 1,
+      costEstimated: true,
+      estimateSource: "fixture-rate",
+      rateVersion: "fixture-v1",
+      externalSampleSize: 30,
+      externalSuccesses: 24,
+      externalScore: 0.8,
+      outcome: "validation_failed",
+      createdAt: "2026-07-10T00:03:00.000Z",
+    });
+    database.prepare(
+      "UPDATE exploration_runs SET cost_usd = 0.5 WHERE id = ?",
+    ).run(explorationRunId);
+
+    await expect(healRetailer("retailer-1", "extraction", {
+      database,
+      onsetRunId: "mismatch-recovery",
+      now: () => new Date("2026-07-10T00:20:00.000Z"),
+      explore: async () => {
+        throw new Error("evidence mismatch must not regenerate");
+      },
+    })).rejects.toBeInstanceOf(HealingRecoveryPendingError);
+
+    const explored: string[] = [];
+    const alerts: AlertEvent[] = [];
+    const summary = await healPendingEvents({
+      database,
+      now: () => new Date("2026-07-10T00:40:00.000Z"),
+      explore: async (retailerId) => {
+        explored.push(retailerId);
+        if (retailerId === "retailer-1") {
+          throw new Error("reconciliation mismatch must not regenerate");
+        }
+        return {
+          explorationRunId: "later-provider-unavailable",
+          activated: false,
+          attempts: 0,
+          externalScore: null,
+          outcome: "provider_unavailable",
+          costUsd: 0,
+        };
+      },
+      alertSink: { send: async (event) => { alerts.push(event); } },
+    });
+
+    expect(explored).toEqual(["retailer-2"]);
+    expect(summary).toMatchObject({
+      queued: 2,
+      processed: 1,
+      providerUnavailable: 1,
+      inProgress: 1,
+      workerErrors: 1,
+      failed: 0,
+    });
+    expect(alerts.some(({ title }) => title === "Healing worker recovery pending")).toBe(true);
+    expect(database.prepare(
+      "SELECT status, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({ status: "running", cost_usd: 0.5 });
+    expect(database.prepare(
+      "SELECT status FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "reserved" });
+    expect(database.prepare(
+      "SELECT status FROM healing_events WHERE id = ?",
+    ).get(mismatchHealing.event.id)).toEqual({ status: "open" });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM exploration_recovery_adjustments WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ count: 0 });
+
+    database.prepare(
+      "UPDATE exploration_runs SET cost_usd = 1 WHERE id = ?",
+    ).run(explorationRunId);
+    const retry = await healPendingEvents({
+      database,
+      retailerId: "retailer-1",
+      now: () => new Date("2026-07-10T01:00:00.000Z"),
+      explore: async () => {
+        throw new Error("corrected recovery must not regenerate");
+      },
+    });
+
+    expect(retry).toMatchObject({
+      queued: 1,
+      processed: 1,
+      failed: 1,
+      inProgress: 0,
+      workerErrors: 0,
+    });
+    expect(database.prepare(
+      "SELECT status, cost_usd FROM exploration_runs WHERE id = ?",
+    ).get(explorationRunId)).toEqual({ status: "finished", cost_usd: 5 });
+    expect(database.prepare(
+      "SELECT status, actual_cost_usd FROM model_budget_reservations WHERE exploration_run_id = ?",
+    ).get(explorationRunId)).toEqual({ status: "settled", actual_cost_usd: 5 });
+    const event = database.prepare(
+      "SELECT status, details_json FROM healing_events WHERE id = ?",
+    ).get(mismatchHealing.event.id) as { status: string; details_json: string };
+    expect(event.status).toBe("failed");
+    expect(JSON.parse(event.details_json)).toMatchObject({
+      attemptCostUsd: 1,
+      recoveryAdjustmentUsd: 4,
+      costUsd: 5,
+    });
   });
 
   it("isolates each pending retailer and persists a sanitized worker error", async () => {

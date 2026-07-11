@@ -114,6 +114,21 @@ function seedEvidenceGraph(database: ReturnType<typeof openDatabase>): void {
     VALUES
       ('cost-1', 'model', 'retailer-1', 'exploration-1', 'classification-1',
        'openai', 'test-model', 100, 20, 0.05, '2026-07-10T04:01:00.000Z');
+
+    INSERT INTO cost_ledger
+      (id, category, retailer_id, exploration_run_id, provider,
+       input_tokens, output_tokens, cost_usd, occurred_at, details_json)
+    VALUES
+      ('cost-recovery-1', 'strategy-exploration-recovery', 'retailer-1',
+       'exploration-1', 'internal-recovery', 0, 0, 0.01,
+       '2026-07-10T04:02:00.000Z', '{"recoveryAdjustmentId":"adjustment-1"}');
+
+    INSERT INTO exploration_recovery_adjustments
+      (id, exploration_run_id, cost_ledger_id, reserved_amount_usd,
+       amount_usd, created_at)
+    VALUES
+      ('adjustment-1', 'exploration-1', 'cost-recovery-1', 5, 0.01,
+       '2026-07-10T04:02:00.000Z');
   `);
 }
 
@@ -165,6 +180,7 @@ describe("database foundation", () => {
         "heartbeats",
         "cost_ledger",
         "model_budget_reservations",
+        "exploration_recovery_adjustments",
         "schema_migrations",
       ]),
     );
@@ -259,7 +275,7 @@ describe("database foundation", () => {
       database
         .prepare("SELECT COUNT(*) AS count FROM schema_migrations")
         .get(),
-    ).toEqual({ count: 9 });
+    ).toEqual({ count: 10 });
 
     database.exec("SELECT 1");
     expect(() => openMemoryDatabase()).not.toThrow();
@@ -281,7 +297,7 @@ describe("database foundation", () => {
     databases.push(database);
     expect(
       database.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-    ).toEqual({ count: 9 });
+    ).toEqual({ count: 10 });
   });
 
   it("binds at most one immutable exploration run to each healing event", () => {
@@ -333,6 +349,7 @@ describe("database foundation", () => {
       "heartbeats",
       "healing_events",
       "exploration_runs",
+      "exploration_recovery_adjustments",
       "classifications",
       "run_failures",
       "observations",
@@ -355,6 +372,7 @@ describe("database foundation", () => {
       "UPDATE classifications SET confidence = 0 WHERE id = 'classification-1'",
       "UPDATE heartbeats SET status = 'failed' WHERE id = 'heartbeat-1'",
       "UPDATE cost_ledger SET cost_usd = 0 WHERE id = 'cost-1'",
+      "UPDATE exploration_recovery_adjustments SET amount_usd = 0",
     ]) {
       expect(() => database.exec(statement)).toThrow(/immutable/);
     }

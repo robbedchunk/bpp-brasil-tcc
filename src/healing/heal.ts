@@ -69,6 +69,20 @@ export interface HealingOutcome {
   explorationRunId?: string;
 }
 
+export class HealingRecoveryPendingError extends Error {
+  readonly healingEventId: string;
+
+  constructor(
+    message: string,
+    healingEventId: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "HealingRecoveryPendingError";
+    this.healingEventId = healingEventId;
+  }
+}
+
 export type HealPendingEventsDependencies = Omit<
   HealRetailerDependencies,
   "onsetRunId"
@@ -184,10 +198,20 @@ export async function healRetailer(
     };
   }
 
-  const reconciled = reconcileHealingExploration(dependencies.database, {
-    healingEventId: opened.event.id,
-    finishedAt: now().toISOString(),
-  });
+  let reconciled: ReturnType<typeof reconcileHealingExploration>;
+  try {
+    reconciled = reconcileHealingExploration(dependencies.database, {
+      healingEventId: opened.event.id,
+      finishedAt: now().toISOString(),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error) || "unknown error";
+    throw new HealingRecoveryPendingError(
+      `Healing exploration reconciliation remains pending: ${reason}`,
+      opened.event.id,
+      { cause: error },
+    );
+  }
   if (reconciled !== null) {
     let degraded = isDegraded(dependencies.database, retailerId);
     if (reconciled.status === "failed") {
@@ -454,8 +478,8 @@ export async function healPendingEvents(
       countOutcome(outcome.status);
     } catch (error) {
       summary.workerErrors += 1;
-      const recoveryPending = error instanceof ExplorationEvidenceError
-        && error.terminalCommitFailed;
+      const recoveryPending = error instanceof HealingRecoveryPendingError
+        || (error instanceof ExplorationEvidenceError && error.terminalCommitFailed);
       const message = redactSandboxText(
         error instanceof Error ? error.message : String(error) || "Unknown worker error",
       ).slice(0, 2_000);
