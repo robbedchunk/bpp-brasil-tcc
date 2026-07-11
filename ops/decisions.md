@@ -81,3 +81,22 @@
 - The production host logged inotify watch-capacity warnings while starting
   one-shot services, but both heartbeat and backup drills exited successfully;
   this host-level limit remains visible for operator follow-up.
+
+## 2026-07-10 — M6 index method and public snapshots
+
+- Index calculation is read-only with respect to SQLite. Derived rows are
+  immutable, content-hashed filesystem snapshots, so weekly analysis cannot
+  rewrite source evidence or hold a database read transaction during network or
+  filesystem work.
+- The method is fixed as promo price when positive, product carry-forward for at
+  most seven calendar days, Jevons within retailer/sub-item, an equal arithmetic
+  mean across retailers, and POF-weight aggregation renormalized over covered
+  sub-items. Whole-panel missing days break the chain rather than implying zero
+  movement.
+- Retailer min/max sensitivity values are descriptive only and are never called
+  confidence intervals or statistical validation. The experimental index remains
+  a demonstration artifact.
+- The official comparison is IBGE aggregate 7060, variable 63, classification
+  315/category 7171, locality N7/3501. The official N7 São Paulo series and the
+  retailer CEP panel have different geographic definitions; published figures
+  must retain that caveat and never upsample monthly official values to daily.

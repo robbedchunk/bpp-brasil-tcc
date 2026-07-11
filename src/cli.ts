@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
@@ -71,6 +71,14 @@ import {
   type HealRetailerDependencies,
 } from "./healing/heal.js";
 import { monitorRun } from "./healing/monitor.js";
+import { buildDailyIndex } from "./index/aggregate.js";
+import { exportResearchData as runExportResearchData } from "./index/export.js";
+import { OfficialSidraClient } from "./index/sidra.js";
+import { strictDay } from "./index/relatives.js";
+import type {
+  ExportResearchFunction,
+  SidraClient,
+} from "./index/types.js";
 
 interface PipelineCliOptions {
   limit: number;
@@ -86,6 +94,9 @@ export interface CliDependencies {
   stderr?: (text: string) => void;
   alertSink?: AlertSink;
   lockPath?: string;
+  indexLockPath?: string;
+  sidraClient?: SidraClient;
+  exportResearchData?: ExportResearchFunction;
   productClassifier?: ProductClassifier;
   productClassifierFactory?: (model: string, apiKey: string) => ProductClassifier;
   classificationBatchClient?: OpenAIBatchClient;
@@ -642,6 +653,94 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
   };
   remoteBatchAction("poll", "Poll a submitted asynchronous classification batch");
   remoteBatchAction("finalize", "Finalize terminal batch output and append evidence");
+
+  const positiveVersion = (value: string): number => {
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      throw new Error("--classification-version must be a positive integer");
+    }
+    return parsed;
+  };
+  const indexDay = (value: string): string => strictDay(value);
+  command
+    .command("index")
+    .description("Calculate and optionally snapshot the experimental food-at-home index")
+    .option("--export", "publish an immutable CSV snapshot")
+    .option("--output <directory>", "snapshot output directory under the project root")
+    .option("--through <YYYY-MM-DD>", "inclusive São Paulo collection day", indexDay)
+    .option(
+      "--classification-version <number>",
+      "use exactly one append-only classification version",
+      positiveVersion,
+    )
+    .option("--require-official", "fail if the official SIDRA pull is unavailable")
+    .option("--json", "emit only JSON")
+    .action(async (options: {
+      export?: boolean;
+      output?: string;
+      through?: string;
+      classificationVersion?: number;
+      requireOfficial?: boolean;
+      json?: boolean;
+    }) => {
+      const applicationConfig = config();
+      const configuredOutput = resolve(
+        applicationConfig.projectRoot,
+        options.output ?? "data/exports",
+      );
+      const relativeOutput = relative(applicationConfig.projectRoot, configuredOutput);
+      if (
+        relativeOutput === ".."
+        || relativeOutput.startsWith(`..${sep}`)
+        || relativeOutput.startsWith(sep)
+      ) {
+        throw new Error("--output must stay inside PROJECT_ROOT");
+      }
+      const result = await withProcessLock(
+        dependencies.indexLockPath
+          ?? resolve(applicationConfig.projectRoot, "var/precos-index.lock"),
+        () => withDatabase(async (database) => {
+          if (options.export !== true) {
+            const series = buildDailyIndex(database, {
+              ...(options.through === undefined ? {} : { throughDay: options.through }),
+              ...(options.classificationVersion === undefined
+                ? {}
+                : { classificationVersion: options.classificationVersion }),
+            });
+            return {
+              status: series.aggregate.some((point) => point.dailyRelative !== null)
+                ? "complete"
+                : "no_index_data",
+              methodVersion: series.methodVersion,
+              throughDay: series.throughDay,
+              productRelatives: series.productRelatives.length,
+              aggregatePoints: series.aggregate.length,
+            };
+          }
+          const sink = dependencies.alertSink ?? createAlertSink({
+            ...(applicationConfig.ntfyTopic === undefined
+              ? {}
+              : { ntfyTopic: applicationConfig.ntfyTopic }),
+            fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+            now,
+          });
+          return (dependencies.exportResearchData ?? runExportResearchData)(database, {
+            outputRoot: configuredOutput,
+            now,
+            sidraClient: dependencies.sidraClient ?? new OfficialSidraClient(),
+            alertSink: sink,
+            requireOfficial: options.requireOfficial === true,
+            ...(options.through === undefined ? {} : { throughDay: options.through }),
+            ...(options.classificationVersion === undefined
+              ? {}
+              : { classificationVersion: options.classificationVersion }),
+          });
+        }),
+      );
+      stdout(options.json === true
+        ? `${JSON.stringify(result)}\n`
+        : `index: ${result.status}\n`);
+    });
 
   command
     .command("daily")

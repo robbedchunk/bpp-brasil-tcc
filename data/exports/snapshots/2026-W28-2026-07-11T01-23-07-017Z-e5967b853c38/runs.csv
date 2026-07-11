@@ -1,0 +1,9 @@
+run_id,retailer_id,retailer_name,collection_day,stage,status,attempted,ok,failed,success_rate,strategy_id,strategy_version,started_at,finished_at,error_category
+7ee39a82-3529-4159-8dbd-471f12b771d5,extra-mercado,Extra Mercado,2026-07-10,discover,completed,30,30,0,1,extra-mercado-discovery-v1,1,2026-07-10T15:43:12.072Z,2026-07-10T15:43:12.336Z,
+873ba9cd-a45a-4352-8339-9caffd928022,pao-de-acucar,Pão de Açúcar,2026-07-10,discover,completed,30,30,0,1,pao-de-acucar-discovery-v1,1,2026-07-10T15:43:12.336Z,2026-07-10T15:43:12.405Z,
+8eeb3f25-48a2-4368-b7ac-768509221ba1,extra-mercado,Extra Mercado,2026-07-10,collect,failed,30,0,30,0,extra-mercado-extraction-v1,1,2026-07-10T15:43:17.390Z,2026-07-10T15:43:45.229Z,
+4e9c423d-c4c2-4b4e-8dc0-2727fc49e8e0,pao-de-acucar,Pão de Açúcar,2026-07-10,collect,failed,30,0,30,0,pao-de-acucar-extraction-v1,1,2026-07-10T15:43:45.232Z,2026-07-10T15:44:12.927Z,
+185fc978-df29-4bff-8a8a-b7354e292c34,extra-mercado,Extra Mercado,2026-07-10,collect,completed,30,30,0,1,extra-mercado-extraction-v2,2,2026-07-10T15:48:27.004Z,2026-07-10T15:48:55.287Z,
+796b91fd-1e9b-4ba7-9e12-4d37381b4271,pao-de-acucar,Pão de Açúcar,2026-07-10,collect,completed,30,30,0,1,pao-de-acucar-extraction-v2,2,2026-07-10T15:48:55.290Z,2026-07-10T15:49:22.766Z,
+3c163846-d1cb-4e2c-bad6-1a7668e6dd8d,extra-mercado,Extra Mercado,2026-07-10,collect,completed,1,1,0,1,extra-mercado-extraction-v2,2,2026-07-10T15:56:19.226Z,2026-07-10T15:56:21.933Z,
+f1b4d14a-c64b-4103-8331-5c8150cf4edf,pao-de-acucar,Pão de Açúcar,2026-07-10,collect,completed,1,1,0,1,pao-de-acucar-extraction-v2,2,2026-07-10T15:56:21.936Z,2026-07-10T15:56:22.148Z,
