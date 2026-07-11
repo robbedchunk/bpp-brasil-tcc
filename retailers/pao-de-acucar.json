@@ -3,7 +3,10 @@
   "id": "pao-de-acucar",
   "name": "Pão de Açúcar",
   "baseUrl": "https://www.paodeacucar.com",
-  "allowedDomains": ["api.vendas.gpa.digital", "www.paodeacucar.com"],
+  "allowedDomains": [
+    "api.vendas.gpa.digital",
+    "www.paodeacucar.com"
+  ],
   "cep": "01310-100",
   "active": true,
   "backupRank": null,
@@ -21,22 +24,36 @@
     "erpCode": "0001",
     "evidenceUrl": "https://api.vendas.gpa.digital/pa/delivery-v2/ecom/deliveryOptions?zipCode=01310100"
   },
-  "seedHints": ["alimentos", "bebidas"],
-  "politeDelayMs": { "min": 200, "max": 300 },
-  "strategyVersions": { "discovery": 4, "extraction": 2 },
+  "seedHints": [
+    "alimentos",
+    "bebidas"
+  ],
+  "politeDelayMs": {
+    "min": 200,
+    "max": 300
+  },
+  "strategyVersions": {
+    "discovery": 4,
+    "extraction": 2
+  },
   "discovery": {
     "schemaVersion": 1,
+    "allowedDomains": [
+      "api.vendas.gpa.digital",
+      "www.paodeacucar.com"
+    ],
     "purpose": "discovery",
     "tier": "api",
-    "allowedDomains": ["api.vendas.gpa.digital", "www.paodeacucar.com"],
     "request": {
       "method": "POST",
       "url": "https://api.vendas.gpa.digital/pa/search/category-page",
-      "headers": { "accept": "application/json" },
+      "headers": {
+        "accept": "application/json"
+      },
       "body": {
         "partner": "linx",
         "page": "{page}",
-      "sortBy": "descPrice",
+        "sortBy": "descPrice",
         "resultsPerPage": 36,
         "multiCategory": "{segment}",
         "storeId": 61,
@@ -50,22 +67,41 @@
       "url": "$.urlDetails",
       "externalId": "$.id"
     },
-    "pagination": { "kind": "page", "start": 1, "step": 1, "pageSize": 36, "maxPages": 70 },
+    "pagination": {
+      "kind": "page",
+      "start": 1,
+      "step": 1,
+      "pageSize": 36,
+      "maxPages": 70
+    },
     "segments": [
-      { "value": "alimentos", "sourceCategory": "Alimentos", "maxProducts": 2400 },
-      { "value": "bebidas", "sourceCategory": "Bebidas", "maxProducts": 600 }
+      {
+        "value": "alimentos",
+        "sourceCategory": "Alimentos",
+        "maxProducts": 2400
+      },
+      {
+        "value": "bebidas",
+        "sourceCategory": "Bebidas",
+        "maxProducts": 600
+      }
     ],
     "maxProducts": 3000
   },
   "extraction": {
     "schemaVersion": 1,
+    "allowedDomains": [
+      "api.vendas.gpa.digital",
+      "www.paodeacucar.com"
+    ],
     "purpose": "extraction",
     "tier": "api",
-    "allowedDomains": ["api.vendas.gpa.digital", "www.paodeacucar.com"],
     "request": {
       "method": "GET",
       "url": "https://api.vendas.gpa.digital/pa/v4/products/ecom/{externalId}/bestPrices",
-      "headers": { "accept": "application/json" },
+      "headers": {
+        "accept": "application/json"
+      },
       "query": {
         "storeId": 61,
         "isClienteMais": true
@@ -90,27 +126,34 @@
       "path": "tests/fixtures/pao-de-acucar/search-product.json",
       "sourceUrl": "https://api.vendas.gpa.digital/pa/v4/products/ecom/41329/bestPrices?storeId=61&isClienteMais=true",
       "capturedAt": "2026-07-10T15:45:00.000Z",
-      "redactions": ["response headers omitted", "cookies omitted", "delivery address omitted"],
+      "redactions": [
+        "response headers omitted",
+        "cookies omitted",
+        "delivery address omitted"
+      ],
       "synthetic": false
     },
     {
       "path": "tests/fixtures/pao-de-acucar/mutated-product.json",
       "sourceUrl": "https://api.vendas.gpa.digital/pa/v4/products/ecom/41329/bestPrices?storeId=61&isClienteMais=true",
       "capturedAt": "2026-07-10T15:45:00.000Z",
-      "redactions": ["fully synthetic mutation", "no request metadata retained"],
+      "redactions": [
+        "fully synthetic mutation",
+        "no request metadata retained"
+      ],
       "synthetic": true
     }
   ],
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T05:07:25.000Z",
+      "validatedAt": "2026-07-11T07:01:10.099Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Trusted execution of the official store-61 Alimentos category page returned 30/30 canonical IDs and URLs; declarative segment provenance supplies the authoritative food category.",
       "receiptPath": "data/validation/pao-de-acucar-discovery-v4.json",
-      "receiptSha256": null
+      "receiptSha256": "565bfa2e815f764e6225921540b42ddb6354d8e3646891a499e8ded1b5009372"
     },
     "extraction": {
       "externallyValidated": true,
