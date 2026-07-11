@@ -204,6 +204,19 @@ describe("acceptance status and evidence", () => {
     expect(result.criterion.reasonCodes).toContain("MISSED_SCHEDULED_RUN");
   });
 
+  it("keeps M2 pending during randomized/completion grace and fails no-heartbeat after it", () => {
+    const duringWindow = fixture();
+    for (const retailer of ["alpha", "beta"]) {
+      seedRetailer(duringWindow, retailer);
+      seedCollection(duringWindow, retailer, "2026-07-09");
+    }
+    expect(evaluateM2(duringWindow, new Date("2026-07-10T06:30:00.000Z")).criterion.status).toBe("pending");
+
+    const missing = fixture();
+    missing.prepare("UPDATE schema_migrations SET applied_at = '2026-07-09T00:00:00.000Z'").run();
+    expect(evaluateM2(missing, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("fail");
+  });
+
   it("does not let full manual daytime runs qualify as scheduled M2 evidence", () => {
     const database = fixture();
     for (const retailer of ["alpha", "beta"]) {

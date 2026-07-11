@@ -122,6 +122,7 @@ const TIMER_UNITS = [
   "precos-backup.timer",
 ] as const;
 const SERVICE_UNITS = TIMER_UNITS.map((unit) => unit.replace(/\.timer$/u, ".service"));
+const CLASSIFICATION_SERVICE_UNIT = "precos-classification.service";
 const SHA256 = /^[a-f0-9]{64}$/u;
 const COMMIT = /^[a-f0-9]{40}$/u;
 const REASON_CODES = new Set([
@@ -363,6 +364,15 @@ function scheduledBoundaryAfter(activation: Date, hour: number, minute: number):
   return candidate.getTime() >= activation.getTime()
     ? candidate
     : new Date(`${nextDay(day)}T${String(hour + 3).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00.000Z`);
+}
+
+function scheduledBoundaryForDay(day: string, hour: number, minute: number): Date {
+  return new Date(`${day}T${String(hour + 3).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00.000Z`);
+}
+
+function currentScheduledBoundary(first: Date, now: Date, hour: number, minute: number): Date {
+  const today = scheduledBoundaryForDay(saoPauloDay(now), hour, minute);
+  return today.getTime() < first.getTime() ? first : today;
 }
 
 export function evaluateM2(database: Database.Database, now: Date): CriterionEvaluation {
@@ -1027,6 +1037,31 @@ export function validateTimerDefinitions(
       valid &&= /ExecStart="?[^\n"]*\/v24[^/]*\/bin\/node"?/u.test(rendered);
     }
   }
+  const dailySourcePath = join(root, "ops/precos-daily.service");
+  const classificationSourcePath = join(root, "ops", CLASSIFICATION_SERVICE_UNIT);
+  const classificationInstalledPath = join(installedUnitDirectory, CLASSIFICATION_SERVICE_UNIT);
+  if (existsSync(join(root, "ops/precos-classification.timer"))
+    || existsSync(join(installedUnitDirectory, "precos-classification.timer"))) valid = false;
+  if (!existsSync(dailySourcePath) || !existsSync(classificationSourcePath) || !existsSync(classificationInstalledPath)) {
+    valid = false;
+  } else {
+    const daily = readFileSync(dailySourcePath, "utf8");
+    const classification = readFileSync(classificationSourcePath, "utf8");
+    const installed = readFileSync(classificationInstalledPath, "utf8");
+    valid &&= /OnSuccess=precos-classification\.service/u.test(daily)
+      && /After=precos-daily\.service/u.test(classification)
+      && /WorkingDirectory=@PROJECT_ROOT@/u.test(classification)
+      && /Environment=@RUNTIME_PATH@/u.test(classification)
+      && /Environment=TZ=America\/Sao_Paulo/u.test(classification)
+      && /UMask=0077/u.test(classification)
+      && /ExecStart=@NODE_PATH@ @CLI_PATH@ classify --batch-size 50 --version 1 --json/u.test(classification)
+      && !/@(?:PROJECT_ROOT|NODE_PATH|CLI_PATH|RUNTIME_PATH|ENV_FILE)@/u.test(installed)
+      && /After=precos-daily\.service/u.test(installed)
+      && /WorkingDirectory=\//u.test(installed)
+      && /PATH=[^\n]*\/v24[^/]*\/bin/u.test(installed)
+      && /ExecStart="?[^\n"]*\/v24[^/]*\/bin\/node"?[^\n]* classify --batch-size 50 --version 1 --json/u.test(installed);
+    installedCount += 1;
+  }
   return { valid, timerCount, serviceCount, installedCount };
 }
 
@@ -1076,13 +1111,17 @@ function m7Evaluation(
   const firstDailyDeadline = scheduledBoundaryAfter(activation, 4, 0);
   const firstBackupStart = scheduledBoundaryAfter(activation, 4, 15);
   const firstBackupDeadline = scheduledBoundaryAfter(activation, 5, 15);
+  const currentDailyStart = currentScheduledBoundary(firstDailyStart, now, 3, 0);
+  const currentDailyDeadline = currentScheduledBoundary(firstDailyDeadline, now, 4, 0);
+  const currentBackupStart = currentScheduledBoundary(firstBackupStart, now, 4, 15);
+  const currentBackupDeadline = currentScheduledBoundary(firstBackupDeadline, now, 5, 15);
   const heartbeatCandidates = database.prepare(`
     SELECT scheduled_for, completed_at FROM heartbeats
     WHERE pipeline = 'collect' AND status = 'completed'
     ORDER BY completed_at DESC, id DESC
   `).all() as Array<{ scheduled_for: string; completed_at: string }>;
   const latestHeartbeat = heartbeatCandidates.find((heartbeat) => isScheduledCollectionHeartbeat(heartbeat.scheduled_for)
-    && Date.parse(heartbeat.scheduled_for) >= firstDailyStart.getTime());
+    && Date.parse(heartbeat.scheduled_for) >= currentDailyStart.getTime());
   const heartbeatAgeHours = latestHeartbeat === undefined
     ? null
     : (now.getTime() - Date.parse(latestHeartbeat.completed_at)) / 3_600_000;
@@ -1093,7 +1132,7 @@ function m7Evaluation(
       .map((name) => join(backupDirectory, name)).sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs)
     : [];
   const newestBackupAgeHours = backupFiles[0] === undefined ? null : (now.getTime() - statSync(backupFiles[0]).mtimeMs) / 3_600_000;
-  const newestBackupAfterFirstWindow = backupFiles[0] !== undefined && statSync(backupFiles[0]).mtimeMs >= firstBackupStart.getTime();
+  const newestBackupAfterCurrentWindow = backupFiles[0] !== undefined && statSync(backupFiles[0]).mtimeMs >= currentBackupStart.getTime();
   let scheduledBackupIntegrityValid = false;
   if (backupFiles[0] !== undefined && (statSync(backupFiles[0]).mode & 0o777) === 0o600) {
     try {
@@ -1112,13 +1151,13 @@ function m7Evaluation(
   const dailyServiceStart = parseServiceTime(dailyService?.lastStartedAt);
   const backupServiceStart = parseServiceTime(backupService?.lastStartedAt);
   const dailyScheduledServiceSucceeded = dailyService?.result === "success"
-    && Number.isFinite(dailyServiceStart) && dailyServiceStart >= firstDailyStart.getTime();
+    && Number.isFinite(dailyServiceStart) && dailyServiceStart >= currentDailyStart.getTime();
   const backupScheduledServiceSucceeded = backupService?.result === "success"
-    && Number.isFinite(backupServiceStart) && backupServiceStart >= firstBackupStart.getTime();
+    && Number.isFinite(backupServiceStart) && backupServiceStart >= currentBackupStart.getTime();
   const backupBoundToService = backupFiles[0] !== undefined && backupScheduledServiceSucceeded
     && Math.abs(statSync(backupFiles[0]).mtimeMs - backupServiceStart) <= 60 * 60 * 1_000;
   const realBackupCurrent = newestBackupAgeHours !== null && newestBackupAgeHours <= 26
-    && newestBackupAfterFirstWindow && scheduledBackupIntegrityValid && backupBoundToService;
+    && newestBackupAfterCurrentWindow && scheduledBackupIntegrityValid && backupBoundToService;
   let backupFileHealthy = false;
   let backupAgeHours: number | null = null;
   if (backup?.facts.backupPath !== undefined && typeof backup.facts.backupPath === "string") {
@@ -1156,6 +1195,8 @@ function m7Evaluation(
     latestCollectionHeartbeatAgeHours: heartbeatAgeHours,
     firstDailyWindowElapsed: now.getTime() >= firstDailyDeadline.getTime(),
     firstBackupWindowElapsed: now.getTime() >= firstBackupDeadline.getTime(),
+    currentDailyWindowElapsed: now.getTime() >= currentDailyDeadline.getTime(),
+    currentBackupWindowElapsed: now.getTime() >= currentBackupDeadline.getTime(),
     newestRealBackupAgeHours: newestBackupAgeHours,
     newestScheduledBackupIntegrityValid: scheduledBackupIntegrityValid,
     dailyScheduledServiceSucceeded,
@@ -1171,7 +1212,7 @@ function m7Evaluation(
     || !freshMatches) {
     return { criterion: criterion(id, "fail", "Required static operations, receipt integrity, or timer evidence is invalid", ["EVIDENCE_CONTRADICTION"], [evidenceId]), gates: [], evidence: [item] };
   }
-  if (now.getTime() < firstDailyDeadline.getTime() || now.getTime() < firstBackupDeadline.getTime()
+  if (now.getTime() < currentDailyDeadline.getTime() || now.getTime() < currentBackupDeadline.getTime()
     || dailyService?.active === true || backupService?.active === true) {
     return {
       criterion: criterion(id, "pending", "The first applicable scheduled daily/backup windows have not both elapsed", ["SCHEDULED_RUN_NOT_YET_DUE"], [evidenceId]),
@@ -1179,10 +1220,10 @@ function m7Evaluation(
       evidence: [item],
     };
   }
-  if ((latestHeartbeat === undefined || !dailyScheduledServiceSucceeded) && now.getTime() >= firstDailyDeadline.getTime()) {
+  if ((latestHeartbeat === undefined || !dailyScheduledServiceSucceeded) && now.getTime() >= currentDailyDeadline.getTime()) {
     return { criterion: criterion(id, "fail", "The first daily window elapsed without a collection heartbeat", ["MISSED_SCHEDULED_RUN"], [evidenceId]), gates: [], evidence: [item] };
   }
-  if (!realBackupCurrent && now.getTime() >= firstBackupDeadline.getTime()) {
+  if (!realBackupCurrent && now.getTime() >= currentBackupDeadline.getTime()) {
     return { criterion: criterion(id, "fail", "The first backup window elapsed without a current integrity-valid backup", ["MISSED_SCHEDULED_RUN"], [evidenceId]), gates: [], evidence: [item] };
   }
   if (latestHeartbeat === undefined || !realBackupCurrent) {
@@ -1219,7 +1260,7 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     const m5Command = await options.runCommand("m5-healing", "npm", ["test", "--", "tests/healing", "tests/ops/systemd.test.ts"]);
     const m6Command = await options.runCommand("m6-index-analysis", "npm", ["test", "--", "tests/index", "tests/analysis"]);
     const [services, publication] = await Promise.all([
-      options.serviceReader.read([...TIMER_UNITS, ...SERVICE_UNITS]),
+      options.serviceReader.read([...TIMER_UNITS, ...SERVICE_UNITS, CLASSIFICATION_SERVICE_UNIT]),
       auditPublication({ projectRoot: root, databasePath, now: options.now, requireClean: false }),
     ]);
     const cleanSource = sourceWorktreeClean(root);
@@ -1245,6 +1286,33 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
         ORDER BY retailer_id, collection_day
       `).all() as Array<{ retailer_id: string; collection_day: string }>),
     }, now);
+    const operationsActivationRow = database.prepare("SELECT MIN(applied_at) AS activatedAt FROM schema_migrations").get() as { activatedAt: string | null };
+    const operationsActivation = new Date(operationsActivationRow.activatedAt ?? now.toISOString());
+    const currentDailyStart = currentScheduledBoundary(scheduledBoundaryAfter(operationsActivation, 3, 0), now, 3, 0);
+    const dailyState = services.find((service) => service.unit === "precos-daily.service");
+    const classificationState = services.find((service) => service.unit === CLASSIFICATION_SERVICE_UNIT);
+    const dailyStartedAt = Date.parse(dailyState?.lastStartedAt ?? "");
+    const classificationStartedAt = Date.parse(classificationState?.lastStartedAt ?? "");
+    const dailyRunObserved = dailyState?.result === "success" && Number.isFinite(dailyStartedAt)
+      && dailyStartedAt >= currentDailyStart.getTime();
+    const classificationAutomationCurrent = !dailyRunObserved
+      || classificationState?.active === true
+      || (classificationState?.result === "success" && Number.isFinite(classificationStartedAt)
+        && classificationStartedAt >= dailyStartedAt);
+    const classificationUnitsValid = validateTimerDefinitions(root).valid;
+    const classificationEvidence = evidence("service-m3-classification-automation", "service", CLASSIFICATION_SERVICE_UNIT, now.toISOString(), {
+      dailyRunObserved,
+      classificationUnitInstalled: classificationUnitsValid,
+      classificationActive: classificationState?.active ?? false,
+      classificationResult: classificationState?.result ?? null,
+      classificationAutomationCurrent,
+    });
+    m3.evidence.push(classificationEvidence);
+    m3.criterion.evidenceIds = [...m3.criterion.evidenceIds, classificationEvidence.id].sort();
+    if (!classificationUnitsValid || !classificationAutomationCurrent) {
+      m3.criterion = criterion("m3-panel-classification", "fail", "Post-collection classification automation is missing, failed, or stale", ["UNSAFE_CONFIGURATION"], m3.criterion.evidenceIds);
+      m3.gates = [];
+    }
     const m4 = evaluateM4(database, {
       credentialConfigured: options.credentialConfigured ?? false,
       spendAuthorized: options.spendAuthorized ?? false,
@@ -1421,6 +1489,15 @@ export function validateAcceptanceReportShape(input: unknown): AcceptanceReport 
     if (!criterionReasons.get(pending.criterionId)?.has(pending.reasonCode)) throw new TypeError("Pending gate reason does not match its criterion");
   }
   const publication = report.publication as unknown as Record<string, unknown>;
+  const publicationFindingArrays = [
+    "trackedSecrets", "historicalSecrets", "trackedPrivateArtifacts", "trackedRawHtml",
+    "unsafeLinksOrSubmodules", "publicDataFindings", "findings",
+  ];
+  const expectedReadmeClaims = [
+    "acceptanceCommandDocumented", "acceptanceReportLinked", "activeDevelopment",
+    "defendedMethodClaim", "noStatisticalValidationClaim", "outOfScopeExplicit",
+    "rawHtmlExcluded", "researchPilot",
+  ];
   if (!exactObjectKeys(publication, [
     "schemaVersion", "generatedAt", "commit", "status", "trackedSecrets",
     "historicalSecrets", "trackedPrivateArtifacts", "trackedRawHtml",
@@ -1428,9 +1505,10 @@ export function validateAcceptanceReportShape(input: unknown): AcceptanceReport 
     "readmeClaims", "workingTreeClean", "findings",
   ]) || publication.schemaVersion !== 1 || publication.status !== "pass"
     || publication.commit !== report.evaluatedCommit
-    || !Array.isArray(publication.findings) || publication.findings.length !== 0
+    || publicationFindingArrays.some((key) => !Array.isArray(publication[key]) || (publication[key] as unknown[]).length !== 0)
     || !Array.isArray(publication.requiredDocsMissing) || publication.requiredDocsMissing.length !== 0
     || typeof publication.readmeClaims !== "object" || publication.readmeClaims === null
+    || !exactObjectKeys(publication.readmeClaims as Record<string, unknown>, expectedReadmeClaims)
     || Object.values(publication.readmeClaims as Record<string, unknown>).some((claim) => claim !== true)) {
     throw new TypeError("Snapshot publication audit schema/commit did not pass");
   }
