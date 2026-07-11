@@ -8,10 +8,14 @@ import { Decimal } from "decimal.js";
 
 import { loadConfig } from "../src/config.js";
 import { openDatabase } from "../src/db/database.js";
+import {
+  OFFICIAL_IPCA_ARCHIVE_SHA256,
+  OFFICIAL_IPCA_SOURCE_URL,
+} from "../src/reference/ipca.js";
 
 export const IPCA_REFERENCE_FILENAME = "ipca_pof2017_2018_sp_food_at_home_weights.csv";
-export const OFFICIAL_ARCHIVE_SHA256 = "0ba845113682c96015a0e93daf4b10bc93aad82c2c1d6ea406282af958bf9104";
-export const OFFICIAL_SOURCE_URL = "https://ftp.ibge.gov.br/Precos_Indices_de_Precos_ao_Consumidor/IPCA/Atualizacao_das_Estruturas_POF2017-2018/Estruturas_para_divulgacao_dez19.zip";
+export const OFFICIAL_ARCHIVE_SHA256 = OFFICIAL_IPCA_ARCHIVE_SHA256;
+export const OFFICIAL_SOURCE_URL = OFFICIAL_IPCA_SOURCE_URL;
 
 const EXPECTED_COLUMNS = [
   "pof_vintage",

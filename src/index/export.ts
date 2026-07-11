@@ -14,6 +14,7 @@ import { basename, join, parse as parsePath, relative, resolve, sep } from "node
 import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
 
+import { OFFICIAL_IPCA_ARCHIVE_SHA256 } from "../reference/ipca.js";
 import { buildDailyIndex } from "./aggregate.js";
 import { OfficialSidraClient, SIDRA_ENDPOINT } from "./sidra.js";
 import {
@@ -190,6 +191,9 @@ function ipcaEvidence(database: Database.Database): ExportManifest["sources"]["i
   }
   const archiveSha256 = provenance.values().next().value;
   if (archiveSha256 === undefined) throw new Error("IPCA provenance hash is absent");
+  if (archiveSha256 !== OFFICIAL_IPCA_ARCHIVE_SHA256) {
+    throw new Error("IPCA weights do not match the approved IBGE archive provenance");
+  }
   return {
     rows: 84,
     totalWeight: TOTAL_FOOD_AT_HOME_WEIGHT,

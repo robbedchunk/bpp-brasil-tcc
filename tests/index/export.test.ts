@@ -168,6 +168,9 @@ describe("research snapshot export", () => {
     ["missing provenance", (database: ReturnType<typeof indexDatabase>) => {
       database.prepare("UPDATE ipca_items SET source_archive_sha256 = NULL WHERE id = (SELECT id FROM ipca_items ORDER BY id LIMIT 1)").run();
     }, /hash|provenance/iu],
+    ["uniform but unapproved provenance", (database: ReturnType<typeof indexDatabase>) => {
+      database.prepare("UPDATE ipca_items SET source_archive_sha256 = ?").run("f".repeat(64));
+    }, /approved|archive|provenance/iu],
   ])("refuses a %s authoritative weight set before contacting SIDRA", async (_name, corrupt, message) => {
     const database = indexDatabase();
     databases.push(database);
