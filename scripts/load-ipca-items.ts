@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -261,8 +261,16 @@ function main(): void {
   }
 }
 
-const invokedPath = process.argv[1] === undefined ? undefined : resolve(process.argv[1]);
-if (invokedPath === fileURLToPath(import.meta.url)) {
+function invokedAsMain(invokedPath: string | undefined): boolean {
+  if (invokedPath === undefined) return false;
+  try {
+    return realpathSync(resolve(invokedPath)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain(process.argv[1])) {
   try {
     main();
   } catch (error) {

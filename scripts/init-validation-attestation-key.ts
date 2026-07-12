@@ -4,10 +4,10 @@ import {
   createPublicKey,
   generateKeyPairSync,
 } from "node:crypto";
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { chmod, mkdir, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 
@@ -114,8 +114,16 @@ async function main(): Promise<void> {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-const invokedPath = process.argv[1];
-if (invokedPath !== undefined && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
+function invokedAsMain(invokedPath: string | undefined): boolean {
+  if (invokedPath === undefined) return false;
+  try {
+    return realpathSync(resolve(invokedPath)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain(process.argv[1])) {
   main().catch((error: unknown) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;

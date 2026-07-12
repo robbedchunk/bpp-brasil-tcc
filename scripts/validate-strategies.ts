@@ -9,11 +9,11 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { link, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
 import { Command } from "commander";
@@ -1898,8 +1898,16 @@ async function main(): Promise<void> {
   }
 }
 
-const invokedPath = process.argv[1];
-if (invokedPath !== undefined && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
+function invokedAsMain(invokedPath: string | undefined): boolean {
+  if (invokedPath === undefined) return false;
+  try {
+    return realpathSync(resolve(invokedPath)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain(process.argv[1])) {
   main().catch((error: unknown) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;

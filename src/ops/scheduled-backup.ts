@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
 
@@ -564,8 +564,16 @@ function parseCliArguments(args: string[]): {
   };
 }
 
-const invokedPath = process.argv[1];
-if (invokedPath !== undefined && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
+function invokedAsMain(invokedPath: string | undefined): boolean {
+  if (invokedPath === undefined) return false;
+  try {
+    return realpathSync(resolve(invokedPath)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain(process.argv[1])) {
   const options = parseCliArguments(process.argv.slice(2));
   await createScheduledBackupBundle(options);
 }

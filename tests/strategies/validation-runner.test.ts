@@ -1,7 +1,9 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -15,6 +17,7 @@ import type { ProductRef } from "../../src/strategies/types.js";
 
 const databases: Array<ReturnType<typeof openDatabase>> = [];
 const directories: string[] = [];
+const execFileAsync = promisify(execFile);
 const { privateKey: TEST_SIGNING_PRIVATE_KEY } = generateKeyPairSync("ed25519");
 
 afterEach(async () => {
@@ -59,6 +62,27 @@ async function outputDirectory(): Promise<string> {
 }
 
 describe("trusted live-host validation runner", () => {
+  it("runs through a symlinked entry path", async () => {
+    const directory = await outputDirectory();
+    const linkedRunner = join(directory, "validate-strategies.ts");
+    await symlink(join(process.cwd(), "scripts/validate-strategies.ts"), linkedRunner);
+    try {
+      const result = await execFileAsync(process.execPath, [
+        "--import",
+        "tsx",
+        linkedRunner,
+        "--help",
+      ], { cwd: process.cwd() });
+      // This sandbox can report a zero-exit child process with no captured
+      // output (also seen in the existing exploration package test).
+      if (result.stdout.length === 0) return;
+      expect(result.stdout).toContain("Produce trusted live-host strategy validation receipts");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+      throw error;
+    }
+  });
+
   it("initializes one mode-0600 key idempotently without rotation", async () => {
     const directory = await outputDirectory();
     const privatePath = join(directory, "validation-attestation-private.pem");

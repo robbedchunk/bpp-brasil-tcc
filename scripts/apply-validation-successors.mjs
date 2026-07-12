@@ -897,8 +897,16 @@ async function main() {
   })}\n`);
 }
 
-const invoked = process.argv[1];
-if (invoked !== undefined && import.meta.url === pathToFileURL(resolve(invoked)).href) {
+function invokedAsMain(invoked) {
+  if (invoked === undefined) return false;
+  try {
+    return realpathSync(resolve(invoked)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain(process.argv[1])) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;

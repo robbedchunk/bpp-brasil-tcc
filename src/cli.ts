@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { relative, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
@@ -992,8 +993,16 @@ function loadEnvironmentFile(): void {
   }
 }
 
-const invokedPath = process.argv[1] === undefined ? undefined : resolve(process.argv[1]);
-if (invokedPath === fileURLToPath(import.meta.url)) {
+function invokedAsMain(invokedPath: string | undefined): boolean {
+  if (invokedPath === undefined) return false;
+  try {
+    return realpathSync(resolve(invokedPath)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsMain(process.argv[1])) {
   try {
     loadEnvironmentFile();
     await buildCli().parseAsync(process.argv);
