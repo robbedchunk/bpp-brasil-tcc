@@ -21,6 +21,7 @@ import {
   CodexStrategyGenerator,
   resolveExplorerApiKey,
   resolveExplorerBaseUrl,
+  explorerReasoningEffortFromEnv,
   stripOptionalNulls,
 } from "../../src/explorer/codex-provider.js";
 
@@ -163,6 +164,14 @@ describe("Codex SDK strategy provider", () => {
       .toBeUndefined();
   });
 
+  it("defaults explorer reasoning effort to high and validates overrides", () => {
+    expect(explorerReasoningEffortFromEnv({})).toBe("high");
+    expect(explorerReasoningEffortFromEnv({ OPENAI_EXPLORER_REASONING_EFFORT: "xhigh" }))
+      .toBe("xhigh");
+    expect(() => explorerReasoningEffortFromEnv({ OPENAI_EXPLORER_REASONING_EFFORT: "maximum" }))
+      .toThrow(/none, low, medium, high, xhigh/iu);
+  });
+
   it("uses the exact permission profile, strict root schema, and disposable homes", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-test-"));
     roots.push(workspacePath);
@@ -282,7 +291,7 @@ describe("Codex SDK strategy provider", () => {
       workingDirectory: workspacePath,
       skipGitRepoCheck: true,
       model: "gpt-5.6-sol",
-      modelReasoningEffort: "medium",
+      modelReasoningEffort: "high",
       approvalPolicy: "never",
       webSearchMode: "disabled",
     });
@@ -543,6 +552,43 @@ describe("Codex SDK strategy provider", () => {
       status: "candidate",
       strategy,
       warning: "Codex final response was invalid; accepted validated strategy.json artifact",
+    });
+  });
+
+  it("accepts a validated strategy.json artifact when the final response diverges", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-response-divergence-test-"));
+    roots.push(workspacePath);
+    const divergentResponse = {
+      strategy: {
+        ...strategy,
+        selectors: {
+          ...strategy.selectors,
+          title: [{ selector: ".different-title" }],
+        },
+      },
+    };
+    const provider = new CodexStrategyGenerator({
+      apiKey: "test-key",
+      codexFactory: () => ({
+        startThread: () => ({
+          runStreamed: async () => {
+            await writeFile(join(workspacePath, "strategy.json"), JSON.stringify({ strategy }));
+            return streamed(JSON.stringify(divergentResponse), usage(1, 1));
+          },
+        }),
+      }),
+    });
+
+    await expect(provider.generate({
+      retailerId: "shop",
+      purpose: "extraction",
+      allowedDomains: ["shop.test"],
+      workspacePath,
+      prompt: "Create the artifact.",
+    })).resolves.toMatchObject({
+      status: "candidate",
+      strategy,
+      warning: "Codex final response diverged; accepted validated strategy.json artifact",
     });
   });
 

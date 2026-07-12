@@ -19,6 +19,9 @@ import type {
 } from "./provider.js";
 
 export const DEFAULT_EXPLORER_MODEL = "gpt-5.6-sol";
+export const DEFAULT_EXPLORER_REASONING_EFFORT = "high";
+const EXPLORER_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
+type ExplorerReasoningEffort = (typeof EXPLORER_REASONING_EFFORTS)[number];
 
 const StrategyEnvelopeSchema = z.object({ strategy: StrategySchema }).strict();
 
@@ -149,6 +152,19 @@ export function explorerModelFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   return optional(env.OPENAI_EXPLORER_MODEL) ?? DEFAULT_EXPLORER_MODEL;
+}
+
+export function explorerReasoningEffortFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ExplorerReasoningEffort {
+  const value = optional(env.OPENAI_EXPLORER_REASONING_EFFORT);
+  if (value === undefined) return DEFAULT_EXPLORER_REASONING_EFFORT;
+  if ((EXPLORER_REASONING_EFFORTS as readonly string[]).includes(value)) {
+    return value as ExplorerReasoningEffort;
+  }
+  throw new Error(
+    "OPENAI_EXPLORER_REASONING_EFFORT must be one of none, low, medium, high, xhigh",
+  );
 }
 
 function tomlString(value: string): string {
@@ -423,6 +439,7 @@ export class CodexStrategyGenerator implements StrategyGenerator {
   readonly #apiKey: string | undefined;
   readonly #baseUrl: string | undefined;
   readonly #model: string;
+  readonly #reasoningEffort: ExplorerReasoningEffort;
   readonly #timeoutMs: number;
   readonly #temporaryRoot: string;
   readonly #factory: (options: CodexOptions) => CodexLike;
@@ -435,6 +452,7 @@ export class CodexStrategyGenerator implements StrategyGenerator {
     this.#apiKey = optional(options.apiKey) ?? resolveExplorerApiKey(env);
     this.#baseUrl = resolveExplorerBaseUrl(env);
     this.#model = optional(options.model) ?? explorerModelFromEnv(env);
+    this.#reasoningEffort = explorerReasoningEffortFromEnv(env);
     this.#timeoutMs = options.timeoutMs ?? 120_000;
     const projectRoot = resolve(optional(env.PROJECT_ROOT) ?? DEFAULT_PROJECT_ROOT);
     this.#temporaryRoot = resolve(options.temporaryRoot ?? join(projectRoot, "var"));
@@ -492,7 +510,7 @@ export class CodexStrategyGenerator implements StrategyGenerator {
           model: this.#model,
           workingDirectory: workspacePath,
           skipGitRepoCheck: true,
-          modelReasoningEffort: "medium",
+          modelReasoningEffort: this.#reasoningEffort as unknown as NonNullable<ThreadOptions["modelReasoningEffort"]>,
           approvalPolicy: "never",
           webSearchMode: "disabled",
         });
@@ -561,7 +579,13 @@ export class CodexStrategyGenerator implements StrategyGenerator {
             };
           }
           if (canonicalJson(response) !== canonicalJson(artifact)) {
-            throw new Error("Codex response and strategy.json artifact differ");
+            return {
+              status: "candidate",
+              model: this.#model,
+              strategy: artifact.strategy,
+              usage,
+              warning: "Codex final response diverged; accepted validated strategy.json artifact",
+            };
           }
           return {
             status: "candidate",
