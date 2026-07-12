@@ -22,6 +22,7 @@ import {
   resolveExplorerApiKey,
   resolveExplorerBaseUrl,
   explorerReasoningEffortFromEnv,
+  explorerTimeoutMsFromEnv,
   stripOptionalNulls,
 } from "../../src/explorer/codex-provider.js";
 
@@ -170,6 +171,16 @@ describe("Codex SDK strategy provider", () => {
       .toBe("xhigh");
     expect(() => explorerReasoningEffortFromEnv({ OPENAI_EXPLORER_REASONING_EFFORT: "maximum" }))
       .toThrow(/none, low, medium, high, xhigh/iu);
+  });
+
+  it("defaults explorer timeout to eight minutes and validates overrides", () => {
+    expect(explorerTimeoutMsFromEnv({})).toBe(480_000);
+    expect(explorerTimeoutMsFromEnv({ OPENAI_EXPLORER_TIMEOUT_MS: "600000" }))
+      .toBe(600_000);
+    for (const value of ["29999", "1800001", "120000.5", "one-minute"]) {
+      expect(() => explorerTimeoutMsFromEnv({ OPENAI_EXPLORER_TIMEOUT_MS: value }))
+        .toThrow(/integer from 30000 to 1800000/iu);
+    }
   });
 
   it("uses the exact permission profile, strict root schema, and disposable homes", async () => {

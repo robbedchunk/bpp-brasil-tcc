@@ -20,6 +20,9 @@ import type {
 
 export const DEFAULT_EXPLORER_MODEL = "gpt-5.6-sol";
 export const DEFAULT_EXPLORER_REASONING_EFFORT = "high";
+export const DEFAULT_EXPLORER_TIMEOUT_MS = 480_000;
+const MIN_EXPLORER_TIMEOUT_MS = 30_000;
+const MAX_EXPLORER_TIMEOUT_MS = 1_800_000;
 const EXPLORER_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
 type ExplorerReasoningEffort = (typeof EXPLORER_REASONING_EFFORTS)[number];
 
@@ -165,6 +168,25 @@ export function explorerReasoningEffortFromEnv(
   throw new Error(
     "OPENAI_EXPLORER_REASONING_EFFORT must be one of none, low, medium, high, xhigh",
   );
+}
+
+export function explorerTimeoutMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const value = optional(env.OPENAI_EXPLORER_TIMEOUT_MS);
+  if (value === undefined) return DEFAULT_EXPLORER_TIMEOUT_MS;
+  if (!/^\d+$/u.test(value)) {
+    throw new Error("OPENAI_EXPLORER_TIMEOUT_MS must be an integer from 30000 to 1800000");
+  }
+  const timeoutMs = Number(value);
+  if (
+    !Number.isSafeInteger(timeoutMs)
+    || timeoutMs < MIN_EXPLORER_TIMEOUT_MS
+    || timeoutMs > MAX_EXPLORER_TIMEOUT_MS
+  ) {
+    throw new Error("OPENAI_EXPLORER_TIMEOUT_MS must be an integer from 30000 to 1800000");
+  }
+  return timeoutMs;
 }
 
 function tomlString(value: string): string {
@@ -453,7 +475,7 @@ export class CodexStrategyGenerator implements StrategyGenerator {
     this.#baseUrl = resolveExplorerBaseUrl(env);
     this.#model = optional(options.model) ?? explorerModelFromEnv(env);
     this.#reasoningEffort = explorerReasoningEffortFromEnv(env);
-    this.#timeoutMs = options.timeoutMs ?? 120_000;
+    this.#timeoutMs = options.timeoutMs ?? explorerTimeoutMsFromEnv(env);
     const projectRoot = resolve(optional(env.PROJECT_ROOT) ?? DEFAULT_PROJECT_ROOT);
     this.#temporaryRoot = resolve(options.temporaryRoot ?? join(projectRoot, "var"));
     this.#factory = options.codexFactory ?? ((codexOptions) => new Codex(codexOptions));
