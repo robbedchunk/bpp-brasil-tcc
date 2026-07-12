@@ -1,6 +1,10 @@
 # Strategy artifact schema
 
 The artifact is a strict JSON object: `{ "strategy": Strategy }`. Unknown fields are invalid.
+When present, `old-strategy.json` has this exact same envelope shape, so an exact
+reproduction—with only evidence-justified changes inside `.strategy`—is a valid
+artifact. In `failures.json` `priorAttempts`, each `candidate` is instead a bare
+strategy object provided only as diagnostic history.
 
 Every strategy has `schemaVersion: 1`, a matching `purpose`, an ordered tier tag, and one or more exact `allowedDomains` hostnames. URLs are HTTP(S) templates and may use only documented placeholders.
 

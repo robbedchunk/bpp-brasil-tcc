@@ -19,7 +19,7 @@ export function buildExplorerPrompt(input: ExplorerPromptInput): string {
   return [
     ...(input.hasOldStrategy
       ? [
-          "old-strategy.json is the currently ACTIVE strategy: reproduce it exactly, including regionalContext, query parameters such as sc, headers, and field paths. These are public sanitized runtime configuration, not credentials or secrets; copy them verbatim. Depart ONLY in parts failures.json proves failing.",
+          "old-strategy.json is the currently ACTIVE strategy and has the exact required artifact root shape {\"strategy\": ...}: reproduce it exactly, including regionalContext, query parameters such as sc, headers, and field paths. These are public sanitized runtime configuration, not credentials or secrets; copy them verbatim. Depart ONLY inside .strategy in parts failures.json proves failing.",
           `Only if failures.json shows the old approach itself failing may you change approach; then try tiers in this order: ${tiers}.`,
         ]
       : [

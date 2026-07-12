@@ -80,6 +80,12 @@ describe("disposable exploration package", () => {
     expect(joined).toContain("currently ACTIVE strategy");
     expect(joined).toContain("public runtime configuration, not credentials or secrets");
     expect(JSON.parse(await readFile(
+      join(sandbox.workspacePath, "old-strategy.json"),
+      "utf8",
+    ))).toMatchObject({
+      strategy: { tier: "dom", apiKey: "[REDACTED]" },
+    });
+    expect(JSON.parse(await readFile(
       join(sandbox.workspacePath, "samples.json"),
       "utf8",
     )).samples[0]).toMatchObject({
@@ -161,6 +167,8 @@ describe("disposable exploration package", () => {
     const fresh = buildExplorerPrompt({ ...input, hasOldStrategy: false });
 
     expect(adaptation.split("\n")[0]).toContain("currently ACTIVE strategy");
+    expect(adaptation).toContain("exact required artifact root shape {\"strategy\": ...}");
+    expect(adaptation).toContain("Depart ONLY inside .strategy");
     expect(adaptation).toContain("Only if failures.json shows the old approach itself failing");
     expect(adaptation).not.toContain("Create one deterministic extraction strategy");
     expect(fresh.split("\n")[0]).toBe("Create one deterministic extraction strategy for the supplied redacted samples.");

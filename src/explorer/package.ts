@@ -205,7 +205,7 @@ export async function createSandboxPackage(
     if (input.oldStrategy !== undefined) {
       await writeFile(
         join(workspacePath, "old-strategy.json"),
-        sanitizedJson(input.oldStrategy),
+        sanitizedJson({ strategy: input.oldStrategy }),
         { encoding: "utf8", mode: 0o600 },
       );
     }
