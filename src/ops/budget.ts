@@ -9,6 +9,18 @@ export const RELEASED_CLASSIFICATION_BATCH_STATUSES = [
 export const MAX_EXPLORATION_EVENT_USD = 5;
 export const MAX_MONTHLY_MODEL_USD = 50;
 
+export function monthlyModelBudgetUsdFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const value = env.PRECOS_MONTHLY_MODEL_USD?.trim();
+  if (value === undefined || value.length === 0) return MAX_MONTHLY_MODEL_USD;
+  const budgetUsd = Number(value);
+  if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) {
+    throw new Error("PRECOS_MONTHLY_MODEL_USD must be a positive finite number");
+  }
+  return budgetUsd;
+}
+
 export function classificationMonthlyCommittedUsd(
   database: Database.Database,
   now: Date,
@@ -260,6 +272,12 @@ function validUsd(name: string, value: number, maximum: number): void {
   }
 }
 
+function positiveUsd(name: string, value: number): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${name} must be positive`);
+  }
+}
+
 function monthStartIso(now: Date): string {
   if (!Number.isFinite(now.getTime())) throw new RangeError("now must be a valid date");
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
@@ -276,7 +294,7 @@ export function reserveExplorationBudget(
   },
 ): ExplorationBudgetReservationDecision {
   validUsd("eventAllowanceUsd", input.eventAllowanceUsd, MAX_EXPLORATION_EVENT_USD);
-  validUsd("monthlyLimitUsd", input.monthlyLimitUsd, MAX_MONTHLY_MODEL_USD);
+  positiveUsd("monthlyLimitUsd", input.monthlyLimitUsd);
   const reserve = database.transaction((): ExplorationBudgetReservationDecision => {
     const existing = database.prepare(
       `SELECT amount_usd, status FROM model_budget_reservations

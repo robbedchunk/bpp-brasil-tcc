@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { BudgetGuard } from "../../src/ops/budget.js";
+import { BudgetGuard, monthlyModelBudgetUsdFromEnv } from "../../src/ops/budget.js";
 
 describe("budget guard", () => {
+  it("defaults the monthly model budget to USD 50 and validates operator overrides", () => {
+    expect(monthlyModelBudgetUsdFromEnv({})).toBe(50);
+    expect(monthlyModelBudgetUsdFromEnv({ PRECOS_MONTHLY_MODEL_USD: "125.5" }))
+      .toBe(125.5);
+    for (const value of ["0", "-1", "Infinity", "not-a-number"]) {
+      expect(() => monthlyModelBudgetUsdFromEnv({ PRECOS_MONTHLY_MODEL_USD: value }))
+        .toThrow(/positive finite number/iu);
+    }
+  });
+
   it("pauses only nonessential LLM work above the monthly ceiling", () => {
     const budgetGuard = new BudgetGuard(50);
 

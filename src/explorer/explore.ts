@@ -18,7 +18,7 @@ import { executeDiscovery } from "../discovery/executor.js";
 import type { AlertSink } from "../ops/alerts.js";
 import {
   MAX_EXPLORATION_EVENT_USD,
-  MAX_MONTHLY_MODEL_USD,
+  monthlyModelBudgetUsdFromEnv,
   reserveExplorationBudget,
   settleExplorationBudget,
 } from "../ops/budget.js";
@@ -349,10 +349,13 @@ export async function exploreRetailer(
     dependencies.eventBudgetUsd ?? 5,
     MAX_EXPLORATION_EVENT_USD,
   );
+  const configuredMonthlyBudgetUsd = monthlyModelBudgetUsdFromEnv(
+    dependencies.env ?? process.env,
+  );
   const monthlyBudgetUsd = boundedPositive(
     "monthlyBudgetUsd",
-    dependencies.monthlyBudgetUsd ?? 50,
-    MAX_MONTHLY_MODEL_USD,
+    dependencies.monthlyBudgetUsd ?? configuredMonthlyBudgetUsd,
+    configuredMonthlyBudgetUsd,
   );
   const rate = dependencies.rate ?? configuredRate(dependencies.env ?? process.env);
   const context = findRetailerExplorationContext(
