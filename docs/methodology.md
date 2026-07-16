@@ -53,12 +53,19 @@ scope decision. Explicit source category is authoritative, exclusions are
 checked first, and a category-retaining URL path is used only when the source
 does not provide category data. Missing or ambiguous evidence fails closed.
 
-Discovery has its own 3,000-attempt daily allowance and cannot consume the
-separate 2,000-page collection allowance. A retailer product disappears only
-after the executor explicitly reports source exhaustion, the iterator finishes
-naturally, and the run has no failed references. Product/page/loop caps and
-errors create incomplete snapshots and never deactivate unseen products.
-`last_seen` therefore moves only on discovery and freezes at disappearance.
+Discovery references draw on their own 3,000-per-day admission ledger, while
+every discovery and collection network request is charged pre-action, without
+refund, against one shared 2,000-request ledger per retailer and São Paulo
+day that bounds total daily traffic to a retailer. Because daily collection
+(03:00) precedes the weekly Sunday discovery window (18:00) and can exhaust
+that shared ledger, collection admissions are capped at 1,800 on Sundays: the
+remaining 200 requests are spendable only by discovery (complete weekly
+passes have used 58–108), and an unused reservation expires with the day. A
+retailer product disappears only after the executor explicitly reports source
+exhaustion, the iterator finishes naturally, and the run has no failed
+references. Product/page/loop caps and errors create incomplete snapshots and
+never deactivate unseen products. `last_seen` therefore moves only on
+discovery and freezes at disappearance.
 
 ## Collection and healing
 
@@ -116,6 +123,17 @@ The fixed method version is `tcc-food-at-home-v1`:
 7. renormalize the exact POF weights over covered sub-items;
 8. chain the covered-weight daily relative from 100, breaking the chain across
    missing whole-panel days.
+
+Snapshot manifests label steps 7–8 with the identifier
+`covered_weight_laspeyres_chain` (the `parameters.acrossSubitems` field). The
+identifier is retained verbatim because published snapshots embed it;
+"laspeyres" in the name is a historical naming artifact, not a formula claim.
+The computation is a fixed-expenditure-weight chained aggregate of the
+Lowe/Young type: fixed POF expenditure weights, renormalized over the covered
+weight, are applied to the daily sub-item relatives and the result is chained.
+A strict Laspeyres index would instead require base-period quantity weights.
+Using fixed POF expenditure weights matches IPCA practice, whose own weights
+derive from the POF expenditure survey.
 
 No winsorization, quality adjustment, hedonic model, retailer sample-size
 weighting, or additional imputation is used. Retailer min/max ranges are
