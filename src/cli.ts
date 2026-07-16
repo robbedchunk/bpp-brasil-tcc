@@ -1,12 +1,19 @@
 #!/usr/bin/env node
 
-import { relative, resolve, sep } from "node:path";
+import { basename, extname, relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 import type Database from "better-sqlite3";
 
+import {
+  importCatalogSeeds,
+  parseCatalogSeedFile,
+  type CatalogSeedFileFormat,
+} from "./catalog/import.js";
 import { MAX_FOOD_CATALOG_PRODUCTS } from "./catalog/scope.js";
 import {
   buildReviewSample,
@@ -541,6 +548,57 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         : `replay re-extraction ${result.id}: ${result.status}\n`);
     });
 
+  const seedFileFormat = (value: string): CatalogSeedFileFormat => {
+    if (value !== "json" && value !== "csv") {
+      throw new Error("--format must be json or csv");
+    }
+    return value;
+  };
+  command
+    .command("catalog")
+    .description("Manage operator catalog evidence")
+    .command("import")
+    .description(
+      "Import an operator-curated cold-start seed catalog for an INACTIVE retailer "
+      + "so trusted strategy validation can select its 30-reference challenge",
+    )
+    .requiredOption("--retailer <id>", "registered INACTIVE retailer ID")
+    .requiredOption("--file <path>", "JSON or CSV seed reference file")
+    .option("--format <format>", "seed file format: json or csv (default: file extension)", seedFileFormat)
+    .option("--dry-run", "validate the seed file and report the plan without writing")
+    .option("--json", "emit only the JSON import summary")
+    .action(async (options: {
+      retailer: string;
+      file: string;
+      format?: CatalogSeedFileFormat;
+      dryRun?: boolean;
+      json?: boolean;
+    }) => {
+      const filePath = resolve(options.file);
+      const format = options.format ?? (extname(filePath).toLowerCase() === ".csv" ? "csv" : "json");
+      const content = await readFile(filePath, "utf8");
+      const entries = parseCatalogSeedFile(content, format);
+      const summary = await withProcessLock(
+        pipelineLockPath(),
+        () => withDatabase((database) => importCatalogSeeds(database, {
+          retailerId: options.retailer,
+          entries,
+          sourceLabel: basename(filePath),
+          fileSha256: createHash("sha256").update(content).digest("hex"),
+          dryRun: options.dryRun === true,
+          now,
+        })),
+      );
+      stdout(options.json === true
+        ? `${JSON.stringify(summary)}\n`
+        : `catalog import ${summary.retailerId}: ${summary.refs} in-scope refs; `
+          + `${summary.newProducts} new + ${summary.refreshedProducts} refreshed; `
+          + `${summary.activeInScopeProducts} active in-scope products; `
+          + `challenge ${summary.challengeReady ? "READY" : "NOT READY"}`
+          + `${summary.alreadyImported ? " (already imported)" : ""}`
+          + `${summary.dryRun ? " (dry run)" : ""}\n`);
+    });
+
   const classificationVersion = (value: string): number => {
     const parsed = Number(value);
     if (!Number.isSafeInteger(parsed) || parsed <= 0) {
@@ -605,6 +663,13 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               model: classificationModel,
             })
       );
+      const sink = dependencies.alertSink ?? createAlertSink({
+        ...(applicationConfig.ntfyTopic === undefined
+          ? {}
+          : { ntfyTopic: applicationConfig.ntfyTopic }),
+        fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+        now,
+      });
       const output = await withProcessLock(
         classificationLockPath(),
         () => withDatabase(async (database) => {
@@ -625,6 +690,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
             budgetGuard: dependencies.budgetGuard
               ?? BudgetGuard.fromEnv(dependencies.env ?? process.env),
             classificationModel,
+            alertSink: sink,
             now,
           });
           return options.reviewSample === undefined
@@ -641,10 +707,6 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       const summary = output;
 
       if (!summary.dryRun && summary.pending > 0) {
-        const sink = dependencies.alertSink ?? createAlertSink({
-          fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
-          now,
-        });
         await sink.send({
           severity: "warning",
           title: "IPCA classification pending",

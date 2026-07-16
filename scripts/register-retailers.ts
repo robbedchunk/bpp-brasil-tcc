@@ -24,14 +24,24 @@ const command = new Command()
   .option(
     "--bootstrap-inactive",
     "register configuration identities without activating or trusting validation summaries",
+  )
+  .option(
+    "--retailer <id>",
+    "register only one retailer configuration; without this filter, bootstrap-inactive "
+      + "mode deactivates and retires every currently active strategy of every retailer",
   );
 command.parse(process.argv);
 const options = command.opts<{
   bootstrapInactive?: boolean;
+  retailer?: string;
 }>();
 const database = openDatabase(config.databasePath);
 try {
-  const retailers = loadRetailerConfigs(resolve(config.projectRoot, "retailers"));
+  const retailers = loadRetailerConfigs(resolve(config.projectRoot, "retailers"))
+    .filter((retailer) => options.retailer === undefined || retailer.id === options.retailer);
+  if (retailers.length === 0) {
+    throw new Error(`No retailer configuration matches ${options.retailer}`);
+  }
   registerRetailerConfigs(database, retailers, {
     projectRoot: config.projectRoot,
     mode: options.bootstrapInactive === true ? "bootstrap-inactive" : "activate",
