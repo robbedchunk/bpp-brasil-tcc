@@ -158,7 +158,13 @@ describe("reviewed OpenAI provider evidence", () => {
         batchSize: 50,
         confidenceThreshold: 0.8,
         version: 1,
-      }, { database, provider, budgetGuard: new BudgetGuard() })).rejects.toThrow();
+      }, { database, provider, budgetGuard: new BudgetGuard() })).resolves.toMatchObject({
+        status: "completed",
+        classified: 0,
+        pending: 1,
+        shapeFailedBatches: 1,
+        shapeFailedProducts: 1,
+      });
       expect(database.prepare(`
         SELECT model, input_tokens, output_tokens,
                json_extract(details_json, '$.failureKind') AS failure_kind
@@ -171,6 +177,9 @@ describe("reviewed OpenAI provider evidence", () => {
       });
       expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get())
         .toEqual({ count: 0 });
+      expect(database.prepare(`
+        SELECT failure_kind FROM classification_shape_failures
+      `).all()).toEqual([{ failure_kind: "schema_invalid" }]);
     } finally {
       database.close();
     }
@@ -275,7 +284,11 @@ describe("billed failure and retry accounting", () => {
         confidenceThreshold: 0.8,
         version: 1,
       }, { database, provider: invalidProvider, budgetGuard: new BudgetGuard() }))
-        .rejects.toThrow(/exactly one/iu);
+        .resolves.toMatchObject({
+          status: "completed",
+          classified: 0,
+          shapeFailedBatches: 1,
+        });
       expect(database.prepare(`
         SELECT category, provider, model, input_tokens, output_tokens,
                json_extract(details_json, '$.failureKind') AS failure_kind
@@ -320,7 +333,12 @@ describe("billed failure and retry accounting", () => {
         provider,
         budgetGuard: new BudgetGuard(),
         now: () => new Date("2026-07-10T12:00:00.000Z"),
-      })).rejects.toThrow();
+      })).resolves.toMatchObject({
+        status: "completed",
+        classified: 0,
+        shapeFailedBatches: 1,
+        failureSpendRunUsd: expect.any(Number),
+      });
 
       expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get())
         .toEqual({ count: 0 });

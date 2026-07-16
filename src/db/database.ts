@@ -79,6 +79,14 @@ const DISCOVERY_TIER_SEMANTICS_SQL = readFileSync(
   new URL("./migrations/016_discovery_tier_semantics.sql", import.meta.url),
   "utf8",
 );
+const OPERATOR_CATALOG_SEEDS_SQL = readFileSync(
+  new URL("./migrations/017_operator_catalog_seeds.sql", import.meta.url),
+  "utf8",
+);
+const CLASSIFICATION_SHAPE_RECOVERY_SQL = readFileSync(
+  new URL("./migrations/018_classification_shape_recovery.sql", import.meta.url),
+  "utf8",
+);
 
 export interface StrategyValidationEvidenceInsert {
   strategy_id: string;
@@ -353,6 +361,16 @@ const MIGRATIONS = [
     version: 16,
     name: "discovery_tier_semantics",
     sql: DISCOVERY_TIER_SEMANTICS_SQL,
+  },
+  {
+    version: 17,
+    name: "operator_catalog_seeds",
+    sql: OPERATOR_CATALOG_SEEDS_SQL,
+  },
+  {
+    version: 18,
+    name: "classification_shape_recovery",
+    sql: CLASSIFICATION_SHAPE_RECOVERY_SQL,
   },
 ] as const;
 

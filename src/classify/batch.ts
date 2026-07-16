@@ -528,6 +528,130 @@ function recordSubmissionFailure(
   persist.immediate();
 }
 
+export interface SubmissionReconcileResult {
+  jobId: string;
+  outcome: "adopted" | "released" | "unresolved";
+  providerBatchId: string | null;
+}
+
+/** How many recent remote batches one reconciliation pass inspects. A missing
+ * match only proves absence when the provider returned fewer entries than
+ * this, so releases stay fail-closed. */
+export const SUBMISSION_RECONCILE_LIST_LIMIT = 100;
+
+/**
+ * Deterministically settles `submission_unknown` jobs, which otherwise hold
+ * their products and projected budget forever. The provider's batch list is
+ * the source of truth:
+ * - a remote batch whose metadata carries the local job ID is adopted as
+ *   `submitted`, so poll/finalize can complete it and its bill stays counted;
+ * - a confirmed absence (the listing was exhaustive) releases the job, which
+ *   frees the committed budget and returns its products to eligibility;
+ * - anything unconfirmed stays `submission_unknown` with its claim intact.
+ */
+export async function reconcileUnknownSubmissions(
+  dependencies: ClassificationBatchDependencies,
+): Promise<SubmissionReconcileResult[]> {
+  const jobs = dependencies.database.prepare(`
+    SELECT id FROM classification_batch_jobs
+    WHERE status = 'submission_unknown'
+    ORDER BY created_at, id
+  `).all() as Array<{ id: string }>;
+  if (jobs.length === 0) return [];
+  if (dependencies.client === undefined) {
+    return jobs.map(({ id }) => ({
+      jobId: id,
+      outcome: "unresolved",
+      providerBatchId: null,
+    }));
+  }
+  const client = dependencies.client;
+  const now = dependencies.now ?? (() => new Date());
+  const page = await retryTransient(
+    () => client.batches.list({ limit: SUBMISSION_RECONCILE_LIST_LIMIT }),
+    dependencies,
+  );
+  const listingWasExhaustive = page.data.length < SUBMISSION_RECONCILE_LIST_LIMIT;
+  const remoteByLocalJob = new Map(
+    page.data.flatMap((remote) => {
+      const localJobId = remote.metadata?.local_job_id;
+      return typeof localJobId === "string" && localJobId.length > 0
+        ? [[localJobId, remote] as const]
+        : [];
+    }),
+  );
+  const results: SubmissionReconcileResult[] = [];
+  for (const { id: jobId } of jobs) {
+    const remote = remoteByLocalJob.get(jobId);
+    const occurredAt = now().toISOString();
+    if (remote !== undefined) {
+      const current = job(dependencies.database, jobId);
+      const adopt = dependencies.database.transaction(() => {
+        const updated = dependencies.database.prepare(`
+          UPDATE classification_batch_jobs
+          SET provider_batch_id = ?, input_file_id = ?, status = 'submitted',
+              submitted_at = ?, updated_at = ?, actual_model = ?,
+              provider_errors_json = ?, error_message = NULL
+          WHERE id = ? AND status = 'submission_unknown'
+        `).run(
+          remote.id,
+          remote.input_file_id,
+          occurredAt,
+          occurredAt,
+          remote.model ?? current.actual_model,
+          JSON.stringify(mergedProviderErrors(
+            current.provider_errors_json,
+            providerErrors(remote),
+          )),
+          jobId,
+        );
+        if (updated.changes !== 1) {
+          throw new Error(`Unknown submission ${jobId} changed during reconciliation`);
+        }
+        insertEvent(dependencies.database, {
+          jobId,
+          status: "submitted",
+          provider: { ...safeRemote(remote), reconciledFromUnknown: true },
+          occurredAt,
+        });
+      });
+      adopt.immediate();
+      results.push({ jobId, outcome: "adopted", providerBatchId: remote.id });
+      continue;
+    }
+    if (!listingWasExhaustive) {
+      results.push({ jobId, outcome: "unresolved", providerBatchId: null });
+      continue;
+    }
+    const release = dependencies.database.transaction(() => {
+      const updated = dependencies.database.prepare(`
+        UPDATE classification_batch_jobs
+        SET status = 'submission_released', updated_at = ?, error_message = ?
+        WHERE id = ? AND status = 'submission_unknown'
+      `).run(
+        occurredAt,
+        "reconciled: provider listing confirmed no matching remote batch",
+        jobId,
+      );
+      if (updated.changes !== 1) {
+        throw new Error(`Unknown submission ${jobId} changed during reconciliation`);
+      }
+      insertEvent(dependencies.database, {
+        jobId,
+        status: "submission_released",
+        provider: {
+          reconciledFromUnknown: true,
+          remoteBatchesInspected: page.data.length,
+        },
+        occurredAt,
+      });
+    });
+    release.immediate();
+    results.push({ jobId, outcome: "released", providerBatchId: null });
+  }
+  return results;
+}
+
 export async function submitClassificationBatch(
   options: ClassificationBatchOptions,
   dependencies: ClassificationBatchDependencies,
@@ -535,6 +659,9 @@ export async function submitClassificationBatch(
   const version = positiveInteger("version", options.version, 1_000_000);
   const confidenceThreshold = threshold(options.confidenceThreshold);
   const limit = positiveInteger("limit", options.limit ?? 50_000, 50_000);
+  // Settle any prior ambiguous submission first: it may free (or confirm)
+  // held products and committed budget before eligibility is computed.
+  await reconcileUnknownSubmissions(dependencies);
   const products = listEligibleProducts(dependencies.database, version, limit);
   const base = {
     jobId: null,

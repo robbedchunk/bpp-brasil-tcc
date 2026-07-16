@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
 
+import type { AlertSink } from "../ops/alerts.js";
 import {
   BudgetGuard,
   RELEASED_CLASSIFICATION_BATCH_STATUSES,
@@ -33,6 +34,7 @@ export interface ClassificationDependencies {
   budgetGuard?: BudgetGuard;
   classificationModel?: string;
   now?: () => Date;
+  alertSink?: AlertSink;
 }
 
 export type ClassificationRunStatus =
@@ -40,7 +42,8 @@ export type ClassificationRunStatus =
   | "dry_run"
   | "provider_unavailable"
   | "budget_denied"
-  | "no_ipca_items";
+  | "no_ipca_items"
+  | "shape_failure_paused";
 
 export interface ClassificationRunSummary {
   status: ClassificationRunStatus;
@@ -56,7 +59,39 @@ export interface ClassificationRunSummary {
   pending: number;
   budgetDenied: number;
   estimatedCostUsd: number;
+  shapeFailedBatches: number;
+  shapeFailedProducts: number;
+  shapeFailurePaused: boolean;
+  quarantinedActive: number;
+  quarantinedNew: number;
+  quarantinedProductIds: string[];
+  failureSpendRunUsd: number;
+  failureSpendMonthUsd: number;
 }
+
+/** Provider failure kinds where the response itself violated the
+ * exactly-one-result-per-input contract (or never contained a usable result).
+ * Retrying the identical request nightly is what wedged 2026-07-14/15, so
+ * these mark the batch for an adaptive split instead of a blind resubmit. */
+export const SHAPE_FAILURE_KINDS: ReadonlySet<string> = new Set([
+  "validation_failed",
+  "schema_invalid",
+  "incomplete",
+  "refusal",
+]);
+
+/** Shape failures per (product, version) before the product is quarantined
+ * instead of retried. Counted since the product's latest operator release. */
+export const SHAPE_FAILURE_QUARANTINE_THRESHOLD = 3;
+
+/** The adaptive split halves the batch per prior failure but never shrinks a
+ * request below this floor, so one bad batch cannot fan out into dozens of
+ * tiny paid calls. */
+export const MIN_ADAPTIVE_BATCH_SIZE = 10;
+
+/** Shape failures tolerated within a single run before it pauses fail-closed.
+ * Bounds one night's failure spend when the provider is systemically broken. */
+export const MAX_RUN_SHAPE_FAILURES = 3;
 
 export interface ClassificationProduct {
   id: string;
@@ -357,6 +392,225 @@ export function persistFailureAttempts(
   return total.toDecimalPlaces(12).toNumber();
 }
 
+/** Mirrors the reservation fingerprint in ops/budget.ts so shape-failure
+ * evidence can be joined against classification_sync_reservations. */
+function classificationRequestSha256(input: {
+  version: number;
+  model: string;
+  productIds: readonly string[];
+}): string {
+  return createHash("sha256").update(JSON.stringify({
+    version: input.version,
+    model: input.model,
+    productIds: input.productIds,
+  })).digest("hex");
+}
+
+/** Shape failures per product since the product's latest operator release.
+ * A release resets the count so released products restart at the full batch
+ * size instead of being re-quarantined by stale history. */
+export function shapeFailureCounts(
+  database: Database.Database,
+  version: number,
+): Map<string, number> {
+  const rows = database.prepare(`
+    SELECT f.product_id AS productId, COUNT(*) AS failures
+    FROM classification_shape_failures f
+    WHERE f.version = ?
+      AND f.occurred_at > COALESCE((
+        SELECT MAX(r.occurred_at)
+        FROM classification_quarantine_events r
+        WHERE r.version = f.version
+          AND r.product_id = f.product_id
+          AND r.action = 'released'
+      ), '')
+    GROUP BY f.product_id
+  `).all(version) as Array<{ productId: string; failures: number }>;
+  return new Map(rows.map((row) => [row.productId, row.failures]));
+}
+
+export function recordClassificationShapeFailure(
+  database: Database.Database,
+  input: {
+    version: number;
+    model: string;
+    productIds: readonly string[];
+    failureKind: string;
+    occurredAt: string;
+    details?: Record<string, unknown>;
+  },
+): void {
+  const requestSha256 = classificationRequestSha256({
+    version: input.version,
+    model: input.model,
+    productIds: input.productIds,
+  });
+  const detailsJson = JSON.stringify(input.details ?? {});
+  const insert = database.prepare(`
+    INSERT INTO classification_shape_failures
+      (id, product_id, version, request_sha256, model, batch_size,
+       failure_kind, occurred_at, details_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const productId of input.productIds) {
+    insert.run(
+      randomUUID(),
+      productId,
+      input.version,
+      requestSha256,
+      input.model,
+      input.productIds.length,
+      input.failureKind,
+      input.occurredAt,
+      detailsJson,
+    );
+  }
+}
+
+export function listActiveClassificationQuarantine(
+  database: Database.Database,
+  version: number,
+): string[] {
+  return (database.prepare(`
+    SELECT e.product_id AS productId
+    FROM classification_quarantine_events e
+    WHERE e.version = ?
+    GROUP BY e.product_id
+    HAVING (
+      SELECT latest.action FROM classification_quarantine_events latest
+      WHERE latest.version = e.version AND latest.product_id = e.product_id
+      ORDER BY latest.occurred_at DESC, latest.rowid DESC
+      LIMIT 1
+    ) = 'quarantined'
+    ORDER BY e.product_id
+  `).all(version) as Array<{ productId: string }>).map(({ productId }) => productId);
+}
+
+/** Appends quarantine events for the given products, skipping any that are
+ * already quarantined. Returns the newly quarantined product IDs. */
+export function quarantineClassificationProducts(
+  database: Database.Database,
+  input: {
+    version: number;
+    productIds: readonly string[];
+    reason: string;
+    occurredAt: string;
+    details?: Record<string, unknown>;
+  },
+): string[] {
+  return database.transaction((): string[] => {
+    const active = new Set(listActiveClassificationQuarantine(database, input.version));
+    const fresh = [...new Set(input.productIds)]
+      .filter((productId) => !active.has(productId))
+      .sort((left, right) => left.localeCompare(right, "en"));
+    const insert = database.prepare(`
+      INSERT INTO classification_quarantine_events
+        (id, product_id, version, action, reason, occurred_at, details_json)
+      VALUES (?, ?, ?, 'quarantined', ?, ?, ?)
+    `);
+    const detailsJson = JSON.stringify(input.details ?? {});
+    for (const productId of fresh) {
+      insert.run(
+        randomUUID(),
+        productId,
+        input.version,
+        input.reason,
+        input.occurredAt,
+        detailsJson,
+      );
+    }
+    return fresh;
+  }).immediate();
+}
+
+/** Operator action: lifts the quarantine on the given products (or on every
+ * quarantined product of the version when productIds is omitted). Products
+ * become eligible again on the next run with a reset shape-failure count. */
+export function releaseClassificationQuarantine(
+  database: Database.Database,
+  input: {
+    version: number;
+    productIds?: readonly string[];
+    reason: string;
+    occurredAt: string;
+    details?: Record<string, unknown>;
+  },
+): string[] {
+  return database.transaction((): string[] => {
+    const active = listActiveClassificationQuarantine(database, input.version);
+    const requested = input.productIds === undefined
+      ? null
+      : new Set(input.productIds);
+    const releasable = active.filter(
+      (productId) => requested === null || requested.has(productId),
+    );
+    const insert = database.prepare(`
+      INSERT INTO classification_quarantine_events
+        (id, product_id, version, action, reason, occurred_at, details_json)
+      VALUES (?, ?, ?, 'released', ?, ?, ?)
+    `);
+    const detailsJson = JSON.stringify(input.details ?? {});
+    for (const productId of releasable) {
+      insert.run(
+        randomUUID(),
+        productId,
+        input.version,
+        input.reason,
+        input.occurredAt,
+        detailsJson,
+      );
+    }
+    return releasable;
+  }).immediate();
+}
+
+/** Chunks eligible products into batches, halving the batch size for each
+ * prior shape failure so a repeatedly failing product set is isolated
+ * instead of resubmitted as the identical oversized request. */
+export function planClassificationBatches(
+  products: readonly ClassificationProduct[],
+  failureCounts: ReadonlyMap<string, number>,
+  baseBatchSize: number,
+  minimumBatchSize: number = MIN_ADAPTIVE_BATCH_SIZE,
+): ClassificationProduct[][] {
+  const tiers = new Map<number, ClassificationProduct[]>();
+  for (const product of products) {
+    const failures = failureCounts.get(product.id) ?? 0;
+    const tier = tiers.get(failures) ?? [];
+    tier.push(product);
+    tiers.set(failures, tier);
+  }
+  const batches: ClassificationProduct[][] = [];
+  for (const failures of [...tiers.keys()].sort((left, right) => left - right)) {
+    const tier = tiers.get(failures) ?? [];
+    const target = Math.min(
+      baseBatchSize,
+      Math.max(minimumBatchSize, Math.floor(baseBatchSize / 2 ** failures)),
+    );
+    for (let offset = 0; offset < tier.length; offset += target) {
+      batches.push(tier.slice(offset, offset + target));
+    }
+  }
+  return batches;
+}
+
+/** Ledger honesty: everything the month has already burned on failed
+ * classification attempts, surfaced in the run summary so the operator sees
+ * the bleed instead of discovering it at the budget cap. */
+export function classificationFailureSpendMonthUsd(
+  database: Database.Database,
+  now: Date,
+): number {
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const nextMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+  return (database.prepare(`
+    SELECT COALESCE(SUM(cost_usd), 0) AS spend
+    FROM cost_ledger
+    WHERE category = 'classification_failure'
+      AND occurred_at >= ? AND occurred_at < ?
+  `).get(monthStart, nextMonth) as { spend: number }).spend;
+}
+
 function uniqueClassificationConflict(error: unknown): boolean {
   return error instanceof Error
     && "code" in error
@@ -382,6 +636,7 @@ export async function classifyNewProducts(
   const version = positiveInteger("version", options.version, 1_000_000);
   const threshold = confidence(options.confidenceThreshold);
   const dryRun = options.dryRun === true;
+  const now = dependencies.now ?? (() => new Date());
   const products = listEligibleProducts(dependencies.database, version);
   const allowedItems = listItems(dependencies.database);
   const plannedBatches = Math.ceil(products.length / batchSize);
@@ -398,6 +653,14 @@ export async function classifyNewProducts(
     pending: products.length,
     budgetDenied: 0,
     estimatedCostUsd: 0,
+    shapeFailedBatches: 0,
+    shapeFailedProducts: 0,
+    shapeFailurePaused: false,
+    quarantinedActive: 0,
+    quarantinedNew: 0,
+    quarantinedProductIds: [] as string[],
+    failureSpendRunUsd: 0,
+    failureSpendMonthUsd: classificationFailureSpendMonthUsd(dependencies.database, now()),
   };
   if (dryRun) return { ...base, status: "dry_run" };
   if (products.length === 0) return { ...base, status: "completed" };
@@ -408,16 +671,61 @@ export async function classifyNewProducts(
 
   const budgetGuard = dependencies.budgetGuard ?? BudgetGuard.fromEnv();
   const model = dependencies.classificationModel ?? DEFAULT_CLASSIFICATION_MODEL;
-  const now = dependencies.now ?? (() => new Date());
   const productById = new Map(products.map((product) => [product.id, product]));
+
+  // Circuit breaker: products that keep failing the shape invariant are
+  // quarantined (visibly, reversibly) instead of being resubmitted nightly.
+  const failureCounts = shapeFailureCounts(dependencies.database, version);
+  const previouslyQuarantined = new Set(
+    listActiveClassificationQuarantine(dependencies.database, version),
+  );
+  const quarantineCandidates = products
+    .filter((product) => !previouslyQuarantined.has(product.id)
+      && (failureCounts.get(product.id) ?? 0) >= SHAPE_FAILURE_QUARANTINE_THRESHOLD)
+    .map((product) => product.id);
+  const newlyQuarantined = quarantineCandidates.length === 0
+    ? []
+    : quarantineClassificationProducts(dependencies.database, {
+        version,
+        productIds: quarantineCandidates,
+        reason: "shape_failure_circuit_breaker",
+        occurredAt: now().toISOString(),
+        details: { threshold: SHAPE_FAILURE_QUARANTINE_THRESHOLD, model },
+      });
+  if (newlyQuarantined.length > 0) {
+    await dependencies.alertSink?.send({
+      severity: "error",
+      title: "IPCA classification products quarantined",
+      message: `${newlyQuarantined.length} product(s) failed the classification `
+        + `output-shape invariant ${SHAPE_FAILURE_QUARANTINE_THRESHOLD} times and were `
+        + "quarantined; release with releaseClassificationQuarantine after review",
+      details: {
+        version,
+        quarantined: newlyQuarantined.length,
+        productIds: newlyQuarantined.slice(0, 50),
+        threshold: SHAPE_FAILURE_QUARANTINE_THRESHOLD,
+      },
+    });
+  }
+  const quarantined = new Set([...previouslyQuarantined, ...newlyQuarantined]);
+  const quarantinedEligible = products
+    .filter((product) => quarantined.has(product.id))
+    .map((product) => product.id);
+  const batchable = products.filter((product) => !quarantined.has(product.id));
+  const plan = planClassificationBatches(batchable, failureCounts, batchSize);
+
   let batches = 0;
   let classified = 0;
   let unclassified = 0;
   let budgetDenied = 0;
+  let shapeFailedBatches = 0;
+  let shapeFailedProducts = 0;
+  let shapeFailurePaused = false;
   let estimatedCostUsd = new Decimal(0);
+  let failureSpendRunUsd = new Decimal(0);
 
-  for (let offset = 0; offset < products.length; offset += batchSize) {
-    const productBatch = products.slice(offset, offset + batchSize);
+  for (let batchIndex = 0; batchIndex < plan.length; batchIndex += 1) {
+    const productBatch = plan[batchIndex] ?? [];
     const inputBatch = productBatch.map((product) => inputFor(product, allowedItems));
     const projectedCost = budgetGuard.estimateModelCost({
       model,
@@ -435,7 +743,8 @@ export async function classifyNewProducts(
       },
     );
     if (!reservation.reserved || reservation.reservationId === null) {
-      budgetDenied = products.length - offset;
+      budgetDenied = plan.slice(batchIndex)
+        .reduce((count, batch) => count + batch.length, 0);
       break;
     }
     const reservationId = reservation.reservationId;
@@ -444,31 +753,62 @@ export async function classifyNewProducts(
     try {
       providerResult = await dependencies.provider.classify(inputBatch);
     } catch (error) {
-      if (error instanceof ClassificationProviderError && error.attempts.length > 0) {
-        const occurredAt = now().toISOString();
-        const transaction = dependencies.database.transaction(() => {
-          const actualCost = persistFailureAttempts(
-            dependencies.database,
-            error.attempts,
-            budgetGuard,
-            {
-              occurredAt,
-              productIds: inputBatch.map((input) => input.productId),
-              version,
-              classificationReservationId: reservationId,
-            },
-          );
-          settleSynchronousClassificationBudget(dependencies.database, {
-            reservationId,
-            actualCostUsd: actualCost,
-            settledAt: occurredAt,
-            status: "settled",
-            details: { providerFailed: true, attemptEvidence: error.attempts.length },
-          });
-        });
-        transaction.immediate();
+      if (!(error instanceof ClassificationProviderError) || error.attempts.length === 0) {
+        throw error;
       }
-      throw error;
+      const providerError = error;
+      const terminalKind = providerError.attempts.at(-1)?.failureKind ?? "";
+      const shapeFailure = SHAPE_FAILURE_KINDS.has(terminalKind);
+      const occurredAt = now().toISOString();
+      let settledFailureCost = 0;
+      const transaction = dependencies.database.transaction(() => {
+        settledFailureCost = persistFailureAttempts(
+          dependencies.database,
+          providerError.attempts,
+          budgetGuard,
+          {
+            occurredAt,
+            productIds: inputBatch.map((input) => input.productId),
+            version,
+            classificationReservationId: reservationId,
+          },
+        );
+        settleSynchronousClassificationBudget(dependencies.database, {
+          reservationId,
+          actualCostUsd: settledFailureCost,
+          settledAt: occurredAt,
+          status: "settled",
+          details: {
+            providerFailed: true,
+            attemptEvidence: providerError.attempts.length,
+            ...(shapeFailure ? { shapeFailureKind: terminalKind } : {}),
+          },
+        });
+        if (shapeFailure) {
+          recordClassificationShapeFailure(dependencies.database, {
+            version,
+            model,
+            productIds: inputBatch.map((input) => input.productId),
+            failureKind: terminalKind,
+            occurredAt,
+            details: {
+              reservationId,
+              message: providerError.message.slice(0, 500),
+            },
+          });
+        }
+      });
+      transaction.immediate();
+      if (!shapeFailure) throw error;
+      shapeFailedBatches += 1;
+      shapeFailedProducts += inputBatch.length;
+      failureSpendRunUsd = failureSpendRunUsd.plus(settledFailureCost);
+      estimatedCostUsd = estimatedCostUsd.plus(settledFailureCost);
+      if (shapeFailedBatches >= MAX_RUN_SHAPE_FAILURES) {
+        shapeFailurePaused = true;
+        break;
+      }
+      continue;
     }
     try {
       validateBatchResult(inputBatch, providerResult);
@@ -484,8 +824,9 @@ export async function classifyNewProducts(
         failureKind: "validation_failed",
       };
       const occurredAt = now().toISOString();
+      let settledFailureCost = 0;
       const transaction = dependencies.database.transaction(() => {
-        const validationFailureCost = persistFailureAttempts(
+        settledFailureCost = persistFailureAttempts(
           dependencies.database,
           [...(providerResult.failedAttempts ?? []), validationAttempt],
           budgetGuard,
@@ -498,14 +839,35 @@ export async function classifyNewProducts(
         );
         settleSynchronousClassificationBudget(dependencies.database, {
           reservationId,
-          actualCostUsd: validationFailureCost,
+          actualCostUsd: settledFailureCost,
           settledAt: occurredAt,
           status: "settled",
           details: { responseValidationFailed: true },
         });
+        recordClassificationShapeFailure(dependencies.database, {
+          version,
+          model,
+          productIds: inputBatch.map((input) => input.productId),
+          failureKind: "validation_failed",
+          occurredAt,
+          details: {
+            reservationId,
+            message: error instanceof Error
+              ? error.message.slice(0, 500)
+              : "batch result validation failed",
+          },
+        });
       });
       transaction.immediate();
-      throw error;
+      shapeFailedBatches += 1;
+      shapeFailedProducts += inputBatch.length;
+      failureSpendRunUsd = failureSpendRunUsd.plus(settledFailureCost);
+      estimatedCostUsd = estimatedCostUsd.plus(settledFailureCost);
+      if (shapeFailedBatches >= MAX_RUN_SHAPE_FAILURES) {
+        shapeFailurePaused = true;
+        break;
+      }
+      continue;
     }
     const actualCost = budgetGuard.estimateModelCost({
       model: providerResult.model,
@@ -586,23 +948,41 @@ export async function classifyNewProducts(
       });
       failedAttemptCost = transaction.immediate();
       estimatedCostUsd = estimatedCostUsd.plus(failedAttemptCost);
+      failureSpendRunUsd = failureSpendRunUsd.plus(failedAttemptCost);
       continue;
     }
     unclassified += batchUnclassified;
     batches += 1;
     classified += inputBatch.length;
     estimatedCostUsd = estimatedCostUsd.plus(actualCost).plus(failedAttemptCost);
+    failureSpendRunUsd = failureSpendRunUsd.plus(failedAttemptCost);
   }
 
   return {
     ...base,
-    status: budgetDenied > 0 ? "budget_denied" : "completed",
+    status: budgetDenied > 0
+      ? "budget_denied"
+      : shapeFailurePaused
+        ? "shape_failure_paused"
+        : "completed",
+    plannedBatches: plan.length,
     batches,
     classified,
     unclassified,
     pending: products.length - classified,
     budgetDenied,
     estimatedCostUsd: estimatedCostUsd.toDecimalPlaces(12).toNumber(),
+    shapeFailedBatches,
+    shapeFailedProducts,
+    shapeFailurePaused,
+    quarantinedActive: quarantinedEligible.length,
+    quarantinedNew: newlyQuarantined.length,
+    quarantinedProductIds: quarantinedEligible,
+    failureSpendRunUsd: failureSpendRunUsd.toDecimalPlaces(12).toNumber(),
+    failureSpendMonthUsd: classificationFailureSpendMonthUsd(
+      dependencies.database,
+      now(),
+    ),
   };
 }
 
