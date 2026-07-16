@@ -422,6 +422,96 @@ describe("trusted strategy exploration", () => {
     ).get()).toEqual({ status: "settled", actual_cost_usd: 5 });
   });
 
+  it("requests the longer healing turn timeout only for healing explorations", async () => {
+    const database = seedExploration();
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at, finished_at)
+       VALUES ('timeout-drift', 'retailer-1', 'collect', '2026-07-10',
+               'retailer-1-extraction-v1', 1, 'failed', 1, 0, 1,
+               '2026-07-10T00:00:00.000Z', '2026-07-10T00:01:00.000Z')`,
+    ).run();
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "timeout-drift",
+      detectedAt: "2026-07-10T00:02:00.000Z",
+    });
+    const generator = new FixtureGenerator([{
+      status: "failed",
+      model: "fixture-model",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      error: "fixture provider failure",
+    } as GenerationResult]);
+
+    const outcome = await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      maxAttempts: 1,
+      trigger: "healing",
+      healingEventId: healing.event.id,
+    });
+
+    expect(outcome.outcome).toBe("provider_failed");
+    expect(generator.requests).toHaveLength(1);
+    expect(generator.requests[0]).toMatchObject({ timeoutMs: 960_000 });
+  });
+
+  it("honors the healing turn timeout env override for healing explorations", async () => {
+    const database = seedExploration();
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at, finished_at)
+       VALUES ('timeout-env-drift', 'retailer-1', 'collect', '2026-07-10',
+               'retailer-1-extraction-v1', 1, 'failed', 1, 0, 1,
+               '2026-07-10T00:00:00.000Z', '2026-07-10T00:01:00.000Z')`,
+    ).run();
+    const healing = beginHealingEvent(database, {
+      retailerId: "retailer-1",
+      purpose: "extraction",
+      onsetRunId: "timeout-env-drift",
+      detectedAt: "2026-07-10T00:02:00.000Z",
+    });
+    const generator = new FixtureGenerator([{
+      status: "failed",
+      model: "fixture-model",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      error: "fixture provider failure",
+    } as GenerationResult]);
+
+    await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      maxAttempts: 1,
+      trigger: "healing",
+      healingEventId: healing.event.id,
+      env: { OPENAI_EXPLORER_HEALING_TIMEOUT_MS: "1200000" },
+    });
+
+    expect(generator.requests[0]).toMatchObject({ timeoutMs: 1_200_000 });
+  });
+
+  it("never overrides the turn timeout for non-healing explorations", async () => {
+    const database = seedExploration();
+    const generator = new FixtureGenerator([{
+      status: "failed",
+      model: "fixture-model",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      error: "fixture provider failure",
+    } as GenerationResult]);
+
+    await exploreRetailer("retailer-1", "extraction", {
+      database,
+      generator,
+      maxAttempts: 1,
+    });
+
+    expect(generator.requests).toHaveLength(1);
+    expect(generator.requests[0]).not.toHaveProperty("timeoutMs");
+  });
+
   it("treats a generator rejection after invocation as unauditable and never retries", async () => {
     const database = seedExploration();
     let calls = 0;

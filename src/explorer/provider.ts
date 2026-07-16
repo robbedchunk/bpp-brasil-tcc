@@ -8,6 +8,13 @@ export interface GenerationRequest {
   allowedDomains: readonly string[];
   workspacePath: string;
   prompt: string;
+  /**
+   * Optional per-turn timeout override in milliseconds. Healing explorations
+   * pass a longer allowance than initial exploration because their retry
+   * prompts carry prior-failure and replay context, and a turn aborted by the
+   * timeout is charged fail-closed as unauditable spend.
+   */
+  timeoutMs?: number;
 }
 
 export interface GenerationUsage {

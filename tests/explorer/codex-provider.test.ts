@@ -13,7 +13,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
@@ -21,6 +21,7 @@ import {
   CodexStrategyGenerator,
   resolveExplorerApiKey,
   resolveExplorerBaseUrl,
+  explorerHealingTimeoutMsFromEnv,
   explorerReasoningEffortFromEnv,
   explorerTimeoutMsFromEnv,
   stripOptionalNulls,
@@ -180,6 +181,23 @@ describe("Codex SDK strategy provider", () => {
     for (const value of ["29999", "1800001", "120000.5", "one-minute"]) {
       expect(() => explorerTimeoutMsFromEnv({ OPENAI_EXPLORER_TIMEOUT_MS: value }))
         .toThrow(/integer from 30000 to 1800000/iu);
+    }
+  });
+
+  it("defaults the healing timeout to sixteen minutes and never below the base timeout", () => {
+    expect(explorerHealingTimeoutMsFromEnv({})).toBe(960_000);
+    expect(explorerHealingTimeoutMsFromEnv({ OPENAI_EXPLORER_TIMEOUT_MS: "600000" }))
+      .toBe(960_000);
+    expect(explorerHealingTimeoutMsFromEnv({ OPENAI_EXPLORER_TIMEOUT_MS: "1200000" }))
+      .toBe(1_200_000);
+    expect(explorerHealingTimeoutMsFromEnv({
+      OPENAI_EXPLORER_HEALING_TIMEOUT_MS: "1500000",
+      OPENAI_EXPLORER_TIMEOUT_MS: "600000",
+    })).toBe(1_500_000);
+    for (const value of ["29999", "1800001", "120000.5", "one-minute"]) {
+      expect(() => explorerHealingTimeoutMsFromEnv({
+        OPENAI_EXPLORER_HEALING_TIMEOUT_MS: value,
+      })).toThrow(/OPENAI_EXPLORER_HEALING_TIMEOUT_MS must be an integer from 30000 to 1800000/iu);
     }
   });
 
@@ -910,6 +928,116 @@ describe("Codex SDK strategy provider", () => {
       error: expect.stringMatching(/state cleanup failure/iu),
     });
     expect(cleanupCalls).toHaveLength(1);
+  });
+
+  it("names the fired default turn timeout in the unauditable-spend evidence", async () => {
+    vi.useFakeTimers();
+    try {
+      const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-timeout-default-"));
+      roots.push(workspacePath);
+      let signalTurnStarted!: () => void;
+      const turnStarted = new Promise<void>((resolveStarted) => {
+        signalTurnStarted = resolveStarted;
+      });
+      const provider = new CodexStrategyGenerator({
+        apiKey: "test-key",
+        codexFactory: () => ({
+          startThread: () => ({
+            runStreamed: async (_prompt, turnOptions) => ({
+              events: (async function* () {
+                yield { type: "turn.started" as const };
+                signalTurnStarted();
+                // The SDK passes the signal to spawn(); an abort kills the
+                // Codex process, so the stream fails with a plain AbortError
+                // and `turn.completed` usage can never arrive.
+                await new Promise<never>((_, reject) => {
+                  turnOptions!.signal!.addEventListener("abort", () => {
+                    reject(new Error("The operation was aborted"));
+                  }, { once: true });
+                });
+              })(),
+            }),
+          }),
+        }),
+      });
+
+      const pending = provider.generate({
+        retailerId: "shop",
+        purpose: "extraction",
+        allowedDomains: ["shop.test"],
+        workspacePath,
+        prompt: "Create the artifact.",
+      });
+      await turnStarted;
+      await vi.advanceTimersByTimeAsync(480_000);
+
+      await expect(pending).resolves.toMatchObject({
+        status: "unauditable_spend",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        error: "Codex spend is unauditable after turn start: "
+          + "the 480000ms explorer turn timeout aborted the turn before usage accounting: "
+          + "The operation was aborted",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a healing turn alive past the base timeout under a per-request override", async () => {
+    vi.useFakeTimers();
+    try {
+      const workspacePath = await mkdtemp(join(tmpdir(), "explorer-provider-timeout-override-"));
+      roots.push(workspacePath);
+      let signalTurnStarted!: () => void;
+      const turnStarted = new Promise<void>((resolveStarted) => {
+        signalTurnStarted = resolveStarted;
+      });
+      const provider = new CodexStrategyGenerator({
+        apiKey: "test-key",
+        codexFactory: () => ({
+          startThread: () => ({
+            runStreamed: async (_prompt, turnOptions) => ({
+              events: (async function* () {
+                yield { type: "turn.started" as const };
+                signalTurnStarted();
+                await new Promise<never>((_, reject) => {
+                  turnOptions!.signal!.addEventListener("abort", () => {
+                    reject(new Error("The operation was aborted"));
+                  }, { once: true });
+                });
+              })(),
+            }),
+          }),
+        }),
+      });
+
+      let settled = false;
+      const pending = provider.generate({
+        retailerId: "shop",
+        purpose: "extraction",
+        allowedDomains: ["shop.test"],
+        workspacePath,
+        prompt: "Create the artifact.",
+        timeoutMs: 960_000,
+      });
+      void pending.finally(() => {
+        settled = true;
+      });
+      await turnStarted;
+      await vi.advanceTimersByTimeAsync(480_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(480_000);
+
+      await expect(pending).resolves.toMatchObject({
+        status: "unauditable_spend",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        error: expect.stringContaining(
+          "the 960000ms explorer turn timeout aborted the turn before usage accounting",
+        ),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("marks a started turn with null usage as unauditable spend", async () => {

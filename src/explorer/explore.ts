@@ -33,7 +33,10 @@ import {
 import type { ExtractionResult, ProductRef } from "../strategies/types.js";
 import { validateExtractionStrategy } from "../strategies/validate.js";
 import type { StrategyValidationEvidence } from "../strategies/validation-evidence.js";
-import { explorerModelFromEnv } from "./codex-provider.js";
+import {
+  explorerHealingTimeoutMsFromEnv,
+  explorerModelFromEnv,
+} from "./codex-provider.js";
 import {
   createSandboxPackage,
   redactSandboxText,
@@ -358,6 +361,15 @@ export async function exploreRetailer(
     configuredMonthlyBudgetUsd,
   );
   const rate = dependencies.rate ?? configuredRate(dependencies.env ?? process.env);
+  // Healing turns get a longer turn timeout than initial exploration: the
+  // retry prompt carries prior-failure context and replay evidence, and a
+  // turn killed by the timeout loses its usage accounting, forcing the
+  // fail-closed unauditable-spend charge of the remaining event reservation.
+  // Resolved before the run opens so a bad env override fails without spend.
+  const turnTimeoutMs =
+    dependencies.healingEventId !== undefined || dependencies.trigger === "healing"
+      ? explorerHealingTimeoutMsFromEnv(dependencies.env ?? process.env)
+      : undefined;
   const context = findRetailerExplorationContext(
     dependencies.database,
     retailerId,
@@ -599,6 +611,7 @@ export async function exploreRetailer(
           allowedDomains: context.allowedDomains,
           workspacePath: sandbox.workspacePath,
           prompt,
+          ...(turnTimeoutMs === undefined ? {} : { timeoutMs: turnTimeoutMs }),
         });
       } catch (error) {
         const message = safeError(error);

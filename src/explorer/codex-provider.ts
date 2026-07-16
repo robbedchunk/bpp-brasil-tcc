@@ -21,6 +21,13 @@ import type {
 export const DEFAULT_EXPLORER_MODEL = "gpt-5.6-sol";
 export const DEFAULT_EXPLORER_REASONING_EFFORT = "high";
 export const DEFAULT_EXPLORER_TIMEOUT_MS = 480_000;
+// Healing turns retry against a drifted retailer with prior-failure context and
+// replay evidence in the prompt, so at high reasoning effort they run materially
+// longer than initial exploration turns. Aborting a turn mid-flight kills the
+// Codex process before `turn.completed` usage can arrive, which forces the
+// deliberate fail-closed unauditable-spend charge of the remaining event
+// reservation. Healing therefore gets a longer turn timeout by default.
+export const DEFAULT_EXPLORER_HEALING_TIMEOUT_MS = 960_000;
 const MIN_EXPLORER_TIMEOUT_MS = 30_000;
 const MAX_EXPLORER_TIMEOUT_MS = 1_800_000;
 const EXPLORER_REASONING_EFFORTS = ["none", "low", "medium", "high", "xhigh"] as const;
@@ -170,13 +177,9 @@ export function explorerReasoningEffortFromEnv(
   );
 }
 
-export function explorerTimeoutMsFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const value = optional(env.OPENAI_EXPLORER_TIMEOUT_MS);
-  if (value === undefined) return DEFAULT_EXPLORER_TIMEOUT_MS;
+function timeoutMsFromEnvValue(name: string, value: string): number {
   if (!/^\d+$/u.test(value)) {
-    throw new Error("OPENAI_EXPLORER_TIMEOUT_MS must be an integer from 30000 to 1800000");
+    throw new Error(`${name} must be an integer from 30000 to 1800000`);
   }
   const timeoutMs = Number(value);
   if (
@@ -184,9 +187,44 @@ export function explorerTimeoutMsFromEnv(
     || timeoutMs < MIN_EXPLORER_TIMEOUT_MS
     || timeoutMs > MAX_EXPLORER_TIMEOUT_MS
   ) {
-    throw new Error("OPENAI_EXPLORER_TIMEOUT_MS must be an integer from 30000 to 1800000");
+    throw new Error(`${name} must be an integer from 30000 to 1800000`);
   }
   return timeoutMs;
+}
+
+export function explorerTimeoutMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const value = optional(env.OPENAI_EXPLORER_TIMEOUT_MS);
+  if (value === undefined) return DEFAULT_EXPLORER_TIMEOUT_MS;
+  return timeoutMsFromEnvValue("OPENAI_EXPLORER_TIMEOUT_MS", value);
+}
+
+export function explorerHealingTimeoutMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const value = optional(env.OPENAI_EXPLORER_HEALING_TIMEOUT_MS);
+  if (value === undefined) {
+    // Healing must never get a shorter turn than initial exploration, even
+    // when an operator raised the base turn timeout above the healing default.
+    return Math.max(
+      explorerTimeoutMsFromEnv(env),
+      DEFAULT_EXPLORER_HEALING_TIMEOUT_MS,
+    );
+  }
+  return timeoutMsFromEnvValue("OPENAI_EXPLORER_HEALING_TIMEOUT_MS", value);
+}
+
+// A malformed per-request override is clamped, never thrown: by the time the
+// generator runs, the caller has already booked the attempt, and a thrown
+// configuration error is indistinguishable from an aborted paid turn — it
+// would be charged fail-closed as unauditable spend.
+function boundedTurnTimeoutMs(timeoutMs: number | undefined): number | undefined {
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return undefined;
+  return Math.min(
+    MAX_EXPLORER_TIMEOUT_MS,
+    Math.max(MIN_EXPLORER_TIMEOUT_MS, Math.trunc(timeoutMs)),
+  );
 }
 
 function tomlString(value: string): string {
@@ -521,8 +559,13 @@ export class CodexStrategyGenerator implements StrategyGenerator {
           LC_ALL: "C.UTF-8",
           TZ: "UTC",
         };
+        const timeoutMs = boundedTurnTimeoutMs(request.timeoutMs) ?? this.#timeoutMs;
         const controller = new AbortController();
-        timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+        let timedOut = false;
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
         const codex = this.#factory({
           apiKey,
           ...(this.#baseUrl === undefined ? {} : { baseUrl: this.#baseUrl }),
@@ -571,6 +614,17 @@ export class CodexStrategyGenerator implements StrategyGenerator {
         const usage = completedUsage === null
           ? { inputTokens: 0, outputTokens: 0 }
           : generationUsage(completedUsage);
+        if (completedUsage === null && timedOut) {
+          // Attribute the abort to this host's own turn timeout so the
+          // durable evidence names the limit that fired instead of the
+          // generic AbortError text. Accounting is unchanged: the turn was
+          // killed before usage arrived, so the spend stays unauditable.
+          const timeoutMessage =
+            `the ${timeoutMs}ms explorer turn timeout aborted the turn before usage accounting`;
+          streamError = streamError === undefined
+            ? timeoutMessage
+            : `${timeoutMessage}: ${streamError}`;
+        }
         if (completedUsage === null) {
           return {
             status: "unauditable_spend",
