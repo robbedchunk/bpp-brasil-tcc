@@ -1,0 +1,2 @@
+event_id,retailer_id,retailer_name,purpose,status,onset_run_id,previous_strategy_id,successor_strategy_id,attempts,tier_from,tier_to,drift_started_at,detected_at,recovered_at,duration_seconds
+c3bdeee8-7ceb-49c3-b456-dabafc0f83a8,carrefour,Carrefour Mercado,extraction,failed,ae6a08fd-7d4f-4997-9f27-8499c9ffedc5,carrefour-extraction-v8,,2,1,,2026-07-16T06:05:02.898Z,2026-07-16T06:13:22.103Z,,2533
