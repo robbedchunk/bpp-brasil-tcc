@@ -424,6 +424,11 @@ function validTokenCount(name: string, value: number): void {
 export class BudgetGuard {
   readonly #monthlyLimitUsd: number;
 
+  /** Default guard for paid model work: honors PRECOS_MONTHLY_MODEL_USD. */
+  static fromEnv(env: NodeJS.ProcessEnv = process.env): BudgetGuard {
+    return new BudgetGuard(monthlyModelBudgetUsdFromEnv(env));
+  }
+
   constructor(monthlyLimitUsd = 50) {
     if (!Number.isFinite(monthlyLimitUsd) || monthlyLimitUsd < 0) {
       throw new RangeError("monthlyLimitUsd must be a non-negative finite number");

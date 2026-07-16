@@ -93,6 +93,7 @@ import { monitorRun } from "./healing/monitor.js";
 import { buildDailyIndex } from "./index/aggregate.js";
 import {
   assertSafeOutputPath,
+  canonicalizeOutputRoot,
   OfficialSourceUnavailableError,
   exportResearchData as runExportResearchData,
 } from "./index/export.js";
@@ -621,7 +622,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           }, {
             database,
             ...(provider === undefined ? {} : { provider }),
-            budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+            budgetGuard: dependencies.budgetGuard
+              ?? BudgetGuard.fromEnv(dependencies.env ?? process.env),
             classificationModel,
             now,
           });
@@ -703,7 +705,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         }, {
           database,
           ...(client === undefined ? {} : { client }),
-          budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+          budgetGuard: dependencies.budgetGuard
+            ?? BudgetGuard.fromEnv(dependencies.env ?? process.env),
           model,
           now,
         })),
@@ -749,7 +752,8 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
             const batchDependencies = {
               database,
               client,
-              budgetGuard: dependencies.budgetGuard ?? new BudgetGuard(),
+              budgetGuard: dependencies.budgetGuard
+                ?? BudgetGuard.fromEnv(dependencies.env ?? process.env),
               model,
               now,
             };
@@ -808,7 +812,24 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       ) {
         throw new Error("--output must stay inside PROJECT_ROOT");
       }
-      if (options.export === true) await assertSafeOutputPath(configuredOutput);
+      let outputRoot = configuredOutput;
+      if (options.export === true) {
+        // The sanctioned release layout symlinks <release>/data at the live
+        // checkout, so canonicalize both sides before the containment check.
+        outputRoot = await canonicalizeOutputRoot(configuredOutput);
+        const anchors = [
+          await canonicalizeOutputRoot(applicationConfig.projectRoot),
+          await canonicalizeOutputRoot(resolve(applicationConfig.projectRoot, "data")),
+        ];
+        if (!anchors.some((anchor) => {
+          const path = relative(anchor, outputRoot);
+          return path === ""
+            || (!path.startsWith(`..${sep}`) && path !== ".." && !path.startsWith(sep));
+        })) {
+          throw new Error("--output resolves through a symbolic link outside PROJECT_ROOT");
+        }
+        await assertSafeOutputPath(outputRoot);
+      }
       const result = await withProcessLock(
         dependencies.indexLockPath
           ?? resolve(applicationConfig.projectRoot, "var/precos-index.lock"),
@@ -839,7 +860,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           });
           try {
             return await (dependencies.exportResearchData ?? runExportResearchData)(database, {
-              outputRoot: configuredOutput,
+              outputRoot,
               now,
               sidraClient: dependencies.sidraClient ?? new OfficialSidraClient(),
               alertSink: sink,

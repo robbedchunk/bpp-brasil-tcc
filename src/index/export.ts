@@ -9,7 +9,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { basename, join, parse as parsePath, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, parse as parsePath, relative, resolve, sep } from "node:path";
 
 import type Database from "better-sqlite3";
 import { Decimal } from "decimal.js";
@@ -116,6 +116,32 @@ export async function assertSafeOutputPath(value: string): Promise<void> {
         && "code" in error
         && error.code === "ENOENT"
       ) return;
+      throw error;
+    }
+  }
+}
+
+/** Realpath-resolves the deepest existing ancestor and rejoins the
+ * not-yet-created tail so callers can anchor-check symlinked layouts. */
+export async function canonicalizeOutputRoot(value: string): Promise<string> {
+  const absolute = resolve(value);
+  let existing = absolute;
+  const missing: string[] = [];
+  for (;;) {
+    try {
+      return join(await realpath(existing), ...missing);
+    } catch (error) {
+      if (
+        typeof error === "object"
+        && error !== null
+        && "code" in error
+        && error.code === "ENOENT"
+        && dirname(existing) !== existing
+      ) {
+        missing.unshift(basename(existing));
+        existing = dirname(existing);
+        continue;
+      }
       throw error;
     }
   }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { Decimal } from "decimal.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildCli, type CliDependencies } from "../../src/cli.js";
 import {
@@ -451,6 +451,37 @@ describe("incremental classification", () => {
       expect(database.prepare("SELECT COUNT(*) AS count FROM classifications").get()).toEqual({ count: 0 });
     } finally {
       database.close();
+    }
+  });
+
+  it("applies PRECOS_MONTHLY_MODEL_USD to the default-constructed budget guard", async () => {
+    const run = async () => {
+      const database = openDatabase(":memory:");
+      try {
+        seedItems(database);
+        seedProducts(database, 1);
+        database.prepare(`
+          INSERT INTO cost_ledger (id, category, provider, model, cost_usd, occurred_at)
+          VALUES ('committed-this-month', 'classification', 'openai', 'gpt-5.6-luna',
+                  60.0, '2026-07-05T00:00:00.000Z')
+        `).run();
+        return await classifyNewProducts(classificationOptions(), {
+          database,
+          provider: new FixtureClassifier(),
+          now: () => new Date("2026-07-15T12:00:00.000Z"),
+        });
+      } finally {
+        database.close();
+      }
+    };
+
+    try {
+      vi.stubEnv("PRECOS_MONTHLY_MODEL_USD", "100");
+      expect(await run()).toMatchObject({ status: "completed", classified: 1 });
+      vi.stubEnv("PRECOS_MONTHLY_MODEL_USD", "");
+      expect(await run()).toMatchObject({ status: "budget_denied", pending: 1 });
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 

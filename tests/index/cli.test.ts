@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -71,6 +71,67 @@ describe("precos index CLI", () => {
     await expect(cli.parseAsync([
       "node", "precos", "index", "--export", "--output", "exports", "--json",
     ])).rejects.toThrow(/symbolic link|symlink/i);
+    expect(called).toBe(false);
+    database.close();
+  });
+
+  it("exports through the sanctioned release layout where data is a symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "precos-index-cli-release-"));
+    const dataDirectory = await mkdtemp(join(tmpdir(), "precos-index-cli-release-data-"));
+    directories.push(root, dataDirectory);
+    await symlink(dataDirectory, join(root, "data"), "dir");
+    const database = openDatabase(":memory:");
+    seedAuthoritativeWeights(database);
+    let stdout = "";
+    const cli = buildCli({
+      database,
+      env: { PROJECT_ROOT: root },
+      now: () => new Date("2026-07-13T11:00:00.000Z"),
+      stdout: (text) => { stdout += text; },
+      sidraClient: {
+        async fetchSeries() {
+          return {
+            points: [], missingMonths: [], responseSha256: "c".repeat(64),
+            endpoint: "https://servicodados.ibge.gov.br/api/v3/agregados/7060",
+            status: "no_overlap" as const,
+          };
+        },
+      },
+    });
+    cli.exitOverride();
+
+    await cli.parseAsync(["node", "precos", "index", "--export", "--json"]);
+
+    expect(JSON.parse(stdout).status).toBe("no_index_data");
+    const latest = JSON.parse(await readFile(
+      join(dataDirectory, "exports", "latest.json"),
+      "utf8",
+    ));
+    expect(latest.snapshotDirectory).toMatch(/^snapshots\//u);
+    database.close();
+  });
+
+  it("rejects a data/exports symlink that resolves outside both anchors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "precos-index-cli-planted-"));
+    const outside = await mkdtemp(join(tmpdir(), "precos-index-cli-planted-outside-"));
+    directories.push(root, outside);
+    await mkdir(join(root, "data"));
+    await symlink(outside, join(root, "data", "exports"), "dir");
+    const database = openDatabase(":memory:");
+    let called = false;
+    const cli = buildCli({
+      database,
+      env: { PROJECT_ROOT: root },
+      stdout: () => {},
+      exportResearchData: async () => {
+        called = true;
+        throw new Error("export boundary should not run");
+      },
+    });
+    cli.exitOverride();
+
+    await expect(cli.parseAsync(["node", "precos", "index", "--export", "--json"]))
+      .rejects.toThrow(/symbolic link|symlink/i);
     expect(called).toBe(false);
     database.close();
   });

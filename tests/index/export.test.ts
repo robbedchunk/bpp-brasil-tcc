@@ -312,4 +312,21 @@ describe("research snapshot export", () => {
     })).rejects.toThrow(/symbolic link|symlink/i);
     expect(await readdir(outside)).toEqual([]);
   });
+
+  it("refuses a snapshots symlink planted below a canonical output root", async () => {
+    const database = indexDatabase();
+    databases.push(database);
+    seedAuthoritativeWeights(database);
+    const outputRoot = await mkdtemp(join(tmpdir(), "precos-export-planted-"));
+    const outside = await mkdtemp(join(tmpdir(), "precos-export-planted-outside-"));
+    directories.push(outputRoot, outside);
+    await symlink(outside, join(outputRoot, "snapshots"), "dir");
+
+    await expect(exportResearchData(database, {
+      outputRoot,
+      sidraClient: emptySidra,
+      now: () => new Date("2026-07-13T11:00:00.000Z"),
+    })).rejects.toThrow(/symbolic link|symlink/i);
+    expect(await readdir(outside)).toEqual([]);
+  });
 });

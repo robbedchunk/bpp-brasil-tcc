@@ -13,6 +13,16 @@ describe("budget guard", () => {
     }
   });
 
+  it("builds default guards that honor the operator monthly override", () => {
+    const betweenDefaultAndOverride = { projectedMonthlyUsd: 75, essential: false };
+
+    expect(BudgetGuard.fromEnv({ PRECOS_MONTHLY_MODEL_USD: "100" })
+      .decide(betweenDefaultAndOverride)).toBe("continue");
+    expect(BudgetGuard.fromEnv({}).decide(betweenDefaultAndOverride)).toBe("pause");
+    expect(() => BudgetGuard.fromEnv({ PRECOS_MONTHLY_MODEL_USD: "not-a-number" }))
+      .toThrow(/positive finite number/iu);
+  });
+
   it("pauses only nonessential LLM work above the monthly ceiling", () => {
     const budgetGuard = new BudgetGuard(50);
 

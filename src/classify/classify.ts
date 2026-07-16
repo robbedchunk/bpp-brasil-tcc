@@ -406,7 +406,7 @@ export async function classifyNewProducts(
     return { ...base, status: "provider_unavailable" };
   }
 
-  const budgetGuard = dependencies.budgetGuard ?? new BudgetGuard();
+  const budgetGuard = dependencies.budgetGuard ?? BudgetGuard.fromEnv();
   const model = dependencies.classificationModel ?? DEFAULT_CLASSIFICATION_MODEL;
   const now = dependencies.now ?? (() => new Date());
   const productById = new Map(products.map((product) => [product.id, product]));

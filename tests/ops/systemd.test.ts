@@ -11,6 +11,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -471,6 +472,47 @@ if [[ "$1" == "show-user" ]]; then printf 'yes\\n'; fi
       },
     })).rejects.toThrow(/does not match the coherently captured source snapshot/u);
     expect(await readdir(backups)).toEqual([]);
+  });
+
+  it("bundles through a symlinked backup directory into the canonical directory", async () => {
+    const directory = await temporaryDirectory("precos-backup-symlink-");
+    const database = join(directory, "precos.sqlite");
+    const backups = join(directory, "backups");
+    const linked = join(directory, "linked");
+    await mkdir(backups, { recursive: true });
+    await symlink(backups, linked, "dir");
+    const artifactPath = join(linked, "precos-20260711T041500-44.sqlite");
+    expect((await run("sqlite3", [database, `
+      CREATE TABLE evidence(value INTEGER NOT NULL);
+      INSERT INTO evidence VALUES (1);
+    `])).exitCode).toBe(0);
+
+    const receipt = await createScheduledBackupBundle({
+      sourceDatabasePath: database,
+      artifactPath,
+      receiptPath: `${artifactPath}.receipt.json`,
+    });
+
+    expect(receipt.trigger).toBe("manual");
+    expect((await readdir(backups)).sort()).toEqual([
+      "precos-20260711T041500-44.sqlite",
+      "precos-20260711T041500-44.sqlite.receipt.json",
+    ]);
+    expect(validateScheduledBackupPair({
+      receiptPath: join(backups, "precos-20260711T041500-44.sqlite.receipt.json"),
+      backupDirectory: linked,
+      sourceDatabasePath: database,
+    }).valid).toBe(true);
+
+    await expect(createScheduledBackupBundle({
+      sourceDatabasePath: database,
+      artifactPath: join(backups, "precos-20260711T041500-45.sqlite"),
+      receiptPath: join(directory, "precos-20260711T041500-45.sqlite.receipt.json"),
+    })).rejects.toThrow(/exact companions in the backup directory/u);
+    expect((await readdir(backups)).sort()).toEqual([
+      "precos-20260711T041500-44.sqlite",
+      "precos-20260711T041500-44.sqlite.receipt.json",
+    ]);
   });
 
   it("publishes no artifact or receipt when coherent backup evidence fails", async () => {

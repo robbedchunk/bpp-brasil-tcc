@@ -370,13 +370,14 @@ export async function createScheduledBackupBundle(input: {
     throw new Error("INVOCATION_ID is not running in the exact precos-backup.service cgroup");
   }
   const sourceDatabasePath = realpathSync(input.sourceDatabasePath);
-  const artifactPath = resolve(input.artifactPath);
-  const receiptPath = resolve(input.receiptPath);
-  const artifactName = basename(artifactPath);
-  const backupDirectory = realpathSync(dirname(artifactPath));
+  const providedArtifactPath = resolve(input.artifactPath);
+  const providedReceiptPath = resolve(input.receiptPath);
+  const artifactName = basename(providedArtifactPath);
+  const backupDirectory = realpathSync(dirname(providedArtifactPath));
+  const artifactPath = join(backupDirectory, artifactName);
+  const receiptPath = `${artifactPath}.receipt.json`;
   if (!ARTIFACT_NAME.test(artifactName)
-    || dirname(artifactPath) !== backupDirectory
-    || receiptPath !== `${artifactPath}.receipt.json`) {
+    || providedReceiptPath !== `${providedArtifactPath}.receipt.json`) {
     throw new Error("artifact and receipt must be exact companions in the backup directory");
   }
   if (existsSync(artifactPath) || existsSync(receiptPath)) {

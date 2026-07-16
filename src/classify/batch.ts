@@ -548,7 +548,7 @@ export async function submitClassificationBatch(
   if (allowedItems.length === 0) return { ...base, status: "no_ipca_items" };
   if (dependencies.client === undefined) return { ...base, status: "provider_unavailable" };
 
-  const budgetGuard = dependencies.budgetGuard ?? new BudgetGuard();
+  const budgetGuard = dependencies.budgetGuard ?? BudgetGuard.fromEnv();
   const now = dependencies.now ?? (() => new Date());
   const inputs = products.map((product) => inputFor(product, allowedItems));
   const projected = budgetGuard.estimateModelCost({
@@ -950,7 +950,7 @@ export async function finalizeClassificationBatch(
     throw new Error(`Batch job ${jobId} is not terminal: ${current.status}`);
   }
   if (dependencies.client === undefined) throw new Error("OpenAI Batch client is unavailable");
-  const budgetGuard = dependencies.budgetGuard ?? new BudgetGuard();
+  const budgetGuard = dependencies.budgetGuard ?? BudgetGuard.fromEnv();
   const now = dependencies.now ?? (() => new Date());
 
   try {
