@@ -139,3 +139,5 @@ in [docs/sources.md](docs/sources.md). Repository citation:
 
 This repository is licensed under the [MIT License](LICENSE). The author controls
 when the local repository is pushed or made public.
+
+TODO: register on `zenodo`.

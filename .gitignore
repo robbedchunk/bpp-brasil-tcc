@@ -27,6 +27,9 @@ __pycache__/
 .venv/
 data/reviews/*.csv
 
+# Personal working documents (kept out of the pseudonymous history)
+*.docx
+
 # Test and editor artifacts
 playwright-report/
 test-results/
