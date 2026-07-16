@@ -11,6 +11,9 @@ import {
   admitDiscoveryReference,
   admitReplaySlot,
   admitRequest,
+  isWeeklyDiscoveryDay,
+  remainingRequestAdmissions,
+  requestAdmissionCapForStage,
   requestAdmissionsForStageOnDay,
 } from "../../src/db/repositories.js";
 import {
@@ -50,9 +53,11 @@ function fillAdmissions(
     stage: "discover" | "collect";
     first?: number;
     last: number;
+    day?: string;
   },
 ): void {
   const first = input.first ?? 1;
+  const day = input.day ?? "2026-07-10";
   database.prepare(`
     WITH RECURSIVE ordinals(ordinal) AS (
       VALUES (?)
@@ -62,10 +67,18 @@ function fillAdmissions(
     INSERT INTO request_admissions
       (id, run_id, retailer_id, collection_day, stage, stage_ordinal, admitted_at)
     SELECT
-      printf('%s-%04d', ?, ordinal), ?, 'retailer-1', '2026-07-10', ?, ordinal,
-      '2026-07-10T12:00:00.000Z'
+      printf('%s-%04d', ?, ordinal), ?, 'retailer-1', ?, ?, ordinal,
+      ? || 'T12:00:00.000Z'
     FROM ordinals
-  `).run(first, input.last, `${input.runId}-admission`, input.runId, input.stage);
+  `).run(
+    first,
+    input.last,
+    `${input.runId}-admission`,
+    input.runId,
+    day,
+    input.stage,
+    day,
+  );
 }
 
 function concurrentAdmissionProcess(
@@ -253,6 +266,155 @@ describe("durable request admissions", () => {
     expect(() => database.prepare(
       "DELETE FROM request_admissions WHERE id = ?",
     ).run("collect-cap-admission-0001")).toThrow(/append-only/iu);
+  });
+
+  it("derives the weekly discovery day and stage caps from the collection day", () => {
+    expect(isWeeklyDiscoveryDay("2026-07-12")).toBe(true);
+    expect(isWeeklyDiscoveryDay("2026-07-13")).toBe(false);
+    expect(isWeeklyDiscoveryDay("2026-07-19")).toBe(true);
+    expect(() => isWeeklyDiscoveryDay("2026-7-12")).toThrow(RangeError);
+    expect(() => isWeeklyDiscoveryDay("2026-02-30")).toThrow(RangeError);
+    expect(requestAdmissionCapForStage("2026-07-12", "collect")).toBe(1_800);
+    expect(requestAdmissionCapForStage("2026-07-12", "discover")).toBe(2_000);
+    expect(requestAdmissionCapForStage("2026-07-13", "collect")).toBe(2_000);
+    expect(requestAdmissionCapForStage("2026-07-13", "discover")).toBe(2_000);
+  });
+
+  it("caps Sunday collection at 1,800 and never refunds the discovery reservation", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    createStrategyRun(database, {
+      id: "sunday-collect",
+      stage: "collect",
+      day: "2026-07-12",
+    });
+    fillAdmissions(database, {
+      runId: "sunday-collect",
+      stage: "collect",
+      last: 1_799,
+      day: "2026-07-12",
+    });
+
+    expect(remainingRequestAdmissions(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "collect",
+    )).toBe(1);
+    expect(admitRequest(database, {
+      runId: "sunday-collect",
+      retailerId: "retailer-1",
+      collectionDay: "2026-07-12",
+      stage: "collect",
+      admittedAt: "2026-07-12T06:00:00.000Z",
+    })).toMatchObject({ admitted: true, used: 1_800, remaining: 0 });
+    // The reservation is not refundable to collection: 200 shared requests
+    // remain unspent, yet every further collect admission fails closed.
+    expect(admitRequest(database, {
+      runId: "sunday-collect",
+      retailerId: "retailer-1",
+      collectionDay: "2026-07-12",
+      stage: "collect",
+      admittedAt: "2026-07-12T06:00:01.000Z",
+    })).toEqual({ admitted: false, used: 1_800, remaining: 0, admissionId: null });
+    expect(remainingRequestAdmissions(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "collect",
+    )).toBe(0);
+    expect(remainingRequestAdmissions(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "discover",
+    )).toBe(200);
+  });
+
+  it("lets Sunday discovery spend exactly the shared remainder before failing closed", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    createStrategyRun(database, {
+      id: "sunday-collect",
+      stage: "collect",
+      day: "2026-07-12",
+    });
+    createStrategyRun(database, {
+      id: "sunday-discover",
+      stage: "discover",
+      day: "2026-07-12",
+    });
+    fillAdmissions(database, {
+      runId: "sunday-collect",
+      stage: "collect",
+      last: 1_800,
+      day: "2026-07-12",
+    });
+
+    for (let index = 0; index < 200; index += 1) {
+      const admission = admitRequest(database, {
+        runId: "sunday-discover",
+        retailerId: "retailer-1",
+        collectionDay: "2026-07-12",
+        stage: "discover",
+        admittedAt: "2026-07-12T21:00:00.000Z",
+      });
+      expect(admission.admitted).toBe(true);
+      expect(admission.remaining).toBe(200 - index - 1);
+    }
+    expect(admitRequest(database, {
+      runId: "sunday-discover",
+      retailerId: "retailer-1",
+      collectionDay: "2026-07-12",
+      stage: "discover",
+      admittedAt: "2026-07-12T21:30:00.000Z",
+    })).toEqual({ admitted: false, used: 2_000, remaining: 0, admissionId: null });
+    expect(requestAdmissionsForStageOnDay(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "collect",
+    )).toBe(1_800);
+    expect(requestAdmissionsForStageOnDay(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "discover",
+    )).toBe(200);
+  });
+
+  it("keeps the full shared ledger for collection on non-discovery days", () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    createStrategyRun(database, {
+      id: "monday-collect",
+      stage: "collect",
+      day: "2026-07-13",
+    });
+    fillAdmissions(database, {
+      runId: "monday-collect",
+      stage: "collect",
+      last: 1_999,
+      day: "2026-07-13",
+    });
+
+    expect(admitRequest(database, {
+      runId: "monday-collect",
+      retailerId: "retailer-1",
+      collectionDay: "2026-07-13",
+      stage: "collect",
+      admittedAt: "2026-07-13T06:00:00.000Z",
+    })).toMatchObject({ admitted: true, used: 2_000, remaining: 0 });
+    expect(admitRequest(database, {
+      runId: "monday-collect",
+      retailerId: "retailer-1",
+      collectionDay: "2026-07-13",
+      stage: "collect",
+      admittedAt: "2026-07-13T06:00:01.000Z",
+    })).toEqual({ admitted: false, used: 2_000, remaining: 0, admissionId: null });
   });
 
   it("rejects request, discovery-reference, and replay admissions for terminal runs", () => {

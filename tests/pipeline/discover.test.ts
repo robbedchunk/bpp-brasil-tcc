@@ -14,7 +14,10 @@ function fillRequestAdmissions(
   database: ReturnType<typeof openDatabase>,
   runId: string,
   count: number,
+  options?: { stage?: "discover" | "collect"; day?: string },
 ): void {
+  const stage = options?.stage ?? "discover";
+  const day = options?.day ?? "2026-07-10";
   database.prepare(`
     WITH RECURSIVE ordinals(ordinal) AS (
       VALUES (1)
@@ -23,9 +26,9 @@ function fillRequestAdmissions(
     INSERT INTO request_admissions
       (id, run_id, retailer_id, collection_day, stage, stage_ordinal, admitted_at)
     SELECT printf('%s-request-%04d', ?, ordinal), ?, 'retailer-1',
-           '2026-07-10', 'discover', ordinal, '2026-07-10T03:00:00.000Z'
+           ?, ?, ordinal, ? || 'T03:00:00.000Z'
     FROM ordinals
-  `).run(count, runId, runId);
+  `).run(count, runId, runId, day, stage, day);
 }
 
 function fillDiscoveryReferenceAdmissions(
@@ -272,6 +275,58 @@ describe("discovery pipeline", () => {
     expect(database.prepare(
       "SELECT COUNT(*) AS count FROM request_admissions WHERE stage = 'discover'",
     ).get()).toEqual({ count: 2_000 });
+  });
+
+  it("runs weekly Sunday discovery inside the reservation collection cannot spend", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    seedStrategy(database, "discovery", discoveryStrategy);
+    // Daily collection already ran on Sunday 2026-07-12 and holds its full
+    // stage cap of 1,800 admissions (2,000 shared minus the 200 reservation).
+    database.prepare(`
+      INSERT INTO runs
+        (id, retailer_id, stage, collection_day, status, attempted, ok, failed,
+         started_at)
+      VALUES ('sunday-collect', 'retailer-1', 'collect', '2026-07-12',
+              'running', 0, 0, 0, '2026-07-12T06:00:00.000Z')
+    `).run();
+    fillRequestAdmissions(database, "sunday-collect", 1_800, {
+      stage: "collect",
+      day: "2026-07-12",
+    });
+    let yielded = 0;
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      now: () => new Date("2026-07-12T21:24:00.000Z"),
+      execute: async function* (_strategy, context) {
+        for (let index = 0; index < 300; index += 1) {
+          await context.beforeRequest?.();
+          yielded += 1;
+          yield {
+            canonicalUrl: `https://shop.test/sunday-${index}`,
+            externalId: String(index),
+            sourceCategory: "Mercearia",
+          };
+        }
+      },
+    });
+
+    expect(yielded).toBe(200);
+    expect(summary).toMatchObject({ attempted: 200, ok: 200, failed: 0 });
+    expect(database.prepare(
+      "SELECT completion_reason AS reason FROM catalog_snapshots WHERE run_id = ?",
+    ).get(summary.id)).toEqual({ reason: "request_cap_reached" });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM request_admissions",
+    ).get()).toEqual({ count: 2_000 });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM request_admissions WHERE stage = 'discover'",
+    ).get()).toEqual({ count: 200 });
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM products WHERE last_seen >= '2026-07-12'",
+    ).get()).toEqual({ count: 200 });
   });
 
   it("does not exceed the cap when closing a limited iterator throws", async () => {

@@ -265,10 +265,57 @@ export function attemptedForStageOnDay(
 export type RequestAdmissionStage = "discover" | "collect";
 
 export const DAILY_NETWORK_REQUEST_BUDGET = 2_000;
-export const REQUEST_BUDGET_BY_STAGE: Readonly<Record<RequestAdmissionStage, number>> = {
-  discover: DAILY_NETWORK_REQUEST_BUDGET,
-  collect: DAILY_NETWORK_REQUEST_BUDGET,
-};
+
+/**
+ * Discovery and collection network requests share one hard retailer/day
+ * ledger of {@link DAILY_NETWORK_REQUEST_BUDGET} requests (adversarial review
+ * finding: the 2,000-attempt cap is per retailer/day across both stages
+ * combined). Daily collection (03:00 São Paulo) runs before the weekly
+ * discovery timer (Sunday 18:00 São Paulo) and can spend the entire shared
+ * ledger, which starved every weekly discovery run of request headroom. On
+ * the weekly discovery day the collect stage may therefore hold at most
+ * 2,000 − 200 = 1,800 admissions; the held-back requests are spendable only
+ * by discovery. Admissions stay charged pre-action and are never refunded, so
+ * a reservation discovery does not use expires with the day rather than
+ * flowing back to collection. Sizing evidence: complete weekly discovery
+ * passes on 2026-07-11 consumed 58–108 requests per retailer.
+ */
+export const WEEKLY_DISCOVERY_REQUEST_RESERVATION = 200;
+
+/**
+ * The weekly discovery timer (ops/precos-weekly-discovery.timer) fires on
+ * Sundays in América/São Paulo; collection days use the same calendar, so the
+ * reservation is keyed off the collection-day date itself.
+ */
+export function isWeeklyDiscoveryDay(collectionDay: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(collectionDay)) {
+    throw new RangeError("Collection day must be a YYYY-MM-DD calendar date");
+  }
+  const parsed = new Date(`${collectionDay}T00:00:00.000Z`);
+  if (
+    Number.isNaN(parsed.getTime())
+    || parsed.toISOString().slice(0, 10) !== collectionDay
+  ) {
+    throw new RangeError("Collection day must be a real calendar date");
+  }
+  return parsed.getUTCDay() === 0;
+}
+
+/**
+ * Stage-level ceiling within the shared retailer/day request ledger. Both
+ * stages remain jointly bounded by {@link DAILY_NETWORK_REQUEST_BUDGET}; on
+ * the weekly discovery day the collect stage alone is capped below the shared
+ * ceiling so discovery keeps {@link WEEKLY_DISCOVERY_REQUEST_RESERVATION}
+ * requests of guaranteed headroom.
+ */
+export function requestAdmissionCapForStage(
+  collectionDay: string,
+  stage: RequestAdmissionStage,
+): number {
+  return stage === "collect" && isWeeklyDiscoveryDay(collectionDay)
+    ? DAILY_NETWORK_REQUEST_BUDGET - WEEKLY_DISCOVERY_REQUEST_RESERVATION
+    : DAILY_NETWORK_REQUEST_BUDGET;
+}
 
 export interface RequestAdmissionResult {
   admitted: boolean;
@@ -307,19 +354,22 @@ export function remainingRequestAdmissions(
   database: Database.Database,
   retailerId: string,
   collectionDay: string,
-  _stage: RequestAdmissionStage,
+  stage: RequestAdmissionStage,
 ): number {
-  return Math.max(
-    0,
-    DAILY_NETWORK_REQUEST_BUDGET
-      - requestAdmissionsForDay(database, retailerId, collectionDay),
-  );
+  const remainingTotal = DAILY_NETWORK_REQUEST_BUDGET
+    - requestAdmissionsForDay(database, retailerId, collectionDay);
+  const remainingForStage = requestAdmissionCapForStage(collectionDay, stage)
+    - requestAdmissionsForStageOnDay(database, retailerId, collectionDay, stage);
+  return Math.max(0, Math.min(remainingTotal, remainingForStage));
 }
 
 /**
  * Durably charges one request before network execution. BEGIN IMMEDIATE makes
  * the count-and-insert gate atomic across processes; the append-only row is not
  * rolled back with later run work, so a crash still consumes the admission.
+ * Admission requires headroom under both the shared retailer/day ceiling and
+ * the stage ceiling from {@link requestAdmissionCapForStage}, which reserves
+ * weekly-discovery-day headroom that collection cannot spend.
  */
 export function admitRequest(
   database: Database.Database,
@@ -359,16 +409,20 @@ export function admitRequest(
       input.retailerId,
       input.collectionDay,
     );
-    const maximum = DAILY_NETWORK_REQUEST_BUDGET;
-    if (used >= maximum) {
-      return { admitted: false, used, remaining: 0, admissionId: null };
-    }
-    const stageOrdinal = requestAdmissionsForStageOnDay(
+    const stageUsed = requestAdmissionsForStageOnDay(
       database,
       input.retailerId,
       input.collectionDay,
       input.stage,
-    ) + 1;
+    );
+    const remaining = Math.max(0, Math.min(
+      DAILY_NETWORK_REQUEST_BUDGET - used,
+      requestAdmissionCapForStage(input.collectionDay, input.stage) - stageUsed,
+    ));
+    if (remaining === 0) {
+      return { admitted: false, used, remaining: 0, admissionId: null };
+    }
+    const stageOrdinal = stageUsed + 1;
     const admissionId = input.id ?? randomUUID();
     database.prepare(`
       INSERT INTO request_admissions
@@ -386,7 +440,7 @@ export function admitRequest(
     return {
       admitted: true,
       used: used + 1,
-      remaining: maximum - used - 1,
+      remaining: remaining - 1,
       admissionId,
     };
   });

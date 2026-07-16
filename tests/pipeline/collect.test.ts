@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.js";
 import { openDailyReplayReservoir } from "../../src/collection/replay.js";
+import { remainingRequestAdmissions } from "../../src/db/repositories.js";
 import { runCollection } from "../../src/pipeline/collect.js";
 import type { ProductRef } from "../../src/strategies/types.js";
 import { extractionStrategy, seedRetailer, seedStrategy } from "./helpers.js";
@@ -35,6 +36,7 @@ function fillCollectionRequestAdmissions(
   database: ReturnType<typeof openDatabase>,
   runId: string,
   count: number,
+  day = "2026-07-10",
 ): void {
   database.prepare(`
     WITH RECURSIVE ordinals(ordinal) AS (
@@ -44,9 +46,9 @@ function fillCollectionRequestAdmissions(
     INSERT INTO request_admissions
       (id, run_id, retailer_id, collection_day, stage, stage_ordinal, admitted_at)
     SELECT printf('%s-request-%04d', ?, ordinal), ?, 'retailer-1',
-           '2026-07-10', 'collect', ordinal, '2026-07-10T03:00:00.000Z'
+           ?, 'collect', ordinal, ? || 'T03:00:00.000Z'
     FROM ordinals
-  `).run(count, runId, runId);
+  `).run(count, runId, runId, day, day);
 }
 
 async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
@@ -256,6 +258,55 @@ describe("collection pipeline", () => {
     expect(database.prepare(
       "SELECT COUNT(*) AS count FROM request_admissions WHERE stage = 'collect'",
     ).get()).toEqual({ count: 2_000 });
+  });
+
+  it("stops Sunday collection at 1,800 admissions and leaves the discovery reservation", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const strategyId = seedStrategy(database, "extraction", extractionStrategy);
+    seedProducts(database, 10);
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at)
+       VALUES
+         ('sunday-prior', 'retailer-1', 'collect', '2026-07-12', ?, 1,
+          'running', 0, 0, 0, '2026-07-12T06:00:00.000Z')`,
+    ).run(strategyId);
+    fillCollectionRequestAdmissions(database, "sunday-prior", 1_799, "2026-07-12");
+    let calls = 0;
+
+    const summary = await runCollection("retailer-1", {
+      database,
+      limit: 100,
+      now: () => new Date("2026-07-12T06:30:00.000Z"),
+      execute: async () => {
+        calls += 1;
+        return { ok: false, failure: { category: "parse", message: "x", responded: true } };
+      },
+    });
+
+    expect(calls).toBe(1);
+    expect(summary.planned).toBe(1);
+    expect(summary.attempted).toBe(1);
+    expect(database.prepare(
+      "SELECT COUNT(*) AS count FROM request_admissions WHERE stage = 'collect'",
+    ).get()).toEqual({ count: 1_800 });
+    // Collection cannot spend the held-back requests, and the unused
+    // reservation stays reserved for discovery on the shared ledger.
+    expect(remainingRequestAdmissions(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "collect",
+    )).toBe(0);
+    expect(remainingRequestAdmissions(
+      database,
+      "retailer-1",
+      "2026-07-12",
+      "discover",
+    )).toBe(200);
   });
 
   it("aggregates concurrent collection runs under the durable 2,000-request cap", async () => {

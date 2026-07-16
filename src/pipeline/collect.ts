@@ -17,6 +17,7 @@ import {
   admitReplaySlot,
   admitRequest,
   createRun,
+  DAILY_NETWORK_REQUEST_BUDGET,
   DAILY_REPLAY_ADMISSION_BUDGET,
   finalizeRun,
   findActiveExtractionStrategy,
@@ -25,7 +26,6 @@ import {
   listCollectionProducts,
   remainingRequestAdmissions,
   remainingReplaySlotAdmissions,
-  REQUEST_BUDGET_BY_STAGE,
   type ReplayReference,
   type StoredProductRef,
 } from "../db/repositories.js";
@@ -73,7 +73,7 @@ export interface CollectionRunSummary extends RunSummary {
   stoppedForBlocking: boolean;
 }
 
-const MAX_DAILY_PAGES = REQUEST_BUDGET_BY_STAGE.collect;
+const MAX_DAILY_PAGES = DAILY_NETWORK_REQUEST_BUDGET;
 const DEFAULT_BLOCKING_POLICY: BlockingBackoffPolicy = {
   hardFailureLimit: 3,
   transportFailureLimit: 3,
@@ -295,6 +295,8 @@ export async function runCollection(
   const startedAt = now().toISOString();
   const day = collectionDay(new Date(startedAt));
   const active = findActiveExtractionStrategy(dependencies.database, retailerId);
+  // Stage-aware: on the weekly discovery day the collect stage is capped below
+  // the shared retailer/day ceiling so Sunday discovery keeps request headroom.
   const remainingDaily = remainingRequestAdmissions(
     dependencies.database,
     retailerId,

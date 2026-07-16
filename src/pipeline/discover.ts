@@ -341,6 +341,9 @@ export async function runDiscovery(
     day,
   );
   const limit = Math.min(requestedProductLimit, remainingDailyReferences);
+  // Discovery draws on the whole shared retailer/day request ledger. On the
+  // weekly discovery day collection is capped below that ceiling, so this
+  // remainder is guaranteed to be at least the weekly discovery reservation.
   const remainingDailyRequests = remainingRequestAdmissions(
     dependencies.database,
     retailerId,
