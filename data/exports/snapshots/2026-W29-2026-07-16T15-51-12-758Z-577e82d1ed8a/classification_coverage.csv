@@ -1,0 +1,5 @@
+retailer_id,retailer_name,total_in_scope_products,classified_products,unclassified_products,classification_rate,latest_version
+carrefour,Carrefour Mercado,2895,80,2815,0.027633851468048358,1
+extra-mercado,Extra Mercado,2558,65,2493,0.02541047693510555,1
+pao-de-acucar,Pão de Açúcar,2769,73,2696,0.0263633080534489,1
+st-marche,St Marché,2500,76,2424,0.0304,1
