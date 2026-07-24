@@ -181,7 +181,7 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
+      "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
       "receiptPath": "data/validation/carrefour-discovery-v13.json",
       "receiptSha256": "ed8d5a0b6fae1a7b508b328963ae60e224cb0782b9cfaffb2b5809666c9f8268"
     },
@@ -191,7 +191,7 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
+      "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
       "receiptPath": "data/validation/carrefour-extraction-v13.json",
       "receiptSha256": "8ebfef1084a51ee899c52f00b860b392d63d888e55860cc161b35d59b350a98a"
     }

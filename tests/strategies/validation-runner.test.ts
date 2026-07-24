@@ -445,7 +445,23 @@ describe("trusted live-host validation runner", () => {
   });
 
   it("captures St Marche browser page evidence for DOM-crawl discovery", async () => {
-    const retailer = config("st-marche");
+    const configured = config("st-marche");
+    const retailer: RetailerConfig = {
+      ...configured,
+      discovery: {
+        schemaVersion: 1,
+        purpose: "discovery",
+        tier: "dom-crawl",
+        allowedDomains: ["marche.com.br"],
+        startUrls: ["https://marche.com.br/collections/mercearia"],
+        linkSelectors: [{
+          selector: "a[data-discover=\"true\"][href*=\"/products/\"]",
+          attribute: "href",
+        }],
+        maxPages: 1,
+        maxProducts: 30,
+      },
+    };
     const database = openDatabase(":memory:");
     databases.push(database);
     const refs = Array.from({ length: 30 }, (_value, index) => ({

@@ -166,7 +166,7 @@
       "sampleSize": 30,
       "successes": 29,
       "score": 0.9666666666666667,
-      "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
+      "evidence": "Pinned trusted-live-host successor validation passed 29/30 independent active, in-scope category/URL-bucket challenge references.",
       "receiptPath": "data/validation/extra-mercado-extraction-v10.json",
       "receiptSha256": "270f90342774a4a0dedb95c5b28236fbe336b9b961dcdef065619cfbaa0aea14"
     }

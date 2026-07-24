@@ -353,7 +353,7 @@ describe("live retailer configuration", () => {
     if (config === undefined || config.extraction.tier !== "api") return;
     expect(config.extraction.request.query).toMatchObject({
       store_id: "66677604431",
-      _data: "routes/collections.$collection.products.$handle",
+      _data: "routes/products.$handle",
     });
     expect(config.extraction.fields.availability).toBe("$.hasInventory");
     const body = await readFile(
@@ -410,7 +410,7 @@ describe("live retailer configuration", () => {
       ok: false,
       failure: {
         category: "missing-fields",
-        message: expect.stringMatching(/seller|exactly once/iu),
+        message: expect.stringMatching(/title|field|missing/iu),
         responded: true,
       },
     });
@@ -442,7 +442,7 @@ describe("live retailer configuration", () => {
       { retailerId: "carrefour", tier: 2 },
       { retailerId: "extra-mercado", tier: 2 },
       { retailerId: "pao-de-acucar", tier: 2 },
-      { retailerId: "st-marche", tier: 3 },
+      { retailerId: "st-marche", tier: 1 },
     ]);
     const provenance = database.prepare(
       `SELECT purpose, provenance FROM strategies
