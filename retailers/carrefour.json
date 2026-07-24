@@ -39,8 +39,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 7,
-    "extraction": 8
+    "discovery": 13,
+    "extraction": 13
   },
   "discovery": {
     "schemaVersion": 1,
@@ -126,12 +126,6 @@
         "sc": 2
       }
     },
-    "regionalContext": {
-      "kind": "vtex-segment",
-      "regionId": "v2.682B43B8BB2E50ABE226417A4A61990F",
-      "salesChannel": "2",
-      "catalogSellerId": "1"
-    },
     "fields": {
       "title": "$[0].productName",
       "brand": "$[0].brand",
@@ -183,23 +177,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T14:10:13.004Z",
+      "validatedAt": "2026-07-24T18:54:24.712Z",
       "sampleSize": 30,
-      "successes": 30,
-      "score": 1,
+      "successes": 27,
+      "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/carrefour-discovery-v7.json",
-      "receiptSha256": "55e2c7f47eaeb3cef6042306c1950fa5fe7ae77db7c75281d721f404dcac2d62"
+      "receiptPath": "data/validation/carrefour-discovery-v13.json",
+      "receiptSha256": "ed8d5a0b6fae1a7b508b328963ae60e224cb0782b9cfaffb2b5809666c9f8268"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T15:00:05.841Z",
+      "validatedAt": "2026-07-24T18:54:39.532Z",
       "sampleSize": 30,
-      "successes": 28,
-      "score": 0.9333333333333333,
+      "successes": 27,
+      "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation passed 28/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/carrefour-extraction-v8.json",
-      "receiptSha256": "87ae4c452d5472315e873634a40d3b3aa90e948ac13a8fb31ea96d593ffbab34"
+      "receiptPath": "data/validation/carrefour-extraction-v13.json",
+      "receiptSha256": "8ebfef1084a51ee899c52f00b860b392d63d888e55860cc161b35d59b350a98a"
     }
   }
 }

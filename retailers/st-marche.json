@@ -45,8 +45,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 6,
-    "extraction": 5
+    "discovery": 9,
+    "extraction": 9
   },
   "discovery": {
     "schemaVersion": 1,
@@ -54,43 +54,12 @@
       "marche.com.br"
     ],
     "purpose": "discovery",
-    "tier": "dom-crawl",
-    "startUrls": [
-      "https://marche.com.br/collections/acougue?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/adega?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/bebidas?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/confeitaria?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/congelados?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/frios-e-laticinios?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/hortifruti?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/mercearia?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/padaria?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/peixaria?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/pratos-prontos-1?store_id=66677604431&page=1",
-      "https://marche.com.br/collections/sushi-e-sashimi?store_id=66677604431&page=1"
+    "tier": "sitemap",
+    "sitemapUrls": [
+      "https://marche.com.br/sitemap.xml"
     ],
-    "linkSelectors": [
-      {
-        "selector": "a[data-discover=\"true\"][href*=\"/products/\"]",
-        "attribute": "href"
-      },
-      {
-        "selector": "a[href*=\"/collections/\"][href*=\"/products/\"]",
-        "attribute": "href"
-      }
-    ],
-    "paginationSelectors": [
-      {
-        "selector": "a[href*=\"page=\"]:has(svg):last-of-type",
-        "attribute": "href"
-      },
-      {
-        "selector": "xpath=(//a[contains(@href,'page=')][.//*[local-name()='svg']])[last()]",
-        "attribute": "href"
-      }
-    ],
-    "maxPages": 200,
-    "maxProducts": 2500
+    "maxSitemaps": 10,
+    "maxProducts": 100000
   },
   "extraction": {
     "schemaVersion": 1,
@@ -107,7 +76,7 @@
       },
       "query": {
         "store_id": "66677604431",
-        "_data": "routes/collections.$collection.products.$handle"
+        "_data": "routes/products.$handle"
       }
     },
     "fields": {
@@ -151,23 +120,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T14:13:22.715Z",
+      "validatedAt": "2026-07-24T18:56:39.012Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/st-marche-discovery-v6.json",
-      "receiptSha256": "518f42c763d5e2df0ab036d4f2ec407ba35f8751ab9b8408061e13d3ed450fab"
+      "receiptPath": "data/validation/st-marche-discovery-v9.json",
+      "receiptSha256": "daa3b7da0601803c6bd6ad91696946537ab079c19733242068a6a3431a74be8f"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-11T14:13:37.579Z",
+      "validatedAt": "2026-07-24T18:56:54.352Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation passed 30/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/st-marche-extraction-v5.json",
-      "receiptSha256": "53fc91a13baa0301e64eadc0f190fe11c294e2a7b831343dd079b0b4cd38ce6e"
+      "receiptPath": "data/validation/st-marche-extraction-v9.json",
+      "receiptSha256": "f90c95251900a92104d8f8bfb95b58015200ecefa3e629755a80781de1d2c807"
     }
   }
 }
