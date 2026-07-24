@@ -66,6 +66,12 @@
       "fileSha256": "28b9fda334d8fdc1020fbb61c961eb60125d69e1b04730ca7a99f7a131a02493",
       "receiptSha256": "45448c994d317f334fd152910f612eb1e163abc667df1800cc2f00cb70887a2a",
       "strategySourceCommit": "efdeeee473b9a5ebdd44e9c695a9124262dbb390"
+    },
+    {
+      "path": "data/validation/attempts/st-marche-extraction-v8.json",
+      "fileSha256": "8833ed30653e0b66ff1cd98f0bc235d2d515d03510d35aa9931f2213fa4914f3",
+      "receiptSha256": "6b01f75e9ffc2bbd84c42b9bdbbb2bc890d9a4aec4fcad875c91564e5f1b497c",
+      "strategySourceCommit": "f6046edc0c2dae12b7b7edca36ba4441dfc52090"
     }
   ]
 }

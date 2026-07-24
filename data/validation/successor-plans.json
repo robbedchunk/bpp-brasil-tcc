@@ -9,9 +9,10 @@
         8,
         9,
         10,
-        11
+        11,
+        12
       ],
-      "toVersion": 12,
+      "toVersion": 13,
       "strategySha256": "41d00151cfce1a08f3edd5a7fd3fd3fe69c3a271a80a07f24888f566ea5e3646",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -22,9 +23,10 @@
       "burnedVersions": [
         9,
         10,
-        11
+        11,
+        12
       ],
-      "toVersion": 12,
+      "toVersion": 13,
       "strategySha256": "7fd0c208b00afb02c571430a165a31feb3f541d087502bce82a30f7aadd3694b",
       "sourceStrategySha256": "3ef41c63c73f8b20e2da8a0941b7898769daef38629d5691e943850dae0eeac1",
       "candidateStrategy": {
@@ -64,9 +66,10 @@
       "burnedVersions": [
         6,
         7,
-        8
+        8,
+        9
       ],
-      "toVersion": 9,
+      "toVersion": 10,
       "strategySha256": "fa28ca0a7fcc1f4490fc9a4e73dcb47e26ca5d09419eaed360b70e8e81796bc0",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -78,9 +81,10 @@
         5,
         6,
         7,
-        8
+        8,
+        9
       ],
-      "toVersion": 9,
+      "toVersion": 10,
       "strategySha256": "34619e078ce2d982f935fc7ea64cd0ea0d418fc454c0620399a0c06ae854d9f1",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -91,9 +95,10 @@
       "burnedVersions": [
         8,
         9,
-        10
+        10,
+        11
       ],
-      "toVersion": 11,
+      "toVersion": 12,
       "strategySha256": "2b6f719fd3b3a799c2fffbe9274a203757cd93896faac0b620557bd80494c033",
       "sourceStrategySha256": "a9805aafb92461e69841a5204c07490ec026c84285d2fe3f4608af17b5ea558d",
       "candidateStrategy": {
@@ -198,9 +203,10 @@
       "burnedVersions": [
         6,
         7,
-        8
+        8,
+        9
       ],
-      "toVersion": 9,
+      "toVersion": 10,
       "strategySha256": "1f20f83d5f2497cbf5ee68bead5f97ef08057eb05ca822cb4e3880b1d9eab0c3",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -209,9 +215,10 @@
       "purpose": "discovery",
       "fromVersion": 6,
       "burnedVersions": [
-        7
+        7,
+        8
       ],
-      "toVersion": 8,
+      "toVersion": 9,
       "strategySha256": "4fe53728ed14c287a271ea2f1e52accbd54e950637bda8e1870c32ddf770ccb4",
       "sourceStrategySha256": "4df9fce7754d90ea9793b304705639b0040e26b6344b6dafc514f179c1c4dd14",
       "candidateStrategy": {
@@ -235,11 +242,41 @@
       "fromVersion": 5,
       "burnedVersions": [
         6,
-        7
+        7,
+        8
       ],
-      "toVersion": 8,
-      "strategySha256": "47a06706867359b36c399e230e6996474e7cef07e4de11b8ffdf4e931600e76b",
-      "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
+      "toVersion": 9,
+      "strategySha256": "7dd193d7fd24580d32cbcf96b6839ef73da6aa65d4c640475516a193fc3bec6c",
+      "sourceStrategySha256": "47a06706867359b36c399e230e6996474e7cef07e4de11b8ffdf4e931600e76b",
+      "candidateStrategy": {
+        "schemaVersion": 1,
+        "allowedDomains": [
+          "marche.com.br"
+        ],
+        "purpose": "extraction",
+        "tier": "api",
+        "request": {
+          "method": "GET",
+          "url": "{productUrl}",
+          "headers": {
+            "accept": "application/json"
+          },
+          "query": {
+            "store_id": "66677604431",
+            "_data": "routes/products.$handle"
+          }
+        },
+        "fields": {
+          "title": "$.product.title",
+          "brand": "$.product.vendor",
+          "price": "$.product.selectedVariant.price.amount",
+          "promoPrice": "$.product.selectedVariant.compareAtPrice.amount",
+          "unit": "$.product.title",
+          "availability": "$.hasInventory",
+          "priceOrder": "sale-list"
+        }
+      },
+      "reason": "Use the canonical product Remix loader instead of a collection-scoped loader that rejects canonical product URLs."
     }
   ]
 }
