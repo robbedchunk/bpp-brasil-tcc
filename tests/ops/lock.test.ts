@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { withProcessLock } from "../../src/ops/lock.js";
+import { inspectProcessLock, withProcessLock } from "../../src/ops/lock.js";
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map((path) =>
@@ -227,5 +227,64 @@ describe("process lock", () => {
       pid: 654,
       getProcessIdentity: async () => "boot-a:600",
     })).rejects.toThrow(/already held/i);
+  });
+
+  it("inspects active and stale locks without changing the lock file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-inspect-lock-"));
+    directories.push(directory);
+    const path = join(directory, "daily.lock");
+    const serialized = `${JSON.stringify({
+      version: 2,
+      pid: 321,
+      processIdentity: "boot-a:100",
+      startedAt: "2026-07-10T11:00:00.000Z",
+      token: "private-token",
+    })}\n`;
+    await writeFile(path, serialized, { mode: 0o600 });
+
+    await expect(inspectProcessLock(path, {
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      getProcessIdentity: async () => "boot-a:100",
+    })).resolves.toEqual({
+      state: "active",
+      blocksAcquisition: true,
+      recordVersion: 2,
+      startedAt: "2026-07-10T11:00:00.000Z",
+      ageMs: 3_600_000,
+    });
+    expect(await readFile(path, "utf8")).toBe(serialized);
+
+    await expect(inspectProcessLock(path, {
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+      getProcessIdentity: async () => "boot-a:reused",
+    })).resolves.toMatchObject({
+      state: "stale",
+      blocksAcquisition: false,
+      recordVersion: 2,
+    });
+    expect(await readFile(path, "utf8")).toBe(serialized);
+  });
+
+  it("reports missing and malformed locks without creating or recovering them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "precos-inspect-missing-lock-"));
+    directories.push(directory);
+    const path = join(directory, "daily.lock");
+
+    await expect(inspectProcessLock(path)).resolves.toEqual({
+      state: "unlocked",
+      blocksAcquisition: false,
+      recordVersion: null,
+    });
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await writeFile(path, "{", { mode: 0o600 });
+    await expect(inspectProcessLock(path, {
+      now: () => new Date(),
+    })).resolves.toEqual({
+      state: "malformed",
+      blocksAcquisition: true,
+      recordVersion: null,
+    });
+    expect(await readFile(path, "utf8")).toBe("{");
   });
 });

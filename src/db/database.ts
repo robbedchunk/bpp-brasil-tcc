@@ -17,6 +17,7 @@ import {
   selectStrategyValidationChallenge,
   VALIDATION_CHALLENGE_ALGORITHM,
 } from "../strategies/validation-challenge.js";
+import { EXPECTED_SCHEMA_MIGRATIONS } from "./migration-manifest.js";
 
 const SCHEMA_SQL = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
 const APPEND_ONLY_SQL = readFileSync(
@@ -309,93 +310,39 @@ export function insertTestStrategyValidationEvidenceRow(
   });
 }
 
-const MIGRATIONS = [
-  { version: 1, name: "m0_foundation", sql: SCHEMA_SQL },
-  { version: 2, name: "append_only_evidence", sql: APPEND_ONLY_SQL },
-  { version: 3, name: "ipca_item_provenance", sql: IPCA_PROVENANCE_SQL },
-  { version: 4, name: "classification_audit", sql: CLASSIFICATION_AUDIT_SQL },
-  { version: 5, name: "batch_commitments", sql: BATCH_COMMITMENTS_SQL },
-  {
-    version: 6,
-    name: "exploration_attempt_evidence",
-    sql: EXPLORATION_ATTEMPT_EVIDENCE_SQL,
-  },
-  {
-    version: 7,
-    name: "healing_event_idempotency",
-    sql: HEALING_EVENT_IDEMPOTENCY_SQL,
-  },
-  {
-    version: 8,
-    name: "healing_worker_budget_reservations",
-    sql: HEALING_WORKER_BUDGET_RESERVATIONS_SQL,
-  },
-  {
-    version: 9,
-    name: "healing_exploration_recovery",
-    sql: HEALING_EXPLORATION_RECOVERY_SQL,
-  },
-  {
-    version: 10,
-    name: "exploration_recovery_adjustments",
-    sql: EXPLORATION_RECOVERY_ADJUSTMENTS_SQL,
-  },
-  {
-    version: 11,
-    name: "collection_integrity",
-    sql: COLLECTION_INTEGRITY_SQL,
-  },
-  {
-    version: 12,
-    name: "retailer_state_history",
-    sql: RETAILER_STATE_HISTORY_SQL,
-  },
-  {
-    version: 13,
-    name: "strategy_validation_evidence",
-    sql: STRATEGY_VALIDATION_EVIDENCE_SQL,
-  },
-  {
-    version: 14,
-    name: "strategy_validation_authorization",
-    sql: STRATEGY_VALIDATION_AUTHORIZATION_SQL,
-  },
-  {
-    version: 15,
-    name: "runtime_safety_reconciliation",
-    sql: RUNTIME_SAFETY_RECONCILIATION_SQL,
-  },
-  {
-    version: 16,
-    name: "discovery_tier_semantics",
-    sql: DISCOVERY_TIER_SEMANTICS_SQL,
-  },
-  {
-    version: 17,
-    name: "operator_catalog_seeds",
-    sql: OPERATOR_CATALOG_SEEDS_SQL,
-  },
-  {
-    version: 18,
-    name: "classification_shape_recovery",
-    sql: CLASSIFICATION_SHAPE_RECOVERY_SQL,
-  },
-  {
-    version: 19,
-    name: "classification_measurement_scope",
-    sql: CLASSIFICATION_MEASUREMENT_SCOPE_SQL,
-  },
-  {
-    version: 20,
-    name: "product_url_identity",
-    sql: PRODUCT_URL_IDENTITY_SQL,
-  },
+const MIGRATION_SQL = [
+  SCHEMA_SQL,
+  APPEND_ONLY_SQL,
+  IPCA_PROVENANCE_SQL,
+  CLASSIFICATION_AUDIT_SQL,
+  BATCH_COMMITMENTS_SQL,
+  EXPLORATION_ATTEMPT_EVIDENCE_SQL,
+  HEALING_EVENT_IDEMPOTENCY_SQL,
+  HEALING_WORKER_BUDGET_RESERVATIONS_SQL,
+  HEALING_EXPLORATION_RECOVERY_SQL,
+  EXPLORATION_RECOVERY_ADJUSTMENTS_SQL,
+  COLLECTION_INTEGRITY_SQL,
+  RETAILER_STATE_HISTORY_SQL,
+  STRATEGY_VALIDATION_EVIDENCE_SQL,
+  STRATEGY_VALIDATION_AUTHORIZATION_SQL,
+  RUNTIME_SAFETY_RECONCILIATION_SQL,
+  DISCOVERY_TIER_SEMANTICS_SQL,
+  OPERATOR_CATALOG_SEEDS_SQL,
+  CLASSIFICATION_SHAPE_RECOVERY_SQL,
+  CLASSIFICATION_MEASUREMENT_SCOPE_SQL,
+  PRODUCT_URL_IDENTITY_SQL,
 ] as const;
 
-export const EXPECTED_SCHEMA_MIGRATIONS: readonly {
-  version: number;
-  name: string;
-}[] = MIGRATIONS.map(({ version, name }) => ({ version, name }));
+if (MIGRATION_SQL.length !== EXPECTED_SCHEMA_MIGRATIONS.length) {
+  throw new Error("Migration metadata and SQL payloads are out of sync");
+}
+
+const MIGRATIONS = EXPECTED_SCHEMA_MIGRATIONS.map((migration, index) => ({
+  ...migration,
+  sql: MIGRATION_SQL[index]!,
+}));
+
+export { EXPECTED_SCHEMA_MIGRATIONS };
 
 export function migrate(database: Database.Database): void {
   registerValidationEvidenceAuthorization(database);

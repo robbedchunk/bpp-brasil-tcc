@@ -1,0 +1,86 @@
+collection_day,retailer_id,retailer_name,run_id,category,count
+2026-07-10,extra-mercado,Extra Mercado,8eeb3f25-48a2-4368-b7ac-768509221ba1,unknown,30
+2026-07-10,pao-de-acucar,Pão de Açúcar,4e9c423d-c4c2-4b4e-8dc0-2727fc49e8e0,unknown,30
+2026-07-11,carrefour,Carrefour Mercado,25626653-9d23-4c81-a1d1-ec283453bbab,invalid-price,2
+2026-07-11,carrefour,Carrefour Mercado,7bfe8dd6-5075-4bab-94cd-66dda55a5306,invalid-price,188
+2026-07-11,carrefour,Carrefour Mercado,96a17a75-bdb1-4095-b60f-4af7c669ada6,invalid-price,2
+2026-07-11,extra-mercado,Extra Mercado,a9694ba2-afce-44a0-b9b4-688c07d873a4,invalid-price,25
+2026-07-11,extra-mercado,Extra Mercado,a9694ba2-afce-44a0-b9b4-688c07d873a4,missing-fields,1
+2026-07-11,extra-mercado,Extra Mercado,b68cf072-658c-4822-bb22-b358b9c40701,invalid-price,2
+2026-07-11,pao-de-acucar,Pão de Açúcar,d72d59fa-c6a8-48bd-ac7d-4949a9363036,invalid-price,10
+2026-07-11,pao-de-acucar,Pão de Açúcar,d72d59fa-c6a8-48bd-ac7d-4949a9363036,missing-fields,1
+2026-07-11,st-marche,St Marché,8626ca8d-85cc-4172-85ec-b92b64fbed0a,network,1
+2026-07-12,carrefour,Carrefour Mercado,ebb360fc-45d4-4a86-a73a-1118c279d50f,http-429,1
+2026-07-12,carrefour,Carrefour Mercado,ebb360fc-45d4-4a86-a73a-1118c279d50f,invalid-price,310
+2026-07-12,extra-mercado,Extra Mercado,b57a24d5-6ad8-40ca-8e00-04fe111409f0,invalid-price,25
+2026-07-12,extra-mercado,Extra Mercado,b57a24d5-6ad8-40ca-8e00-04fe111409f0,missing-fields,79
+2026-07-12,pao-de-acucar,Pão de Açúcar,da9f507f-acd4-4e46-a98e-52360f3a6d99,invalid-price,1
+2026-07-12,pao-de-acucar,Pão de Açúcar,da9f507f-acd4-4e46-a98e-52360f3a6d99,missing-fields,35
+2026-07-12,st-marche,St Marché,f04560c2-5971-48d8-8fa9-5bae1bebb452,unknown,1
+2026-07-13,carrefour,Carrefour Mercado,83fd97a9-2645-43ea-9516-add4e5a5a929,invalid-price,351
+2026-07-13,extra-mercado,Extra Mercado,96f0cd6f-8327-4b41-819f-afcae14ff880,invalid-price,35
+2026-07-13,extra-mercado,Extra Mercado,96f0cd6f-8327-4b41-819f-afcae14ff880,missing-fields,108
+2026-07-13,pao-de-acucar,Pão de Açúcar,4ad1cd10-610f-4dc1-9211-011a956c60b2,invalid-price,24
+2026-07-13,pao-de-acucar,Pão de Açúcar,4ad1cd10-610f-4dc1-9211-011a956c60b2,missing-fields,76
+2026-07-13,st-marche,St Marché,6773fd24-f151-416e-98b0-ace803507ff2,unknown,1
+2026-07-14,carrefour,Carrefour Mercado,24a4fd17-3f61-4835-9bfe-b52aeb8b04da,invalid-price,208
+2026-07-14,carrefour,Carrefour Mercado,24a4fd17-3f61-4835-9bfe-b52aeb8b04da,unknown,1
+2026-07-14,extra-mercado,Extra Mercado,fce9a235-25b7-4dae-a56a-3bb156867f51,invalid-price,23
+2026-07-14,extra-mercado,Extra Mercado,fce9a235-25b7-4dae-a56a-3bb156867f51,missing-fields,146
+2026-07-14,pao-de-acucar,Pão de Açúcar,1fc430f0-5de5-453f-9cc3-65684d2c9fc3,invalid-price,10
+2026-07-14,pao-de-acucar,Pão de Açúcar,1fc430f0-5de5-453f-9cc3-65684d2c9fc3,missing-fields,125
+2026-07-14,pao-de-acucar,Pão de Açúcar,1fc430f0-5de5-453f-9cc3-65684d2c9fc3,unknown,2
+2026-07-14,st-marche,St Marché,e76e0e44-2e71-4f74-9824-96ccdd4776d3,unknown,1
+2026-07-15,carrefour,Carrefour Mercado,014b38f3-919b-4331-8709-6f394b7fba9c,invalid-price,299
+2026-07-15,carrefour,Carrefour Mercado,014b38f3-919b-4331-8709-6f394b7fba9c,missing-fields,1
+2026-07-15,extra-mercado,Extra Mercado,9eca92e2-6d5d-4e33-9d61-f8fb167a0a51,invalid-price,21
+2026-07-15,extra-mercado,Extra Mercado,9eca92e2-6d5d-4e33-9d61-f8fb167a0a51,missing-fields,237
+2026-07-15,extra-mercado,Extra Mercado,9eca92e2-6d5d-4e33-9d61-f8fb167a0a51,unknown,2
+2026-07-15,pao-de-acucar,Pão de Açúcar,f6e46a85-4edc-4b49-8552-95f3a6d22f52,invalid-price,5
+2026-07-15,pao-de-acucar,Pão de Açúcar,f6e46a85-4edc-4b49-8552-95f3a6d22f52,missing-fields,162
+2026-07-15,pao-de-acucar,Pão de Açúcar,f6e46a85-4edc-4b49-8552-95f3a6d22f52,unknown,2
+2026-07-15,st-marche,St Marché,50eb3efd-896f-4362-bf33-46c4e82aa910,unknown,1
+2026-07-16,carrefour,Carrefour Mercado,ae6a08fd-7d4f-4997-9f27-8499c9ffedc5,invalid-price,879
+2026-07-16,extra-mercado,Extra Mercado,d8991119-204b-4312-b0ef-d2fe442ff155,invalid-price,24
+2026-07-16,extra-mercado,Extra Mercado,d8991119-204b-4312-b0ef-d2fe442ff155,missing-fields,206
+2026-07-16,extra-mercado,Extra Mercado,d8991119-204b-4312-b0ef-d2fe442ff155,unknown,2
+2026-07-16,pao-de-acucar,Pão de Açúcar,e7912619-68ce-4517-a4e5-157047cc4220,invalid-price,5
+2026-07-16,pao-de-acucar,Pão de Açúcar,e7912619-68ce-4517-a4e5-157047cc4220,missing-fields,175
+2026-07-16,pao-de-acucar,Pão de Açúcar,e7912619-68ce-4517-a4e5-157047cc4220,unknown,2
+2026-07-16,st-marche,St Marché,29b588d9-d01a-404d-b36e-6868a6972295,unknown,9
+2026-07-17,carrefour,Carrefour Mercado,d3678c16-fdfe-488d-a0c2-3a5dffc81780,invalid-price,183
+2026-07-17,carrefour,Carrefour Mercado,d3678c16-fdfe-488d-a0c2-3a5dffc81780,missing-fields,3
+2026-07-17,extra-mercado,Extra Mercado,fd659d62-5ad6-4bbd-8f6f-66b0d7b3528c,invalid-price,20
+2026-07-17,extra-mercado,Extra Mercado,fd659d62-5ad6-4bbd-8f6f-66b0d7b3528c,missing-fields,195
+2026-07-17,pao-de-acucar,Pão de Açúcar,49f50906-d42e-4f67-a797-2cad0dc48ae1,invalid-price,3
+2026-07-17,pao-de-acucar,Pão de Açúcar,49f50906-d42e-4f67-a797-2cad0dc48ae1,missing-fields,133
+2026-07-17,pao-de-acucar,Pão de Açúcar,49f50906-d42e-4f67-a797-2cad0dc48ae1,unknown,2
+2026-07-17,st-marche,St Marché,3b67376f-b26d-4cfb-8cb7-e6a288605a74,unknown,11
+2026-07-18,carrefour,Carrefour Mercado,d978a523-5f50-4069-b4dd-cb8328b722a1,invalid-price,286
+2026-07-18,carrefour,Carrefour Mercado,d978a523-5f50-4069-b4dd-cb8328b722a1,missing-fields,3
+2026-07-18,extra-mercado,Extra Mercado,7c37957e-2c18-41ad-b670-6e1a3322ffa1,invalid-price,23
+2026-07-18,extra-mercado,Extra Mercado,7c37957e-2c18-41ad-b670-6e1a3322ffa1,missing-fields,198
+2026-07-18,extra-mercado,Extra Mercado,7c37957e-2c18-41ad-b670-6e1a3322ffa1,timeout,1
+2026-07-18,extra-mercado,Extra Mercado,7c37957e-2c18-41ad-b670-6e1a3322ffa1,unknown,3
+2026-07-18,pao-de-acucar,Pão de Açúcar,91c5738d-03ea-4ec5-b5a6-5d9b595f7e75,invalid-price,9
+2026-07-18,pao-de-acucar,Pão de Açúcar,91c5738d-03ea-4ec5-b5a6-5d9b595f7e75,missing-fields,162
+2026-07-18,pao-de-acucar,Pão de Açúcar,91c5738d-03ea-4ec5-b5a6-5d9b595f7e75,unknown,2
+2026-07-18,st-marche,St Marché,9332269c-2db2-408d-90a9-64dfb6c8dea2,unknown,9
+2026-07-19,carrefour,Carrefour Mercado,3f3e8281-64a3-4f0a-85f3-a2759ccaf5ad,domain-denied,1
+2026-07-19,carrefour,Carrefour Mercado,b48ac144-ee06-4613-9383-e06a8903c8a2,invalid-price,237
+2026-07-19,extra-mercado,Extra Mercado,6dbe8560-d282-4ee2-8af7-8400c58cba16,invalid-price,15
+2026-07-19,extra-mercado,Extra Mercado,6dbe8560-d282-4ee2-8af7-8400c58cba16,missing-fields,186
+2026-07-19,extra-mercado,Extra Mercado,6dbe8560-d282-4ee2-8af7-8400c58cba16,unknown,3
+2026-07-19,pao-de-acucar,Pão de Açúcar,f6806175-a66b-49bb-b744-2b4c0ead3236,invalid-price,4
+2026-07-19,pao-de-acucar,Pão de Açúcar,f6806175-a66b-49bb-b744-2b4c0ead3236,missing-fields,168
+2026-07-19,pao-de-acucar,Pão de Açúcar,f6806175-a66b-49bb-b744-2b4c0ead3236,unknown,2
+2026-07-19,st-marche,St Marché,9591a1ba-82b5-4b01-912e-5a8d19c811fb,unknown,11
+2026-07-20,carrefour,Carrefour Mercado,b79f0603-fd5f-40f9-8b85-2d048fc4cd2d,invalid-price,168
+2026-07-20,carrefour,Carrefour Mercado,b79f0603-fd5f-40f9-8b85-2d048fc4cd2d,missing-fields,3
+2026-07-20,extra-mercado,Extra Mercado,4167828d-9524-4804-bf14-b5293fb26cc4,invalid-price,32
+2026-07-20,extra-mercado,Extra Mercado,4167828d-9524-4804-bf14-b5293fb26cc4,missing-fields,140
+2026-07-20,extra-mercado,Extra Mercado,4167828d-9524-4804-bf14-b5293fb26cc4,unknown,2
+2026-07-20,pao-de-acucar,Pão de Açúcar,6fe883c2-c760-4e3f-aaf9-ef3d24a31cda,invalid-price,5
+2026-07-20,pao-de-acucar,Pão de Açúcar,6fe883c2-c760-4e3f-aaf9-ef3d24a31cda,missing-fields,140
+2026-07-20,pao-de-acucar,Pão de Açúcar,6fe883c2-c760-4e3f-aaf9-ef3d24a31cda,unknown,2
+2026-07-20,st-marche,St Marché,3adb54b0-af52-4351-86d0-431432ad8b49,unknown,8

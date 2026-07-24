@@ -48,6 +48,59 @@ Do not export `LIVE_OPENAI` persistently. Without its per-command value of `1`,
 the live tests remain skipped even when private credentials are configured;
 the classification smoke also sets its provider retry limit to one.
 
+## Local Control Room
+
+The optional `apps/control-room/` application serves a Portuguese-first
+operations dashboard on loopback only. Build and run it from the repository
+root with the pinned Node 24/npm 11 runtime:
+
+```bash
+npm run control-room:build
+npm run control-room:start
+# http://127.0.0.1:4318
+```
+
+Observer mode is the default. It resolves `PROJECT_ROOT`/`DATABASE_PATH` through
+the existing configuration, opens the file with `readonly=true`,
+`fileMustExist=true`, and `PRAGMA query_only=ON`, and never migrates, changes
+journal mode, reconciles interrupted work, or creates a missing primary
+database. Every response is assembled from parameterized allowlisted queries;
+retailer identities, dates, counts, models, and snapshot IDs are never compiled
+into the frontend. An initialized empty fork renders an onboarding state and
+populates automatically as its own SQLite database receives evidence.
+
+Controls require a deliberate local opt-in:
+
+```bash
+npm run control-room:start -- --enable-actions
+```
+
+The browser cannot supply shell text, filesystem paths, environment values, API
+keys, or signing material. The server exposes a fixed action catalog, invokes
+`dist/cli.js` with `shell=false`, and removes schedule provenance variables from
+manual child processes. Each execution requires a short-lived read-only preview,
+a state fingerprint, exact confirmation phrase, lock recheck, and an exact USD
+authorization for paid classification. Preview paths create no primary-database
+write or process lock. Execution still acquires the CLI's authoritative lock and
+uses the existing durable admission, budget, reconciliation, and validation
+boundaries; the dashboard never updates `data/precos.sqlite` directly and never
+auto-retries paid or network work.
+
+Dashboard-local previews, jobs, status events, and sanitized receipts live under
+ignored `var/control-room/control.sqlite` with private permissions. Raw stdout,
+stderr, logs, URLs, replay paths, provider payloads, environment values, and
+credentials are hashed/discarded rather than retained. Starting in observer mode
+does not create that file when no prior history exists. The interface remains
+optional: stopping it cannot interrupt collection or timers.
+
+Useful verification commands:
+
+```bash
+npm run control-room:typecheck
+npm run control-room:test
+npm run control-room:test:e2e
+```
+
 ## Scheduled services
 
 `ops/install-systemd.sh` accepts only a completely clean committed worktree,

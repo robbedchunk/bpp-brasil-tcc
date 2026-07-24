@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -83,6 +84,26 @@ describe("pipeline CLI", () => {
     expect(calls).toEqual([{ retailerId: "r1", options: { limit: 3_000, dryRun: true } }]);
     expect(JSON.parse(result.stdout)).toMatchObject([{ stage: "discover", retailerId: "r1" }]);
     expect(result).toMatchObject({ exitCode: 0, stderr: "" });
+  });
+
+  it("does not create an operational lock for a dry-run preview", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    database.prepare(`
+      INSERT INTO retailers (id, name, base_url, cep, domains_json, active)
+      VALUES ('preview-shop', 'Preview Shop', 'https://preview.test',
+              '01310-100', '["preview.test"]', 1)
+    `).run();
+    const lockPath = join(tmpdir(), `precos-preview-${randomUUID()}.lock`);
+
+    const result = await invoke(["collect", "--dry-run", "--json"], {
+      database,
+      lockPath,
+      runCollection: async (retailerId, options) => summary(retailerId, "collect", options.dryRun),
+    });
+
+    expect(result.exitCode).toBe(0);
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("monitors each persisted discovery run before the weekly command succeeds", async () => {

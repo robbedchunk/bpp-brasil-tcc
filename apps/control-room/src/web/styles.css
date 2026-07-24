@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-border: var(--border);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-info: var(--info);
+  --color-info-strong: var(--info-strong);
+  --color-good: var(--good);
+  --color-good-strong: var(--good-strong);
+  --color-good-light: var(--good-light);
+  --color-warning: var(--warning);
+  --color-warning-strong: var(--warning-strong);
+  --color-critical: var(--critical);
+  --color-critical-strong: var(--critical-strong);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-ink: var(--sidebar-ink);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-code: var(--code);
+  --color-code-ink: var(--code-ink);
+  --color-code-muted: var(--code-muted);
+  --shadow-card: 0 1px 2px rgb(12 35 47 / 0.04), 0 8px 30px rgb(12 35 47 / 0.055);
+}
+
+:root {
+  color-scheme: light;
+  --canvas: #f4f7f8;
+  --surface: #ffffff;
+  --subtle: #eaf0f2;
+  --border: #d7e1e5;
+  --ink: #132832;
+  --muted: #536a73;
+  --muted-strong: #405760;
+  --accent: #176b87;
+  --accent-strong: #0f5872;
+  --accent-contrast: #ffffff;
+  --info: #276f9f;
+  --info-strong: #18577e;
+  --good: #0b7a59;
+  --good-strong: #075f46;
+  --good-light: #74e3bd;
+  --warning: #a56805;
+  --warning-strong: #7e4e00;
+  --critical: #ba3a32;
+  --critical-strong: #922a24;
+  --sidebar: #102630;
+  --sidebar-ink: #f4fafb;
+  --sidebar-muted: #b8c8ce;
+  --sidebar-border: #28414b;
+  --sidebar-active: #176b87;
+  --sidebar-hover: #1b3742;
+  --code: #102630;
+  --code-ink: #edf8fa;
+  --code-muted: #a9bdc5;
+  --chart-primary: #2a78d6;
+  --chart-grid: #dbe4e7;
+}
+
+.dark {
+  color-scheme: dark;
+  --canvas: #0d171c;
+  --surface: #142229;
+  --subtle: #1c2e36;
+  --border: #2c414a;
+  --ink: #eff7f8;
+  --muted: #9db0b7;
+  --muted-strong: #c0cdd2;
+  --accent: #4da9c8;
+  --accent-strong: #63bbd6;
+  --accent-contrast: #0b1b22;
+  --info: #6bb5e8;
+  --info-strong: #9acef0;
+  --good: #45bd91;
+  --good-strong: #80d8b8;
+  --good-light: #83e0bf;
+  --warning: #d7a447;
+  --warning-strong: #f0c36b;
+  --critical: #e5766f;
+  --critical-strong: #f2a09b;
+  --sidebar: #0a1317;
+  --sidebar-ink: #eff7f8;
+  --sidebar-muted: #94a8b0;
+  --sidebar-border: #20343c;
+  --sidebar-active: #176b87;
+  --sidebar-hover: #172a32;
+  --code: #081115;
+  --code-ink: #edf8fa;
+  --code-muted: #98aeb7;
+  --chart-primary: #3987e5;
+  --chart-grid: #294049;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  min-width: 320px;
+  background: var(--canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(circle at 92% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 32rem),
+    var(--canvas);
+}
+
+button,
+a,
+select,
+input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 48%, transparent);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  * {
+    forced-color-adjust: auto;
+  }
+}

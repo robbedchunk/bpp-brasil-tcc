@@ -15,6 +15,16 @@ export interface ProcessLockOptions {
   staleAfterMs?: number;
 }
 
+export type ProcessLockState = "unlocked" | "active" | "stale" | "malformed";
+
+export interface ProcessLockInspection {
+  state: ProcessLockState;
+  blocksAcquisition: boolean;
+  recordVersion: 1 | 2 | null;
+  startedAt?: string;
+  ageMs?: number;
+}
+
 export class ProcessLockError extends Error {
   readonly exitCode = 75;
 
@@ -256,6 +266,51 @@ async function acquireLock(
       await moveObservedStaleLock(path, observedText);
     }
   }
+}
+
+export async function inspectProcessLock(
+  path: string,
+  options: ProcessLockOptions = {},
+): Promise<ProcessLockInspection> {
+  const nowMs = (options.now ?? (() => new Date()))().getTime();
+  const staleAfterMs = options.staleAfterMs ?? DEFAULT_LEGACY_STALE_AFTER_MS;
+  if (!Number.isSafeInteger(staleAfterMs) || staleAfterMs <= 0) {
+    throw new RangeError("staleAfterMs must be a positive safe integer");
+  }
+
+  const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (text === null) {
+    return { state: "unlocked", blocksAcquisition: false, recordVersion: null };
+  }
+
+  const record = parseLockRecord(text);
+  if (record === null) {
+    const blocksAcquisition = await malformedLockIsFresh(path, nowMs, staleAfterMs);
+    return {
+      state: blocksAcquisition ? "malformed" : "stale",
+      blocksAcquisition,
+      recordVersion: null,
+    };
+  }
+
+  const ageMs = Math.max(0, nowMs - Date.parse(record.startedAt));
+  const active = await recordIsActive(
+    record,
+    options.getProcessIdentity ?? readLinuxProcessIdentity,
+    options.isProcessAlive ?? processIsAlive,
+    nowMs,
+    staleAfterMs,
+  );
+  return {
+    state: active ? "active" : "stale",
+    blocksAcquisition: active,
+    recordVersion: record.version === 2 ? 2 : 1,
+    startedAt: record.startedAt,
+    ageMs,
+  };
 }
 
 export async function withProcessLock<T>(

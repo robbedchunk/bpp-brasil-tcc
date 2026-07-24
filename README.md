@@ -83,6 +83,33 @@ npm run acceptance -- --json
 npm run acceptance -- --json --require-complete
 ```
 
+## Local operations Control Room
+
+`apps/control-room/` is an optional local-first React/Fastify operations console.
+It reads the configured SQLite database through a literal read-only connection,
+enumerates the fork's own retailers/runs/evidence at runtime, and never uses
+hard-coded dashboard rows, test fixtures, snapshot CSVs, or generated PNGs as
+live application data.
+
+```bash
+npm run control-room:build
+npm run control-room:start
+# open http://127.0.0.1:4318
+```
+
+The default is observer mode. Guarded CLI-backed controls require an explicit
+local opt-in:
+
+```bash
+npm run control-room:start -- --enable-actions
+```
+
+Every action requires a fresh read-only preview, an exact confirmation phrase,
+and (for model work) the exact previewed spend authorization. The CLI's locks,
+admission ledgers, budget reservations, reconciliation, and strategy-validation
+boundaries remain authoritative. The dashboard never accepts arbitrary commands
+or writes directly to `data/precos.sqlite`.
+
 Strategy receipt/key operations are documented in
 [trusted strategy validation](docs/strategy-validation.md). A fresh clone can
 verify receipts with the tracked public key; only the production host retains
@@ -124,7 +151,7 @@ See [ethics and ToS](docs/ethics-and-tos.md) and
 
 - regions or CEPs outside the São Paulo pilot;
 - other IPCA groups, marketplaces, and price aggregators;
-- dashboards, queues, Redis, or a web service;
+- hosted, LAN-exposed, authenticated, or multi-user control planes; queues or Redis;
 - hedonic/quality adjustment and statistical validation;
 - paid proxies or anti-bot escalation without author approval;
 - community-maintenance ceremony before the thesis defense.

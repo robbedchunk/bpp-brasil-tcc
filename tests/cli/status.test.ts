@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,8 +62,9 @@ async function runCli(
 }
 
 describe("precos status", () => {
-  it("prints a valid empty status report", async () => {
+  it("prints a valid empty status report from an initialized database", async () => {
     const databasePath = await temporaryDatabasePath();
+    openDatabase(databasePath).close();
     const result = await runCli(["status", "--json"], {
       databasePath,
       now: () => new Date("2026-07-10T12:00:00.000Z"),
@@ -168,6 +169,7 @@ describe("precos status", () => {
 
   it("prints a compact human-readable table without network activity", async () => {
     const databasePath = await temporaryDatabasePath();
+    openDatabase(databasePath).close();
     const result = await runCli(["status"], {
       databasePath,
       now: () => new Date("2026-07-10T12:00:00.000Z"),
@@ -177,6 +179,31 @@ describe("precos status", () => {
     expect(result.stdout).toContain("HEARTBEAT  STALE");
     expect(result.stdout).toContain("(no retailers)");
     expect(result.exitCode).toBe(0);
+  });
+
+  it("does not initialize a missing database while reporting status", async () => {
+    const databasePath = await temporaryDatabasePath();
+    const result = await runCli(["status", "--json"], { databasePath });
+
+    expect(result.exitCode).toBe(1);
+    await expect(stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports the versioned control capabilities without opening a database", async () => {
+    const databasePath = await temporaryDatabasePath();
+    const result = await runCli(["control", "capabilities", "--json"], { databasePath });
+
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      protocolVersion: 1,
+      observation: { literalReadOnlyDatabase: true },
+      preview: {
+        literalReadOnly: true,
+        actions: ["collect", "discover", "daily", "classify", "index"],
+      },
+      execution: { guardedByCli: true },
+    });
+    expect(result.exitCode).toBe(0);
+    await expect(stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("initializes the database idempotently through the CLI", async () => {

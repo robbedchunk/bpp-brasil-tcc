@@ -1,0 +1,2 @@
+event_id,retailer_name,onset_run_id,drift_started_at,detected_at,recovered_at,status,healed_automatically,attempts,tier_transition,duration_hours
+c3bdeee8-7ceb-49c3-b456-dabafc0f83a8,Carrefour Mercado,ae6a08fd-7d4f-4997-9f27-8499c9ffedc5,2026-07-16T06:05:02.898Z,2026-07-16T06:13:22.103Z,,failed,false,2,1→?,0.704

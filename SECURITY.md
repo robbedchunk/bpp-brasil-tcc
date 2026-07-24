@@ -20,7 +20,20 @@ The following material must remain outside Git:
 - raw HTML/replay archives and browser profiles;
 - local JSONL logs, alerts, locks, and backups;
 - SQLite WAL/SHM and migration scratch files;
-- raw acceptance-drill receipts.
+- raw acceptance-drill receipts;
+- Control Room job state under `var/control-room/`.
+
+The BPP Control Room is a local loopback application, not a hosted service. It
+refuses non-local binding, CORS, arbitrary SQL/commands/paths, and browser-supplied
+credentials. Observation uses a literal read-only SQLite connection and API
+contracts omit product URLs, failure messages, replay references, JSON provider
+payloads, private paths, PIDs, lock tokens, and raw logs. Mutation endpoints
+require same-origin JSON plus an explicit intent header, short-lived preview,
+state revalidation, and textual confirmation; the CLI remains the authority for
+locks, admissions, budgets, and append-only evidence.
+
+Do not reverse-proxy or expose the Control Room to a LAN/Internet. Remote access,
+authentication, multiple users, and roles require a separate security design.
 
 Run `npm run audit:publication -- --json` before sharing a commit or data
 snapshot. A failed current-tree or historical scan blocks publication.

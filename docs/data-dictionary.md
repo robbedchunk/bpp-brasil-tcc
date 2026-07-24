@@ -33,6 +33,11 @@
 | `ipca_items` | 84 cited São Paulo food-at-home sub-items and exact POF weights. |
 | `classifications` | Versioned item decisions, confidence, method/model/usage evidence. |
 | `classification_batch_jobs/items/events` | Asynchronous classification lifecycle. |
+| `classification_sync_reservations` | Durable synchronous provider-cost reservation and settlement state. |
+| `classification_shape_failures` | Immutable structured-output contract failures used for adaptive split/quarantine. |
+| `classification_quarantine_events` | Append-only product/version quarantine and release events. |
+| `catalog_seed_imports` / `catalog_seed_refs` | Audited operator-supplied cold-start catalog evidence for inactive retailers. |
+| `runtime_reconciliations` | Append-only receipts for interrupted pipeline, exploration, or classification work. |
 | `exploration_runs` | Strategy-generation event budget, result, usage, and cost. |
 | `exploration_attempts` | Immutable per-attempt prompt/model/validation evidence. |
 | `model_budget_reservations` | Concurrent exploration budget commitments/settlement. |
@@ -62,6 +67,22 @@ not refunded by a later crash: this makes process restarts and concurrent CLI
 runs unable to exceed the daily network/reference/replay bounds. Run, product,
 retailer, day, stage, and strategy identity are enforced again by SQLite
 triggers at the append-only observation/failure/scope/snapshot boundary.
+
+## Control Room read model
+
+The local Control Room derives live operational responses directly from the
+configured SQLite database. Its HTTP contracts are intentionally narrower than
+the schema: they expose aggregate counts, safe IDs, lifecycle/status codes,
+validation aggregates, cost/admission totals, and timestamps. They never return
+`base_url`, `canonical_url`, `message`, `error_message`, replay/response paths or
+hashes, strategy/provider JSON, classification input/output JSON, private
+absolute paths, credentials, PIDs, or lock tokens. Historical export/analysis
+pointers contribute verified manifest metadata only; their CSV rows and PNGs are
+not runtime dashboard data.
+
+`var/control-room/control.sqlite` is private UI-local state for previews, jobs,
+events, and sanitized receipt hashes. It is not part of the research evidence
+database, public snapshot schema, or acceptance proof.
 
 ## Research CSV snapshot
 

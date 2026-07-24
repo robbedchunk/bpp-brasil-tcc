@@ -34,7 +34,9 @@ import {
 } from "./classify/openai-provider.js";
 import type { ProductClassifier } from "./classify/provider.js";
 import { loadConfig } from "./config.js";
+import { controlCapabilities } from "./control/capabilities.js";
 import { openDatabase } from "./db/database.js";
+import { openReadOnlyDatabase } from "./db/read-only.js";
 import {
   activeRetailerIds,
   latestTerminalStrategyRunId,
@@ -232,6 +234,16 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       if (dependencies.database === undefined) database.close();
     }
   };
+  const withReadOnlyDatabase = async <T>(
+    action: (database: Database.Database) => T | Promise<T>,
+  ): Promise<T> => {
+    const database = dependencies.database ?? openReadOnlyDatabase(databasePath());
+    try {
+      return await action(database);
+    } finally {
+      if (dependencies.database === undefined) database.close();
+    }
+  };
 
   const command = new Command()
     .name("precos")
@@ -244,10 +256,23 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .description("Report collection health from the local database")
     .option("--json", "emit only the JSON status object")
     .action(async (options: { json?: boolean }) => {
-      await withDatabase((database) => {
+      await withReadOnlyDatabase((database) => {
         const report = readStatusReport(database, now());
         stdout(options.json === true ? `${JSON.stringify(report)}\n` : formatHumanStatus(report));
       });
+    });
+
+  command
+    .command("control")
+    .description("Inspect the versioned local control protocol")
+    .command("capabilities")
+    .description("Report dashboard-safe observation, preview, and execution capabilities")
+    .option("--json", "emit only the JSON capability object")
+    .action((options: { json?: boolean }) => {
+      const capabilities = controlCapabilities();
+      stdout(options.json === true
+        ? `${JSON.stringify(capabilities)}\n`
+        : `control protocol v${capabilities.protocolVersion}\n`);
     });
 
   const positiveLimit = (value: string): number => {
@@ -282,9 +307,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         dryRun?: boolean;
         json?: boolean;
       }) => {
-        const summaries = await withProcessLock(
-          dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock"),
-          () => withDatabase(async (database) => {
+        const runPipeline = async (database: Database.Database): Promise<RunSummary[]> => {
           if (options.dryRun !== true) {
             reconcileInterruptedPipelineRuns(database, now().toISOString());
           }
@@ -298,15 +321,14 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           const results: RunSummary[] = [];
           for (const retailerId of retailerIds) {
             if (name === "discover") {
-              const summary =
-                dependencies.runDiscovery === undefined
-                  ? await runDiscovery(retailerId, {
-                      database,
-                      ...pipelineOptions,
-                      logDirectory: resolve(config().projectRoot, "var/log/runs"),
-                      ...retailerOptions(retailerId),
-                    })
-                  : await dependencies.runDiscovery(retailerId, pipelineOptions);
+              const summary = dependencies.runDiscovery === undefined
+                ? await runDiscovery(retailerId, {
+                    database,
+                    ...pipelineOptions,
+                    logDirectory: resolve(config().projectRoot, "var/log/runs"),
+                    ...retailerOptions(retailerId),
+                  })
+                : await dependencies.runDiscovery(retailerId, pipelineOptions);
               results.push(summary);
               if (!summary.dryRun) {
                 const applicationConfig = config();
@@ -339,9 +361,14 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               );
             }
           }
-            return results;
-          }),
-        );
+          return results;
+        };
+        const summaries = options.dryRun === true
+          ? await withReadOnlyDatabase(runPipeline)
+          : await withProcessLock(
+              dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock"),
+              () => withDatabase(runPipeline),
+            );
         if (options.json === true) {
           stdout(`${JSON.stringify(summaries)}\n`);
         } else {
@@ -578,17 +605,20 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       const format = options.format ?? (extname(filePath).toLowerCase() === ".csv" ? "csv" : "json");
       const content = await readFile(filePath, "utf8");
       const entries = parseCatalogSeedFile(content, format);
-      const summary = await withProcessLock(
-        pipelineLockPath(),
-        () => withDatabase((database) => importCatalogSeeds(database, {
-          retailerId: options.retailer,
-          entries,
-          sourceLabel: basename(filePath),
-          fileSha256: createHash("sha256").update(content).digest("hex"),
-          dryRun: options.dryRun === true,
-          now,
-        })),
-      );
+      const importSeeds = (database: Database.Database) => importCatalogSeeds(database, {
+        retailerId: options.retailer,
+        entries,
+        sourceLabel: basename(filePath),
+        fileSha256: createHash("sha256").update(content).digest("hex"),
+        dryRun: options.dryRun === true,
+        now,
+      });
+      const summary = options.dryRun === true
+        ? await withReadOnlyDatabase(importSeeds)
+        : await withProcessLock(
+            pipelineLockPath(),
+            () => withDatabase(importSeeds),
+          );
       stdout(options.json === true
         ? `${JSON.stringify(summary)}\n`
         : `catalog import ${summary.retailerId}: ${summary.refs} in-scope refs; `
@@ -689,44 +719,47 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
         now,
       });
-      const output = await withProcessLock(
-        classificationLockPath(),
-        () => withDatabase(async (database) => {
-          if (options.dryRun !== true) {
-            reconcileSynchronousClassificationReservations(
-              database,
-              now().toISOString(),
-            );
-          }
-          const summary = await classifyNewProducts({
-            batchSize: options.batchSize,
-            concurrency: options.concurrency,
-            ...(options.minimumBatchSize === undefined
-              ? {}
-              : { minimumBatchSize: options.minimumBatchSize }),
-            version: options.version,
-            confidenceThreshold: options.confidenceThreshold,
-            dryRun: options.dryRun === true,
-          }, {
+      const runClassification = async (database: Database.Database) => {
+        if (options.dryRun !== true) {
+          reconcileSynchronousClassificationReservations(
             database,
-            ...(provider === undefined ? {} : { provider }),
-            budgetGuard: dependencies.budgetGuard
-              ?? BudgetGuard.fromEnv(dependencies.env ?? process.env),
-            classificationModel,
-            alertSink: sink,
-            now,
-          });
-          return options.reviewSample === undefined
-            ? summary
-            : {
-                ...summary,
-                reviewSample: buildReviewSample(database, {
-                  limit: options.reviewSample,
-                  version: options.version,
-                }),
-              };
-        }),
-      );
+            now().toISOString(),
+          );
+        }
+        const summary = await classifyNewProducts({
+          batchSize: options.batchSize,
+          concurrency: options.concurrency,
+          ...(options.minimumBatchSize === undefined
+            ? {}
+            : { minimumBatchSize: options.minimumBatchSize }),
+          version: options.version,
+          confidenceThreshold: options.confidenceThreshold,
+          dryRun: options.dryRun === true,
+        }, {
+          database,
+          ...(provider === undefined ? {} : { provider }),
+          budgetGuard: dependencies.budgetGuard
+            ?? BudgetGuard.fromEnv(dependencies.env ?? process.env),
+          classificationModel,
+          alertSink: sink,
+          now,
+        });
+        return options.reviewSample === undefined
+          ? summary
+          : {
+              ...summary,
+              reviewSample: buildReviewSample(database, {
+                limit: options.reviewSample,
+                version: options.version,
+              }),
+            };
+      };
+      const output = options.dryRun === true
+        ? await withReadOnlyDatabase(runClassification)
+        : await withProcessLock(
+            classificationLockPath(),
+            () => withDatabase(runClassification),
+          );
       const summary = output;
 
       if (!summary.dryRun && summary.pending > 0) {
@@ -915,56 +948,59 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         }
         await assertSafeOutputPath(outputRoot);
       }
-      const result = await withProcessLock(
-        dependencies.indexLockPath
-          ?? resolve(applicationConfig.projectRoot, "var/precos-index.lock"),
-        () => withDatabase(async (database) => {
-          if (options.export !== true) {
-            const series = buildDailyIndex(database, {
-              ...(options.through === undefined ? {} : { throughDay: options.through }),
-              ...(options.classificationVersion === undefined
-                ? {}
-                : { classificationVersion: options.classificationVersion }),
-            });
-            return {
-              status: series.aggregate.some((point) => point.dailyRelative !== null)
-                ? "complete"
-                : "no_index_data",
-              methodVersion: series.methodVersion,
-              throughDay: series.throughDay,
-              productRelatives: series.productRelatives.length,
-              aggregatePoints: series.aggregate.length,
-            };
-          }
-          const sink = dependencies.alertSink ?? createAlertSink({
-            ...(applicationConfig.ntfyTopic === undefined
-              ? {}
-              : { ntfyTopic: applicationConfig.ntfyTopic }),
-            fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+      const calculateIndex = (database: Database.Database) => {
+        const series = buildDailyIndex(database, {
+          ...(options.through === undefined ? {} : { throughDay: options.through }),
+          ...(options.classificationVersion === undefined
+            ? {}
+            : { classificationVersion: options.classificationVersion }),
+        });
+        return {
+          status: series.aggregate.some((point) => point.dailyRelative !== null)
+            ? "complete" as const
+            : "no_index_data" as const,
+          methodVersion: series.methodVersion,
+          throughDay: series.throughDay,
+          productRelatives: series.productRelatives.length,
+          aggregatePoints: series.aggregate.length,
+        };
+      };
+      const exportIndex = async (database: Database.Database) => {
+        const sink = dependencies.alertSink ?? createAlertSink({
+          ...(applicationConfig.ntfyTopic === undefined
+            ? {}
+            : { ntfyTopic: applicationConfig.ntfyTopic }),
+          fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
+          now,
+        });
+        try {
+          return await (dependencies.exportResearchData ?? runExportResearchData)(database, {
+            outputRoot,
             now,
+            sidraClient: dependencies.sidraClient ?? new OfficialSidraClient(),
+            alertSink: sink,
+            requireOfficial: options.requireOfficial === true,
+            ...(options.through === undefined ? {} : { throughDay: options.through }),
+            ...(options.classificationVersion === undefined
+              ? {}
+              : { classificationVersion: options.classificationVersion }),
           });
-          try {
-            return await (dependencies.exportResearchData ?? runExportResearchData)(database, {
-              outputRoot,
-              now,
-              sidraClient: dependencies.sidraClient ?? new OfficialSidraClient(),
-              alertSink: sink,
-              requireOfficial: options.requireOfficial === true,
-              ...(options.through === undefined ? {} : { throughDay: options.through }),
-              ...(options.classificationVersion === undefined
-                ? {}
-                : { classificationVersion: options.classificationVersion }),
-            });
-          } catch (error) {
-            if (error instanceof OfficialSourceUnavailableError) {
-              stdout(options.json === true
-                ? `${JSON.stringify(error.manifest)}\n`
-                : `index: ${error.manifest.status}\n`);
-            }
-            throw error;
+        } catch (error) {
+          if (error instanceof OfficialSourceUnavailableError) {
+            stdout(options.json === true
+              ? `${JSON.stringify(error.manifest)}\n`
+              : `index: ${error.manifest.status}\n`);
           }
-        }),
-      );
+          throw error;
+        }
+      };
+      const result = options.export === true
+        ? await withProcessLock(
+            dependencies.indexLockPath
+              ?? resolve(applicationConfig.projectRoot, "var/precos-index.lock"),
+            () => withDatabase(exportIndex),
+          )
+        : await withReadOnlyDatabase(calculateIndex);
       stdout(options.json === true
         ? `${JSON.stringify(result)}\n`
         : `index: ${result.status}\n`);
@@ -991,14 +1027,12 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
         fallbackPath: resolve(applicationConfig.projectRoot, "var/log/alerts.jsonl"),
         now,
       });
-      const result = await withProcessLock(
-        pipelineLockPath(),
-        () => withDatabase((database) => {
-          if (options.dryRun !== true) {
-            reconcileInterruptedPipelineRuns(database, now().toISOString());
-          }
-          return (dependencies.runDaily ?? runDailyPipeline)({
-            database,
+      const runDaily = (database: Database.Database) => {
+        if (options.dryRun !== true) {
+          reconcileInterruptedPipelineRuns(database, now().toISOString());
+        }
+        return (dependencies.runDaily ?? runDailyPipeline)({
+          database,
           ...(scheduledInvocation === null ? {} : { scheduledInvocation }),
           limit: Math.min(options.limit ?? applicationConfig.dailyPageCap, 2_000),
           dryRun: options.dryRun === true,
@@ -1023,9 +1057,14 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
               : "Collection completed, but drift monitoring did not durably complete",
             details: failure,
           }),
-          });
-        }),
-      );
+        });
+      };
+      const result = options.dryRun === true
+        ? await withReadOnlyDatabase(runDaily)
+        : await withProcessLock(
+            pipelineLockPath(),
+            () => withDatabase(runDaily),
+          );
       stdout(options.json === true
         ? `${JSON.stringify(result)}\n`
         : `daily: ${result.terminal}/${result.retailers} retailers terminal\n`);

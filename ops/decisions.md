@@ -1,5 +1,26 @@
 # Operations decisions
 
+## 2026-07-24 — Optional local Control Room remains outside the collection hot path
+
+- `apps/control-room/` is an npm workspace containing a React/Vite interface and
+  same-origin Fastify adapter bound only to `127.0.0.1`. Collection, timers, and
+  frozen releases do not import or depend on it.
+- Live views enumerate the configured fork's own SQLite entities through a
+  literal read-only opener. Missing databases are not created, migrations and
+  WAL settings are untouched, and immutable CSV/PNG snapshots are never used as
+  substitute live data.
+- The UI distinguishes run lifecycle, health, and limiting condition; incomplete
+  catalog snapshots cannot imply zero disappearances, and index gaps/chain
+  breaks remain gaps.
+- Observer mode is the default. Optional controls expose only a fixed action
+  catalog, require an expiring read-only preview plus state fingerprint and exact
+  confirmation, then delegate once to the guarded CLI. Paid classification also
+  requires the exact previewed USD authorization.
+- Dashboard-local state lives privately under `var/control-room/`; raw child
+  output, logs, URLs, replay material, environment values, and credentials are
+  never stored or returned. A dashboard receipt is local operational metadata,
+  not signed strategy-validation or thesis acceptance evidence.
+
 ## 2026-07-11 — Broad-catalog rehearsal before the first Sunday timer
 
 - The production-equivalent `discover --limit 3000` command ran sequentially
