@@ -1489,7 +1489,10 @@ describe("acceptance status and evidence", () => {
       execFileSync("git", ["add", "retailers", "data"], { cwd: root });
       execFileSync("git", ["commit", "-qm", "valid receipt registry"], { cwd: root });
 
-      const now = new Date("2026-07-11T16:00:00.000Z");
+      const now = new Date(Math.max(
+        Date.parse(discoveryReceipt.validatedAt),
+        Date.parse(extractionReceipt.validatedAt),
+      ) + 60 * 60_000);
       const passed = evaluateActiveStrategyValidationReceipts(root, database, now);
       expect(passed.criterion.status).toBe("pass");
       expect(passed.evidence[0]?.facts).toMatchObject({
@@ -1541,7 +1544,7 @@ describe("acceptance status and evidence", () => {
           receipt.validatedAt = "2026-07-11T05:08:25.000Z";
         }],
         ["internally valid aggregate disagrees with DB activation", (receipt) => {
-          const sample = receipt.samples[27]!;
+          const sample = receipt.samples[receipt.valid - 1]!;
           sample.outcome = {
             status: "invalid",
             failure: {
@@ -1552,8 +1555,8 @@ describe("acceptance status and evidence", () => {
             },
           };
           sample.outcomeSha256 = evidenceValueSha256(sample.outcome);
-          receipt.valid = 27;
-          receipt.score = 0.9;
+          receipt.valid -= 1;
+          receipt.score = receipt.valid / receipt.attempted;
           receipt.sampleSetSha256 = validationSampleSetSha256(receipt.samples);
         }],
       ];
@@ -1577,17 +1580,20 @@ describe("acceptance status and evidence", () => {
       database.prepare(`
         UPDATE strategies
         SET active = 0,
-          activated_at = '2026-07-11T15:10:00.000Z',
-          retired_at = '2026-07-11T15:30:00.000Z'
+          activated_at = ?,
+          retired_at = ?
         WHERE retailer_id = 'carrefour' AND purpose = 'extraction'
-      `).run();
+      `).run(
+        extractionReceipt.validatedAt,
+        new Date(Date.parse(extractionReceipt.validatedAt) + 10 * 60_000).toISOString(),
+      );
       expect(evaluateActiveStrategyValidationReceipts(root, database, now).criterion.status)
         .toBe("pass");
 
       database.prepare(`
-        UPDATE strategies SET activated_at = '2026-07-11T09:00:00.000Z'
+        UPDATE strategies SET activated_at = ?
         WHERE retailer_id = 'carrefour' AND purpose = 'discovery'
-      `).run();
+      `).run(new Date(Date.parse(discoveryReceipt.validatedAt) - 60_000).toISOString());
       const activeChronologyAttack = evaluateActiveStrategyValidationReceipts(root, database, now);
       expect(activeChronologyAttack.criterion.status).toBe("fail");
       expect(activeChronologyAttack.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");

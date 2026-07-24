@@ -35,6 +35,11 @@ const roots: string[] = [];
 const projectRoot = resolve(".");
 const successorSourceCommit = "00278a685724a7452837204bee321705c2bad506";
 const recoverySourceCommit = "0b7fdb77d6f593e27a66b8aec42d55d849f2e226";
+const rolloutPlanSourceCommit = execFileSync(
+  "git",
+  ["log", "-n", "1", "--format=%H", "--", "data/validation/successor-plans.json"],
+  { cwd: projectRoot, encoding: "utf8" },
+).trim();
 const historicalSuccessorPlanRaw = execFileSync(
   "git",
   ["show", `${successorSourceCommit}:data/validation/successor-plans.json`],
@@ -147,9 +152,10 @@ function fixture(): string {
     join(root, "data/validation/successor-plans.json"),
   );
   for (const retailerId of new Set(plan.plans.map((entry) => entry.retailerId))) {
-    const config = JSON.parse(readFileSync(
-      join(projectRoot, `retailers/${retailerId}.json`),
-      "utf8",
+    const config = JSON.parse(execFileSync(
+      "git",
+      ["show", `${rolloutPlanSourceCommit}:retailers/${retailerId}.json`],
+      { cwd: projectRoot, encoding: "utf8" },
     ));
     for (const entry of plan.plans.filter((candidate) => candidate.retailerId === retailerId)) {
       config.strategyVersions[entry.purpose] = entry.fromVersion;
@@ -331,6 +337,9 @@ describe("validation successor preparation", () => {
     expect(entry).toBeDefined();
     const configPath = join(root, "retailers/carrefour.json");
     const config = JSON.parse(readFileSync(configPath, "utf8"));
+    if (entry!.candidateStrategy !== undefined) {
+      config.discovery = structuredClone(entry!.candidateStrategy);
+    }
     config.strategyVersions.discovery = entry!.toVersion;
     config.validation.discovery.receiptPath =
       `data/validation/carrefour-discovery-v${entry!.toVersion}.json`;

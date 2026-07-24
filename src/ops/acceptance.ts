@@ -1602,6 +1602,91 @@ function recoveryChainDeclaresStrategyVersion(
   return entries.length === 1;
 }
 
+function successorPlanStrategy(
+  root: string,
+  sourceCommit: string,
+  historicalConfig: RetailerConfig,
+  retailerId: string,
+  purpose: "discovery" | "extraction",
+  version: number,
+): ReturnType<typeof parseStrategy> | null {
+  const plan = committedJson(root, sourceCommit, SUCCESSOR_PLAN_PATH) as {
+    schemaVersion?: unknown;
+    plans?: unknown;
+  };
+  if (plan.schemaVersion !== 1 || !Array.isArray(plan.plans)) return null;
+  const matches = plan.plans.flatMap((candidate) => {
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return [];
+    const value = candidate as Record<string, unknown>;
+    const hasBurnedVersions = Object.hasOwn(value, "burnedVersions");
+    const hasCandidateStrategy = Object.hasOwn(value, "candidateStrategy");
+    const hasSourceStrategySha256 = Object.hasOwn(value, "sourceStrategySha256");
+    if (hasCandidateStrategy !== hasSourceStrategySha256) return [];
+    const expectedKeys = [
+      "fromVersion", "purpose", "reason", "retailerId", "strategySha256", "toVersion",
+      ...(hasBurnedVersions ? ["burnedVersions"] : []),
+      ...(hasCandidateStrategy ? ["candidateStrategy", "sourceStrategySha256"] : []),
+    ];
+    const burnedVersions = hasBurnedVersions ? value.burnedVersions : [];
+    if (!exactObjectKeys(value, expectedKeys)
+      || value.retailerId !== retailerId
+      || value.purpose !== purpose
+      || !Number.isSafeInteger(value.fromVersion) || (value.fromVersion as number) < 1
+      || value.fromVersion !== historicalConfig.strategyVersions[purpose]
+      || value.toVersion !== version
+      || !Array.isArray(burnedVersions)
+      || burnedVersions.some((burnedVersion, index) =>
+        !Number.isSafeInteger(burnedVersion)
+        || burnedVersion !== (value.fromVersion as number) + index + 1)
+      || version !== (value.fromVersion as number) + burnedVersions.length + 1
+      || typeof value.strategySha256 !== "string" || !SHA256.test(value.strategySha256)
+      || typeof value.reason !== "string" || value.reason.trim().length === 0) return [];
+    const sourceStrategy = historicalConfig[purpose];
+    const sourceStrategySha256 = strategyEvidenceSha256(sourceStrategy);
+    let targetStrategy: ReturnType<typeof parseStrategy>;
+    if (hasCandidateStrategy) {
+      if (value.sourceStrategySha256 !== sourceStrategySha256) return [];
+      targetStrategy = parseStrategy(value.candidateStrategy);
+      if (targetStrategy.purpose !== purpose) return [];
+    } else {
+      targetStrategy = sourceStrategy;
+    }
+    return strategyEvidenceSha256(targetStrategy) === value.strategySha256
+      ? [targetStrategy]
+      : [];
+  });
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function declaredStrategyAtSourceCommit(
+  root: string,
+  sourceCommit: string,
+  retailerId: string,
+  purpose: "discovery" | "extraction",
+  version: number,
+): ReturnType<typeof parseStrategy> | null {
+  try {
+    const historicalConfig = RetailerConfigSchema.parse(committedJson(
+      root,
+      sourceCommit,
+      `retailers/${retailerId}.json`,
+    ));
+    if (historicalConfig.strategyVersions[purpose] === version) {
+      return historicalConfig[purpose];
+    }
+    return successorPlanStrategy(
+      root,
+      sourceCommit,
+      historicalConfig,
+      retailerId,
+      purpose,
+      version,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function sourceCommitDeclaresStrategyVersion(
   root: string,
   sourceCommit: string,
@@ -1623,66 +1708,16 @@ export function sourceCommitDeclaresStrategyVersion(
       && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
       return true;
     }
-    if (historicalConfig.strategyVersions[input.purpose] === input.version - 1
-      && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
-      const plan = committedJson(root, sourceCommit, SUCCESSOR_PLAN_PATH) as {
-        schemaVersion?: unknown;
-        plans?: unknown;
-      };
-      if (plan.schemaVersion === 1 && Array.isArray(plan.plans)) {
-        const matches = plan.plans.filter((candidate) => {
-          if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
-          const value = candidate as Record<string, unknown>;
-          const hasBurnedVersions = Object.hasOwn(value, "burnedVersions");
-          const keys = [
-            "fromVersion", "purpose", "reason", "retailerId", "strategySha256", "toVersion",
-            ...(hasBurnedVersions ? ["burnedVersions"] : []),
-          ];
-          const burnedVersions = hasBurnedVersions ? value.burnedVersions : [];
-          return exactObjectKeys(value, keys)
-            && value.retailerId === input.retailerId
-            && value.purpose === input.purpose
-            && value.fromVersion === input.version - 1
-            && value.toVersion === input.version
-            && Array.isArray(burnedVersions)
-            && burnedVersions.length === 0
-            && value.strategySha256 === strategySha256
-            && typeof value.reason === "string" && value.reason.length > 0;
-        });
-        if (matches.length === 1) return true;
-      }
-    }
-    if (historicalConfig.strategyVersions[input.purpose] < input.version - 1
-      && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
-      const plan = committedJson(root, sourceCommit, SUCCESSOR_PLAN_PATH) as {
-        schemaVersion?: unknown;
-        plans?: unknown;
-      };
-      if (plan.schemaVersion === 1 && Array.isArray(plan.plans)) {
-        const matches = plan.plans.filter((candidate) => {
-          if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
-          const value = candidate as Record<string, unknown>;
-          const burnedVersions = value.burnedVersions;
-          return exactObjectKeys(value, [
-            "burnedVersions", "fromVersion", "purpose", "reason", "retailerId",
-            "strategySha256", "toVersion",
-          ])
-            && value.retailerId === input.retailerId
-            && value.purpose === input.purpose
-            && value.fromVersion === historicalConfig.strategyVersions[input.purpose]
-            && value.toVersion === input.version
-            && Array.isArray(burnedVersions)
-            && burnedVersions.every((version, index) =>
-              Number.isSafeInteger(version)
-              && version === (value.fromVersion as number) + index + 1)
-            && input.version
-              === (value.fromVersion as number) + burnedVersions.length + 1
-            && value.strategySha256 === strategySha256
-            && typeof value.reason === "string" && value.reason.length > 0;
-        });
-        if (matches.length === 1) return true;
-      }
-    }
+    const planned = successorPlanStrategy(
+      root,
+      sourceCommit,
+      historicalConfig,
+      input.retailerId,
+      input.purpose,
+      input.version,
+    );
+    if (planned !== null
+      && strategyEvidenceSha256(planned) === strategySha256) return true;
     return recoveryPlanDeclaresStrategyVersion(root, sourceCommit, historicalConfig, input)
       || recoveryChainDeclaresStrategyVersion(root, sourceCommit, historicalConfig, input);
   } catch {
@@ -1698,13 +1733,14 @@ function validateFailedValidationAttemptRegistry(
   attempts: number;
   invalid: number;
   missing: number;
+  error: string | null;
   hashes: Array<{ path: string; sha256: string }>;
 } {
   const directory = join(root, "data/validation/attempts");
   const manifestPath = join(directory, "manifest.json");
   const hashes: Array<{ path: string; sha256: string }> = [];
   if (verificationPublicKey === null || !existsSync(manifestPath)) {
-    return { attempts: 0, invalid: 0, missing: 1, hashes };
+    return { attempts: 0, invalid: 0, missing: 1, error: null, hashes };
   }
   try {
     if (!lstatSync(manifestPath).isFile()) throw new Error("Attempt manifest is not regular");
@@ -1760,20 +1796,22 @@ function validateFailedValidationAttemptRegistry(
       ) {
         throw new Error("Failed validation receipt outcome is inconsistent");
       }
-      const historicalConfig = RetailerConfigSchema.parse(JSON.parse(execFileSync(
-        "git",
-        ["show", `${entry.strategySourceCommit}:retailers/${parsed.retailerId}.json`],
-        { cwd: root, encoding: "utf8" },
-      )));
-      let declaredStrategy = historicalConfig[parsed.purpose];
-      if (strategyEvidenceSha256(declaredStrategy) !== parsed.strategySha256) {
+      let declaredStrategy = declaredStrategyAtSourceCommit(
+        root,
+        entry.strategySourceCommit,
+        parsed.retailerId,
+        parsed.purpose,
+        parsed.strategyVersion,
+      );
+      if (declaredStrategy === null
+        || strategyEvidenceSha256(declaredStrategy) !== parsed.strategySha256) {
         const recovery = committedJson(
           root,
           entry.strategySourceCommit,
           SUCCESSOR_RECOVERY_PLAN_PATH,
         ) as { schemaVersion?: unknown; plans?: unknown };
         if (recovery.schemaVersion !== 1 || !Array.isArray(recovery.plans)) {
-          throw new Error("Failed receipt recovery declaration is malformed");
+          throw new Error(`Failed receipt recovery declaration is malformed: ${entry.path}`);
         }
         const matches = recovery.plans.filter((candidate) => {
           if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
@@ -1787,7 +1825,9 @@ function validateFailedValidationAttemptRegistry(
             && typeof value.candidatePath === "string";
         }) as Array<Record<string, unknown>>;
         if (matches.length !== 1 || typeof matches[0]?.candidatePath !== "string") {
-          throw new Error("Failed receipt recovery strategy is not uniquely declared");
+          throw new Error(
+            `Failed receipt recovery strategy is not uniquely declared: ${entry.path}`,
+          );
         }
         declaredStrategy = parseStrategy(committedJson(
           root,
@@ -1803,26 +1843,12 @@ function validateFailedValidationAttemptRegistry(
       })) {
         throw new Error("Failed receipt strategy version lacks historical identity");
       }
-      const historicalRefs = (database.prepare(`
-        SELECT canonical_url, retailer_product_id, source_category
-        FROM products WHERE retailer_id = ?
-        ORDER BY canonical_url
-      `).all(parsed.retailerId) as Array<{
-        canonical_url: string;
-        retailer_product_id: string | null;
-        source_category: string | null;
-      }>).map((row) => ({
-        canonicalUrl: row.canonical_url,
-        externalId: row.retailer_product_id,
-        sourceCategory: row.source_category,
-      }));
       validateStrategyEvidence(parsed, {
         retailerId: parsed.retailerId,
         purpose: parsed.purpose,
         strategyVersion: parsed.strategyVersion,
         strategy: declaredStrategy,
         verificationPublicKey,
-        authoritativeRefs: historicalRefs,
       });
       const activatedEvidence = database.prepare(`
         SELECT 1
@@ -1839,9 +1865,15 @@ function validateFailedValidationAttemptRegistry(
       path: "data/validation/attempts/manifest.json",
       sha256: hash(readFileSync(manifestPath)),
     });
-    return { attempts: entries.length, invalid: 0, missing: 0, hashes };
-  } catch {
-    return { attempts: 0, invalid: 1, missing: 0, hashes };
+    return { attempts: entries.length, invalid: 0, missing: 0, error: null, hashes };
+  } catch (error) {
+    return {
+      attempts: 0,
+      invalid: 1,
+      missing: 0,
+      error: error instanceof Error ? error.message.slice(0, 500) : "unknown error",
+      hashes,
+    };
   }
 }
 
@@ -1878,6 +1910,7 @@ export function evaluateActiveStrategyValidationReceipts(
   const receipts = new Map<string, string>();
   const receiptHashes: Array<{ path: string; sha256: string }> = [];
   let malformedReceipts = 0;
+  let preservedReceipts = 0;
   let untrackedReceipts = 0;
   let verificationPublicKey: import("node:crypto").KeyObject | null = null;
   let trustedValidatorArtifactSha256: string | null = null;
@@ -1905,32 +1938,54 @@ export function evaluateActiveStrategyValidationReceipts(
       const key = `${parsed.retailerId}/${parsed.purpose}/${parsed.strategyVersion}`;
       const strategy = strategies.get(key);
       const expectedName = `${parsed.retailerId}-${parsed.purpose}-v${parsed.strategyVersion}.json`;
-      if (strategy === undefined || name !== expectedName || receipts.has(key)) {
+      if (name !== expectedName || receipts.has(key)) {
         throw new TypeError("Validation receipt identity is unknown, duplicated, or misnamed");
       }
-      if (verificationPublicKey === null) {
+      const declaredStrategy = strategy === undefined
+        ? declaredStrategyAtSourceCommit(
+            root,
+            parsed.executor.sourceCommit,
+            parsed.retailerId,
+            parsed.purpose,
+            parsed.strategyVersion,
+          )
+        : parseStrategy(strategy.strategy_json);
+      if (declaredStrategy === null) {
+        throw new TypeError("Validation receipt strategy is not declared by its source commit");
+      }
+      const receiptPublicKey = strategy === undefined
+        ? createPublicKey(committedBlob(
+            root,
+            parsed.executor.sourceCommit,
+            "ops/validation-attestation-public.pem",
+          ))
+        : verificationPublicKey;
+      if (receiptPublicKey === null) {
         throw new TypeError("Validation verification public key is unavailable");
       }
+      const authoritativeRefs = strategy?.active === 1
+        ? (database.prepare(`
+            SELECT canonical_url, retailer_product_id, source_category
+            FROM products
+            WHERE retailer_id = ?
+            ORDER BY canonical_url
+          `).all(strategy.retailer_id) as Array<{
+            canonical_url: string;
+            retailer_product_id: string | null;
+            source_category: string | null;
+          }>).map((ref) => ({
+            canonicalUrl: ref.canonical_url,
+            externalId: ref.retailer_product_id,
+            sourceCategory: ref.source_category,
+          }))
+        : undefined;
       const validated = validateStrategyEvidence(parsed, {
-        retailerId: strategy.retailer_id,
-        purpose: strategy.purpose,
-        strategyVersion: strategy.version,
-        strategy: parseStrategy(strategy.strategy_json),
-        verificationPublicKey,
-        authoritativeRefs: (database.prepare(`
-          SELECT canonical_url, retailer_product_id, source_category
-          FROM products
-          WHERE retailer_id = ?
-          ORDER BY canonical_url
-        `).all(strategy.retailer_id) as Array<{
-          canonical_url: string;
-          retailer_product_id: string | null;
-          source_category: string | null;
-        }>).map((ref) => ({
-          canonicalUrl: ref.canonical_url,
-          externalId: ref.retailer_product_id,
-          sourceCategory: ref.source_category,
-        })),
+        retailerId: parsed.retailerId,
+        purpose: parsed.purpose,
+        strategyVersion: parsed.strategyVersion,
+        strategy: declaredStrategy,
+        verificationPublicKey: receiptPublicKey,
+        ...(authoritativeRefs === undefined ? {} : { authoritativeRefs }),
       });
       if (!gitSucceeds(root, [
         "merge-base",
@@ -1942,9 +1997,37 @@ export function evaluateActiveStrategyValidationReceipts(
           "Validation executor source commit is unknown or not an ancestor of HEAD",
         );
       }
+      const canonicalReceiptSha256 = validationReceiptSha256(validated);
+      if (strategy === undefined) {
+        const sourceArtifactSha256 = committedBlob(
+          root,
+          validated.executor.sourceCommit,
+          "ops/validator-bundle.sha256",
+        ).toString("utf8").trim();
+        if (!sourceCommitDeclaresStrategyVersion(root, validated.executor.sourceCommit, {
+          retailerId: validated.retailerId,
+          purpose: validated.purpose,
+          version: validated.strategyVersion,
+          strategy: declaredStrategy,
+        })
+          || validated.executor.artifactSha256 !== sourceArtifactSha256
+          || validated.attempted !== 30
+          || validated.activatable !== true
+          || validated.valid < 27
+          || validated.score !== validated.valid / validated.attempted
+          || Date.parse(validated.validatedAt) > now.getTime()) {
+          throw new TypeError("Preserved validation receipt is malformed or misbound");
+        }
+        if (!gitSucceeds(root, ["ls-files", "--error-unmatch", relativePath])) {
+          untrackedReceipts += 1;
+        }
+        receipts.set(key, relativePath);
+        receiptHashes.push({ path: relativePath, sha256: hash(raw) });
+        preservedReceipts += 1;
+        continue;
+      }
       const config = configs.get(strategy.retailer_id);
       const configValidation = config?.validation[strategy.purpose];
-      const canonicalReceiptSha256 = validationReceiptSha256(validated);
       const configIdentityMatches = config?.active === true
         && config.strategyVersions[strategy.purpose] === strategy.version
         && JSON.stringify(config[strategy.purpose]) === strategy.strategy_json;
@@ -2061,11 +2144,14 @@ export function evaluateActiveStrategyValidationReceipts(
     activeStrategies: active.length,
     receiptFiles: files.length,
     validReceipts: receipts.size,
+    preservedReceipts,
     missingActiveReceipts,
     malformedReceipts,
     untrackedReceipts,
     configRegistryValid,
     preservedFailedAttempts: failedAttempts.attempts,
+    failedAttemptRegistryInvalid: failedAttempts.invalid,
+    failedAttemptRegistryError: failedAttempts.error,
     failedAttemptRegistryMissing: failedAttempts.missing,
   }, registrySha256);
   if (active.length === 0) {
