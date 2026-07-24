@@ -7,9 +7,10 @@
       "fromVersion": 7,
       "burnedVersions": [
         8,
-        9
+        9,
+        10
       ],
-      "toVersion": 10,
+      "toVersion": 11,
       "strategySha256": "41d00151cfce1a08f3edd5a7fd3fd3fe69c3a271a80a07f24888f566ea5e3646",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -18,9 +19,10 @@
       "purpose": "extraction",
       "fromVersion": 8,
       "burnedVersions": [
-        9
+        9,
+        10
       ],
-      "toVersion": 10,
+      "toVersion": 11,
       "strategySha256": "7fd0c208b00afb02c571430a165a31feb3f541d087502bce82a30f7aadd3694b",
       "sourceStrategySha256": "3ef41c63c73f8b20e2da8a0941b7898769daef38629d5691e943850dae0eeac1",
       "candidateStrategy": {
@@ -58,9 +60,10 @@
       "purpose": "discovery",
       "fromVersion": 5,
       "burnedVersions": [
-        6
+        6,
+        7
       ],
-      "toVersion": 7,
+      "toVersion": 8,
       "strategySha256": "fa28ca0a7fcc1f4490fc9a4e73dcb47e26ca5d09419eaed360b70e8e81796bc0",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -70,9 +73,10 @@
       "fromVersion": 4,
       "burnedVersions": [
         5,
-        6
+        6,
+        7
       ],
-      "toVersion": 7,
+      "toVersion": 8,
       "strategySha256": "34619e078ce2d982f935fc7ea64cd0ea0d418fc454c0620399a0c06ae854d9f1",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -81,9 +85,10 @@
       "purpose": "discovery",
       "fromVersion": 7,
       "burnedVersions": [
-        8
+        8,
+        9
       ],
-      "toVersion": 9,
+      "toVersion": 10,
       "strategySha256": "9ad19beacc9fe726bd77f3ebf69cd6a6fdad4788865667ba1ff05d828bb7dbd8",
       "sourceStrategySha256": "a9805aafb92461e69841a5204c07490ec026c84285d2fe3f4608af17b5ea558d",
       "candidateStrategy": {
@@ -185,9 +190,10 @@
       "purpose": "extraction",
       "fromVersion": 5,
       "burnedVersions": [
-        6
+        6,
+        7
       ],
-      "toVersion": 7,
+      "toVersion": 8,
       "strategySha256": "1f20f83d5f2497cbf5ee68bead5f97ef08057eb05ca822cb4e3880b1d9eab0c3",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },

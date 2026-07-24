@@ -50,6 +50,12 @@
       "strategySourceCommit": "efdeeee473b9a5ebdd44e9c695a9124262dbb390"
     },
     {
+      "path": "data/validation/attempts/pao-de-acucar-discovery-v9.json",
+      "fileSha256": "f3675e60fc0eddd6b46cb1b22916a7ea9999a7a00a2145c0358eb78ceb990560",
+      "receiptSha256": "40f709cb4594882830b3d9a817db491dfebcddf392c4ba6266d4417e82624835",
+      "strategySourceCommit": "b3bbff116534800fdfd8d8d63b6ab6dc80231e42"
+    },
+    {
       "path": "data/validation/attempts/st-marche-discovery-v7.json",
       "fileSha256": "28b9fda334d8fdc1020fbb61c961eb60125d69e1b04730ca7a99f7a131a02493",
       "receiptSha256": "45448c994d317f334fd152910f612eb1e163abc667df1800cc2f00cb70887a2a",

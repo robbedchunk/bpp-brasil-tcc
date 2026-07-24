@@ -450,7 +450,6 @@ function refKey(ref: ProductRef): string {
   return canonicalEvidenceJson({
     canonicalUrl: ref.canonicalUrl,
     externalId: ref.externalId,
-    sourceCategory: ref.sourceCategory,
   });
 }
 

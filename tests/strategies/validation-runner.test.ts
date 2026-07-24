@@ -274,14 +274,14 @@ describe("trusted live-host validation runner", () => {
       && /descriptive product text|title/iu.test(sample.outcome.failure.message))).toBe(true);
   });
 
-  it("binds API discovery samples to exact authoritative database references", async () => {
+  it("binds API discovery samples to authoritative product identity across category changes", async () => {
     const retailer = config("extra-mercado");
     const database = openDatabase(":memory:");
     databases.push(database);
     const refs = Array.from({ length: 30 }, (_value, index) => ({
       canonicalUrl: `https://www.extramercado.com.br/produto/${2_000 + index}/produto-${index}`,
       externalId: String(2_000 + index),
-      sourceCategory: "Alimentos",
+      sourceCategory: "Legacy category label",
     }));
     seed(database, retailer, refs);
     const fetch = async (): Promise<Response> => new Response(JSON.stringify({
@@ -449,13 +449,16 @@ describe("trusted live-host validation runner", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     const refs = Array.from({ length: 30 }, (_value, index) => ({
-      canonicalUrl: `https://marche.com.br/collections/mercearia/products/browser-product-${index}`,
+      canonicalUrl: `https://marche.com.br/products/browser-product-${index}`,
       externalId: null,
       sourceCategory: "acougue",
     }));
     seed(database, retailer, refs);
     const html = `<!doctype html><html><body>${refs.map((ref) =>
-      `<a data-discover="true" href="${ref.canonicalUrl}">Product</a>`).join("")}`
+      `<a data-discover="true" href="${ref.canonicalUrl.replace(
+        "/products/",
+        "/collections/mercearia/products/",
+      )}">Product</a>`).join("")}`
       + `<iframe src="https://marche.com.br/evidence-decoy"></iframe></body></html>`;
     const fetch = async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
