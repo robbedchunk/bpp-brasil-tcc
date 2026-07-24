@@ -101,6 +101,7 @@ function run(
   overrides: {
     batchSize?: number;
     concurrency?: number;
+    minimumBatchSize?: number;
     alertSink?: { send(event: AlertEvent): Promise<void> };
     when?: string;
   } = {},
@@ -108,6 +109,9 @@ function run(
   return classifyNewProducts({
     batchSize: overrides.batchSize ?? 40,
     concurrency: overrides.concurrency ?? 1,
+    ...(overrides.minimumBatchSize === undefined
+      ? {}
+      : { minimumBatchSize: overrides.minimumBatchSize }),
     confidenceThreshold: 0.8,
     version: 1,
   }, {
@@ -236,6 +240,20 @@ describe("adaptive batch split on shape failure", () => {
     expect(MIN_ADAPTIVE_BATCH_SIZE).toBe(10);
     expect(planClassificationBatches(products, new Map(), 40)
       .map((batch) => batch.length)).toEqual([24]);
+  });
+
+  it("allows an explicit operator floor below the nightly default", () => {
+    const products = Array.from({ length: 10 }, (_, index) => ({
+      id: `p-${index}`,
+      retailer_id: "retailer",
+      title: "t",
+      brand: null,
+      source_category: null,
+    })) satisfies ClassificationProduct[];
+    const counts = new Map(products.map(({ id }) => [id, 2]));
+
+    expect(planClassificationBatches(products, counts, 10, 1)
+      .map((batch) => batch.length)).toEqual([2, 2, 2, 2, 2]);
   });
 
   it("keeps failure tiers in separate requests so healthy products are not dragged into a failing set", () => {

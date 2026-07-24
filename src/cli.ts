@@ -644,6 +644,11 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       },
       1,
     )
+    .option(
+      "--minimum-batch-size <count>",
+      "adaptive retry floor (maximum is --batch-size)",
+      positiveLimitAtTwoThousand,
+    )
     .option("--version <number>", "append-only classification version", classificationVersion, 1)
     .option(
       "--confidence-threshold <number>",
@@ -657,6 +662,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .action(async (options: {
       batchSize: number;
       concurrency: number;
+      minimumBatchSize?: number;
       version: number;
       confidenceThreshold: number;
       dryRun?: boolean;
@@ -695,6 +701,9 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           const summary = await classifyNewProducts({
             batchSize: options.batchSize,
             concurrency: options.concurrency,
+            ...(options.minimumBatchSize === undefined
+              ? {}
+              : { minimumBatchSize: options.minimumBatchSize }),
             version: options.version,
             confidenceThreshold: options.confidenceThreshold,
             dryRun: options.dryRun === true,

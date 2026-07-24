@@ -28,6 +28,7 @@ import type {
 export interface ClassifyNewProductsOptions {
   batchSize?: number;
   concurrency?: number;
+  minimumBatchSize?: number;
   version: number;
   confidenceThreshold: number;
   dryRun?: boolean;
@@ -644,6 +645,11 @@ export async function classifyNewProducts(
     options.concurrency ?? 1,
     MAX_RUN_SHAPE_FAILURES,
   );
+  const minimumBatchSize = positiveInteger(
+    "minimumBatchSize",
+    options.minimumBatchSize ?? Math.min(MIN_ADAPTIVE_BATCH_SIZE, batchSize),
+    batchSize,
+  );
   const version = positiveInteger("version", options.version, 1_000_000);
   const threshold = confidence(options.confidenceThreshold);
   const dryRun = options.dryRun === true;
@@ -737,7 +743,12 @@ export async function classifyNewProducts(
     .filter((product) => quarantined.has(product.id))
     .map((product) => product.id);
   const batchable = products.filter((product) => !quarantined.has(product.id));
-  const plan = planClassificationBatches(batchable, failureCounts, batchSize);
+  const plan = planClassificationBatches(
+    batchable,
+    failureCounts,
+    batchSize,
+    minimumBatchSize,
+  );
 
   let batches = 0;
   let classified = 0;
