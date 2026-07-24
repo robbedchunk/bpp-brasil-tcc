@@ -4,64 +4,64 @@
     {
       "retailerId": "carrefour",
       "purpose": "discovery",
-      "fromVersion": 6,
-      "toVersion": 7,
+      "fromVersion": 7,
+      "toVersion": 8,
       "strategySha256": "41d00151cfce1a08f3edd5a7fd3fd3fe69c3a271a80a07f24888f566ea5e3646",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "carrefour",
       "purpose": "extraction",
-      "fromVersion": 5,
-      "toVersion": 6,
-      "strategySha256": "ce0757d400c9f63704765d57d244a45eb3819d4589bf7ebed269249ea102999b",
+      "fromVersion": 8,
+      "toVersion": 9,
+      "strategySha256": "3ef41c63c73f8b20e2da8a0941b7898769daef38629d5691e943850dae0eeac1",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "extra-mercado",
       "purpose": "discovery",
-      "fromVersion": 3,
-      "toVersion": 4,
-      "strategySha256": "8587a4d7fe76ed493dcda443532dabfbdd43fd9f2d2acfb044e6ea60086f4077",
+      "fromVersion": 5,
+      "toVersion": 6,
+      "strategySha256": "fa28ca0a7fcc1f4490fc9a4e73dcb47e26ca5d09419eaed360b70e8e81796bc0",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "extra-mercado",
       "purpose": "extraction",
-      "fromVersion": 3,
-      "toVersion": 4,
+      "fromVersion": 4,
+      "toVersion": 5,
       "strategySha256": "34619e078ce2d982f935fc7ea64cd0ea0d418fc454c0620399a0c06ae854d9f1",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "pao-de-acucar",
       "purpose": "discovery",
-      "fromVersion": 5,
-      "toVersion": 6,
+      "fromVersion": 7,
+      "toVersion": 8,
       "strategySha256": "a9805aafb92461e69841a5204c07490ec026c84285d2fe3f4608af17b5ea558d",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "pao-de-acucar",
       "purpose": "extraction",
-      "fromVersion": 3,
-      "toVersion": 4,
+      "fromVersion": 5,
+      "toVersion": 6,
       "strategySha256": "1f20f83d5f2497cbf5ee68bead5f97ef08057eb05ca822cb4e3880b1d9eab0c3",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "st-marche",
       "purpose": "discovery",
-      "fromVersion": 5,
-      "toVersion": 6,
+      "fromVersion": 6,
+      "toVersion": 7,
       "strategySha256": "4df9fce7754d90ea9793b304705639b0040e26b6344b6dafc514f179c1c4dd14",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
     {
       "retailerId": "st-marche",
       "purpose": "extraction",
-      "fromVersion": 4,
-      "toVersion": 5,
+      "fromVersion": 5,
+      "toVersion": 6,
       "strategySha256": "47a06706867359b36c399e230e6996474e7cef07e4de11b8ffdf4e931600e76b",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     }

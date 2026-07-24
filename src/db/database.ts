@@ -87,6 +87,10 @@ const CLASSIFICATION_SHAPE_RECOVERY_SQL = readFileSync(
   new URL("./migrations/018_classification_shape_recovery.sql", import.meta.url),
   "utf8",
 );
+const CLASSIFICATION_MEASUREMENT_SCOPE_SQL = readFileSync(
+  new URL("./migrations/019_classification_measurement_scope.sql", import.meta.url),
+  "utf8",
+);
 
 export interface StrategyValidationEvidenceInsert {
   strategy_id: string;
@@ -371,6 +375,11 @@ const MIGRATIONS = [
     version: 18,
     name: "classification_shape_recovery",
     sql: CLASSIFICATION_SHAPE_RECOVERY_SQL,
+  },
+  {
+    version: 19,
+    name: "classification_measurement_scope",
+    sql: CLASSIFICATION_MEASUREMENT_SCOPE_SQL,
   },
 ] as const;
 

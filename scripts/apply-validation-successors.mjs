@@ -94,7 +94,6 @@ function activeStrategy(database, plan, strategy, configState, evidence, evidenc
     throw new Error(`${plan.retailerId}/${plan.purpose} must have exactly one active DB strategy`);
   }
   const row = rows[0];
-  const fromId = `${plan.retailerId}-${plan.purpose}-v${plan.fromVersion}`;
   const targetId = `${plan.retailerId}-${plan.purpose}-v${plan.toVersion}`;
   const target = database.prepare(`
     SELECT strategy_json AS strategyJson, active, validated_at AS validatedAt,
@@ -105,7 +104,11 @@ function activeStrategy(database, plan, strategy, configState, evidence, evidenc
   const targetEvidence = database.prepare(
     "SELECT 1 FROM strategy_validation_evidence WHERE strategy_id = ?",
   ).get(targetId);
-  if (row.id === fromId) {
+  // A trusted generated activation may use an opaque immutable strategy ID.
+  // Version, retailer, purpose, and strategy bytes are the lifecycle identity;
+  // requiring a config-style ID here would strand that valid active row when
+  // the validator trust anchor rotates.
+  if (row.version === plan.fromVersion) {
     if (
       row.version !== plan.fromVersion
       || row.strategyJson !== JSON.stringify(strategy)
@@ -137,10 +140,12 @@ function activeStrategy(database, plan, strategy, configState, evidence, evidenc
            validated_at AS validatedAt
     FROM strategy_validation_evidence WHERE strategy_id = ?
   `).get(targetId);
-  const predecessor = database.prepare(`
+  const predecessors = database.prepare(`
     SELECT strategy_json AS strategyJson, active, retired_at AS retiredAt
-    FROM strategies WHERE id = ?
-  `).get(fromId);
+    FROM strategies
+    WHERE retailer_id = ? AND purpose = ? AND version = ?
+  `).all(plan.retailerId, plan.purpose, plan.fromVersion);
+  const predecessor = predecessors.length === 1 ? predecessors[0] : undefined;
   if (
     target.strategyJson !== JSON.stringify(strategy)
     || target.active !== 1

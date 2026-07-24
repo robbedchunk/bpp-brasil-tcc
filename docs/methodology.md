@@ -97,8 +97,13 @@ raw bodies and product URLs are never logged.
 
 New products are mapped to one of the 84 in-scope São Paulo food-at-home IPCA
 sub-items using title, brand, and source category. Evidence is versioned.
-Confidence below 0.8 produces an explicit unclassified result; it remains in
-coverage counts and is excluded from index aggregation. A stratified review
+Discovery's category rule admits the broader plausible food-at-home catalog.
+Classification then narrows the measurement frame: a high-confidence explicit
+null whose rationale does not call for human judgment is recorded as an
+append-only `outside_ipca_measurement_frame` decision and removed from the
+coverage denominator. Low-confidence suggestions and ambiguous, insufficient,
+unclear, uncertain, generic, unknown, or review-required nulls remain in
+coverage counts and are excluded from index aggregation. A stratified review
 sample supports a separate thesis precision check. Classification eligibility
 starts only after a successful observation supplies a descriptive title; a
 numeric external ID, URL slug, or pending-title placeholder is never sent to the

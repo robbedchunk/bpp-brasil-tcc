@@ -429,3 +429,18 @@
   validator digest, and config-only CEP transitions form an append-only public
   recovery chain. Challenge selection, validation threshold, seller binding,
   and authoritative catalog references were not weakened.
+
+## 2026-07-24 — Classification measurement-frame semantics
+
+- Discovery's category-first rule continues to admit a broad, plausible
+  food-at-home catalog. That catalog is not identical to the 84 official São
+  Paulo IPCA subitems the experimental index can represent.
+- A high-confidence explicit null classification now narrows `products.in_scope`
+  only when its rationale does not request human judgment. The exact
+  classification, rationale, confidence, and policy version are retained in
+  append-only `classification_scope_decisions`; rediscovery cannot silently
+  restore an excluded row.
+- Low-confidence suggestions and ambiguous, insufficient, unclear, uncertain,
+  generic, unknown, or review-required nulls remain in the coverage
+  denominator. This prevents the acceptance ratio from being improved by
+  discarding unresolved classifications.

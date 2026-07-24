@@ -12,6 +12,10 @@ import {
 } from "../ops/budget.js";
 import { DEFAULT_CLASSIFICATION_MODEL } from "./openai-provider.js";
 import { ClassificationProviderError } from "./provider.js";
+import {
+  reconcileClassificationMeasurementScope,
+  type ClassificationScopeReconciliation,
+} from "./measurement-scope.js";
 import type {
   AllowedIpcaItem,
   ClassificationAttemptEvidence,
@@ -67,6 +71,7 @@ export interface ClassificationRunSummary {
   quarantinedProductIds: string[];
   failureSpendRunUsd: number;
   failureSpendMonthUsd: number;
+  scopeReconciliation: ClassificationScopeReconciliation;
 }
 
 /** Provider failure kinds where the response itself violated the
@@ -637,6 +642,19 @@ export async function classifyNewProducts(
   const threshold = confidence(options.confidenceThreshold);
   const dryRun = options.dryRun === true;
   const now = dependencies.now ?? (() => new Date());
+  const scopeReconciliation = dryRun
+    ? {
+        version,
+        considered: 0,
+        excluded: 0,
+        retainedForReview: 0,
+        policyVersion: "ipca-84-classification-scope-v1" as const,
+      }
+    : reconcileClassificationMeasurementScope(dependencies.database, {
+        version,
+        confidenceThreshold: threshold,
+        decidedAt: now().toISOString(),
+      });
   const products = listEligibleProducts(dependencies.database, version);
   const allowedItems = listItems(dependencies.database);
   const plannedBatches = Math.ceil(products.length / batchSize);
@@ -661,6 +679,7 @@ export async function classifyNewProducts(
     quarantinedProductIds: [] as string[],
     failureSpendRunUsd: 0,
     failureSpendMonthUsd: classificationFailureSpendMonthUsd(dependencies.database, now()),
+    scopeReconciliation,
   };
   if (dryRun) return { ...base, status: "dry_run" };
   if (products.length === 0) return { ...base, status: "completed" };

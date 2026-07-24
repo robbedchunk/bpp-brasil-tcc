@@ -21,6 +21,7 @@
 | `strategy_validation_evidence` | Immutable active-strategy receipt digest, sample-set hash, executor identity, attestation key ID, and exact 30-sample aggregate. |
 | `products` | Canonical retailer product identity and current classification pointer. |
 | `product_scope_decisions` | Immutable per-discovery-run food-at-home decision, category/path evidence, reason, and rule version. |
+| `classification_scope_decisions` | Immutable high-confidence exclusion from the narrower 84-subitem IPCA measurement frame, bound to the exact null classification and policy version. |
 | `catalog_snapshots` | Immutable discovery completion evidence and disappeared-product count; only verified-complete snapshots may record disappearances. |
 | `observations` | Collected title/unit/availability and regular/promo cent values. |
 | `runs` | Per-retailer/stage operational counts and terminal state. |

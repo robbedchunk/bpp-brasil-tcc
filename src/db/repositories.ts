@@ -772,7 +772,13 @@ export function upsertDiscoveredProduct(
        ON CONFLICT (retailer_id, canonical_url) DO UPDATE SET
          retailer_product_id = COALESCE(excluded.retailer_product_id, products.retailer_product_id),
          source_category = COALESCE(excluded.source_category, products.source_category),
-         in_scope = excluded.in_scope,
+         in_scope = CASE
+           WHEN EXISTS (
+             SELECT 1 FROM classification_scope_decisions
+             WHERE classification_scope_decisions.product_id = products.id
+           ) THEN 0
+           ELSE excluded.in_scope
+         END,
          last_seen = excluded.last_seen,
          active = 1,
          updated_at = excluded.last_seen`,
