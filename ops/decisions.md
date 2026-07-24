@@ -444,3 +444,8 @@
   generic, unknown, or review-required nulls remain in the coverage
   denominator. This prevents the acceptance ratio from being improved by
   discarding unresolved classifications.
+- Successor validation never reuses an already signed version number.
+  Carrefour discovery v8, Extra extraction v5, and St Marché extraction v6
+  were valid but never activated under the previous trust anchor, so the
+  current successor declaration preserves them as occupied and advances to
+  v9, v6, and v7 respectively.

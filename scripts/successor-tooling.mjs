@@ -50,6 +50,7 @@ const PLAN_KEYS = [
   "strategySha256",
   "toVersion",
 ].sort();
+const PLAN_WITH_BURNED_KEYS = [...PLAN_KEYS, "burnedVersions"].sort();
 const RECOVERY_PARENT_KEYS = [
   "attestationKeyId",
   "planFileSha256",
@@ -156,9 +157,14 @@ export function parseSuccessorPlan(input) {
     throw new Error("Successor plan must be schema 1 with exactly eight entries");
   }
   const plans = input.plans.map((candidate, index) => {
-    if (!exactKeys(candidate, PLAN_KEYS)) {
+    const hasBurnedVersions = candidate !== null
+      && typeof candidate === "object"
+      && !Array.isArray(candidate)
+      && Object.hasOwn(candidate, "burnedVersions");
+    if (!exactKeys(candidate, hasBurnedVersions ? PLAN_WITH_BURNED_KEYS : PLAN_KEYS)) {
       throw new Error(`Successor plan entry ${index + 1} has unexpected fields`);
     }
+    const burnedVersions = hasBurnedVersions ? candidate.burnedVersions : [];
     if (
       typeof candidate.retailerId !== "string"
       || !RETAILER_ID.test(candidate.retailerId)
@@ -166,7 +172,11 @@ export function parseSuccessorPlan(input) {
       || !Number.isSafeInteger(candidate.fromVersion)
       || candidate.fromVersion <= 0
       || !Number.isSafeInteger(candidate.toVersion)
-      || candidate.toVersion !== candidate.fromVersion + 1
+      || !Array.isArray(burnedVersions)
+      || burnedVersions.some((version, burnedIndex) =>
+        !Number.isSafeInteger(version)
+        || version !== candidate.fromVersion + burnedIndex + 1)
+      || candidate.toVersion !== candidate.fromVersion + burnedVersions.length + 1
       || typeof candidate.strategySha256 !== "string"
       || !SHA256.test(candidate.strategySha256)
       || candidate.strategySha256 === "0".repeat(64)
@@ -176,7 +186,10 @@ export function parseSuccessorPlan(input) {
     ) {
       throw new Error(`Successor plan entry ${index + 1} is malformed`);
     }
-    return { ...candidate };
+    return {
+      ...candidate,
+      ...(hasBurnedVersions ? { burnedVersions: [...burnedVersions] } : {}),
+    };
   });
   const identities = plans.map(({ retailerId, purpose }) => `${retailerId}/${purpose}`);
   if (new Set(identities).size !== identities.length) {

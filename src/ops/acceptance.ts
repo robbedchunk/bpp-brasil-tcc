@@ -1633,13 +1633,50 @@ export function sourceCommitDeclaresStrategyVersion(
         const matches = plan.plans.filter((candidate) => {
           if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
           const value = candidate as Record<string, unknown>;
-          return exactObjectKeys(value, [
+          const hasBurnedVersions = Object.hasOwn(value, "burnedVersions");
+          const keys = [
             "fromVersion", "purpose", "reason", "retailerId", "strategySha256", "toVersion",
-          ])
+            ...(hasBurnedVersions ? ["burnedVersions"] : []),
+          ];
+          const burnedVersions = hasBurnedVersions ? value.burnedVersions : [];
+          return exactObjectKeys(value, keys)
             && value.retailerId === input.retailerId
             && value.purpose === input.purpose
             && value.fromVersion === input.version - 1
             && value.toVersion === input.version
+            && Array.isArray(burnedVersions)
+            && burnedVersions.length === 0
+            && value.strategySha256 === strategySha256
+            && typeof value.reason === "string" && value.reason.length > 0;
+        });
+        if (matches.length === 1) return true;
+      }
+    }
+    if (historicalConfig.strategyVersions[input.purpose] < input.version - 1
+      && strategyEvidenceSha256(historicalConfig[input.purpose]) === strategySha256) {
+      const plan = committedJson(root, sourceCommit, SUCCESSOR_PLAN_PATH) as {
+        schemaVersion?: unknown;
+        plans?: unknown;
+      };
+      if (plan.schemaVersion === 1 && Array.isArray(plan.plans)) {
+        const matches = plan.plans.filter((candidate) => {
+          if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return false;
+          const value = candidate as Record<string, unknown>;
+          const burnedVersions = value.burnedVersions;
+          return exactObjectKeys(value, [
+            "burnedVersions", "fromVersion", "purpose", "reason", "retailerId",
+            "strategySha256", "toVersion",
+          ])
+            && value.retailerId === input.retailerId
+            && value.purpose === input.purpose
+            && value.fromVersion === historicalConfig.strategyVersions[input.purpose]
+            && value.toVersion === input.version
+            && Array.isArray(burnedVersions)
+            && burnedVersions.every((version, index) =>
+              Number.isSafeInteger(version)
+              && version === (value.fromVersion as number) + index + 1)
+            && input.version
+              === (value.fromVersion as number) + burnedVersions.length + 1
             && value.strategySha256 === strategySha256
             && typeof value.reason === "string" && value.reason.length > 0;
         });

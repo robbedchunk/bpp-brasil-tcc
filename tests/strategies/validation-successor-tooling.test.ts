@@ -48,6 +48,7 @@ const plan = JSON.parse(readFileSync("data/validation/successor-plans.json", "ut
     retailerId: string;
     purpose: "discovery" | "extraction";
     fromVersion: number;
+    burnedVersions?: number[];
     toVersion: number;
   }>;
 };
