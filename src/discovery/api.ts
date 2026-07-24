@@ -113,6 +113,12 @@ function optionalString(value: unknown): string | null {
   return rendered.length === 0 ? null : rendered;
 }
 
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
 function productRef(
   item: unknown,
   strategy: ApiDiscoveryStrategy,
@@ -317,6 +323,30 @@ export async function* discoverApi(
         }
         seenCursors.add(next);
         cursor = next;
+      } else if (strategy.pagination.kind === "page") {
+        if (strategy.pagination.pageCountPath === undefined) {
+          if (items.length < strategy.pagination.pageSize) {
+            segmentExhausted = true;
+            break;
+          }
+        } else {
+          const pageCount = positiveInteger(jsonPathValue(
+            document,
+            strategy.pagination.pageCountPath,
+          ));
+          if (pageCount === null) {
+            throw new DiscoveryFailureError({
+              category: "parse",
+              message: `Discovery page count path ${strategy.pagination.pageCountPath} was not a positive integer`,
+              responded: true,
+              statusCode: fetched.response.status,
+            });
+          }
+          if (attempt + 1 >= pageCount) {
+            segmentExhausted = true;
+            break;
+          }
+        }
       } else if (items.length < strategy.pagination.pageSize) {
         segmentExhausted = true;
         break;

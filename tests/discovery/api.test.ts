@@ -67,6 +67,36 @@ describe("API discovery", () => {
     expect(refs).toHaveLength(2);
   });
 
+  it("uses an explicit page count when intermediate API pages are sparse", async () => {
+    const strategy = ApiDiscoveryStrategySchema.parse({
+      ...failureStrategy,
+      pagination: {
+        kind: "page",
+        start: 1,
+        pageSize: 3,
+        maxPages: 5,
+        pageCountPath: "$.totalPages",
+      },
+    });
+    let requests = 0;
+    const refs = await collect(executeDiscovery(strategy, {
+      fetch: async () => {
+        requests += 1;
+        return new Response(JSON.stringify({
+          totalPages: 3,
+          items: [{ url: `/produto/${requests}` }],
+        }));
+      },
+    }));
+
+    expect(requests).toBe(3);
+    expect(refs.map(({ canonicalUrl }) => canonicalUrl)).toEqual([
+      "https://shop.test/produto/1",
+      "https://shop.test/produto/2",
+      "https://shop.test/produto/3",
+    ]);
+  });
+
   it("invokes the caller request gate before every API page", async () => {
     let page = 0;
     let gated = 0;

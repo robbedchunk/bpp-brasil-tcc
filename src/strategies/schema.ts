@@ -576,6 +576,7 @@ export const ApiPaginationSchema = z.discriminatedUnion("kind", [
       step: z.number().int().min(1).default(1),
       pageSize: z.number().int().min(1).max(1_000),
       maxPages: MaxPagesSchema,
+      pageCountPath: JsonPathSchema.optional(),
     })
     .strict(),
   z
