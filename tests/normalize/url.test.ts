@@ -43,6 +43,16 @@ describe("canonicalizeRetailerUrl", () => {
     ).toBe("https://loja.test/produto/1?sku=10");
   });
 
+  it("removes Shopify collection context from product identity URLs", () => {
+    expect(
+      canonicalizeRetailerUrl(
+        "https://loja.test/collections/mercearia/products/arroz-1kg?variant=2",
+        "https://loja.test",
+        ["loja.test"],
+      ),
+    ).toBe("https://loja.test/products/arroz-1kg?variant=2");
+  });
+
   it("rejects URLs outside the domain allowlist", () => {
     expect(() =>
       canonicalizeRetailerUrl(

@@ -20,6 +20,12 @@
       "strategySourceCommit": "0b7fdb77d6f593e27a66b8aec42d55d849f2e226"
     },
     {
+      "path": "data/validation/attempts/carrefour-extraction-v9.json",
+      "fileSha256": "7a62275215f1bdda1b7829b7490d4d67341ccc9dcd4da2c225403d6040a2b1ea",
+      "receiptSha256": "326fbbe1467beac38bfebb5d3fb8b6edd7da3c9f3002f61c7ef5285f4c45631d",
+      "strategySourceCommit": "efdeeee473b9a5ebdd44e9c695a9124262dbb390"
+    },
+    {
       "path": "data/validation/attempts/extra-mercado-discovery-v4.json",
       "fileSha256": "063cb9849adfcdc222caa65105fd6c51669898c3aa7e5dc59dad6aebaa116fa7",
       "receiptSha256": "0d96e0f3cd9eb003bfef7fbf8985f586cad5ffeb00349d0d6dfe1e60167178c0",
@@ -36,6 +42,18 @@
       "fileSha256": "791cf1b413cf1f8bd1ce62476837bcf0bfea069b7e40c2aaa7f63f1b53a27438",
       "receiptSha256": "6110e2c3d7d8abdabdbe02a8209fe14de8d18b5539c2d029c05e8062fd37794e",
       "strategySourceCommit": "18635466395c9b2313123186f77e3a8ca8bcbae6"
+    },
+    {
+      "path": "data/validation/attempts/pao-de-acucar-discovery-v8.json",
+      "fileSha256": "d4f8d68abc75fb96897615f4e3d3b4e4febbf2d1fa5d48d178162aaf08aceb7c",
+      "receiptSha256": "72c258183259e403771650aa2a679588c839ef6d35e1a9a33daf019da0215ed6",
+      "strategySourceCommit": "efdeeee473b9a5ebdd44e9c695a9124262dbb390"
+    },
+    {
+      "path": "data/validation/attempts/st-marche-discovery-v7.json",
+      "fileSha256": "28b9fda334d8fdc1020fbb61c961eb60125d69e1b04730ca7a99f7a131a02493",
+      "receiptSha256": "45448c994d317f334fd152910f612eb1e163abc667df1800cc2f00cb70887a2a",
+      "strategySourceCommit": "efdeeee473b9a5ebdd44e9c695a9124262dbb390"
     }
   ]
 }

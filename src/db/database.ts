@@ -91,6 +91,10 @@ const CLASSIFICATION_MEASUREMENT_SCOPE_SQL = readFileSync(
   new URL("./migrations/019_classification_measurement_scope.sql", import.meta.url),
   "utf8",
 );
+const PRODUCT_URL_IDENTITY_SQL = readFileSync(
+  new URL("./migrations/020_product_url_identity.sql", import.meta.url),
+  "utf8",
+);
 
 export interface StrategyValidationEvidenceInsert {
   strategy_id: string;
@@ -380,6 +384,11 @@ const MIGRATIONS = [
     version: 19,
     name: "classification_measurement_scope",
     sql: CLASSIFICATION_MEASUREMENT_SCOPE_SQL,
+  },
+  {
+    version: 20,
+    name: "product_url_identity",
+    sql: PRODUCT_URL_IDENTITY_SQL,
   },
 ] as const;
 

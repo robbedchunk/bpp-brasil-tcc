@@ -6,9 +6,10 @@
       "purpose": "discovery",
       "fromVersion": 7,
       "burnedVersions": [
-        8
+        8,
+        9
       ],
-      "toVersion": 9,
+      "toVersion": 10,
       "strategySha256": "41d00151cfce1a08f3edd5a7fd3fd3fe69c3a271a80a07f24888f566ea5e3646",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -16,17 +17,50 @@
       "retailerId": "carrefour",
       "purpose": "extraction",
       "fromVersion": 8,
-      "burnedVersions": [],
-      "toVersion": 9,
-      "strategySha256": "3ef41c63c73f8b20e2da8a0941b7898769daef38629d5691e943850dae0eeac1",
-      "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
+      "burnedVersions": [
+        9
+      ],
+      "toVersion": 10,
+      "strategySha256": "7fd0c208b00afb02c571430a165a31feb3f541d087502bce82a30f7aadd3694b",
+      "sourceStrategySha256": "3ef41c63c73f8b20e2da8a0941b7898769daef38629d5691e943850dae0eeac1",
+      "candidateStrategy": {
+        "schemaVersion": 1,
+        "allowedDomains": [
+          "carrefourbrfood.vtexcommercestable.com.br",
+          "mercado.carrefour.com.br"
+        ],
+        "purpose": "extraction",
+        "tier": "api",
+        "request": {
+          "method": "GET",
+          "url": "https://carrefourbrfood.vtexcommercestable.com.br/api/catalog_system/pub/products/search",
+          "headers": {
+            "accept": "application/json"
+          },
+          "query": {
+            "fq": "productId:{externalId}",
+            "sc": 2
+          }
+        },
+        "fields": {
+          "title": "$[0].productName",
+          "brand": "$[0].brand",
+          "price": "$[0].items[0].sellers[0].commertialOffer.Price",
+          "promoPrice": "$[0].items[0].sellers[0].commertialOffer.PromotionPrice",
+          "unit": "$[0].items[0].measurementUnit",
+          "availability": "$[0].items[0].sellers[0].commertialOffer.IsAvailable"
+        }
+      },
+      "reason": "Remove the stale regional segment whose live offer binding returned zero prices for otherwise current catalog products."
     },
     {
       "retailerId": "extra-mercado",
       "purpose": "discovery",
       "fromVersion": 5,
-      "burnedVersions": [],
-      "toVersion": 6,
+      "burnedVersions": [
+        6
+      ],
+      "toVersion": 7,
       "strategySha256": "fa28ca0a7fcc1f4490fc9a4e73dcb47e26ca5d09419eaed360b70e8e81796bc0",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -35,9 +69,10 @@
       "purpose": "extraction",
       "fromVersion": 4,
       "burnedVersions": [
-        5
+        5,
+        6
       ],
-      "toVersion": 6,
+      "toVersion": 7,
       "strategySha256": "34619e078ce2d982f935fc7ea64cd0ea0d418fc454c0620399a0c06ae854d9f1",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -45,17 +80,114 @@
       "retailerId": "pao-de-acucar",
       "purpose": "discovery",
       "fromVersion": 7,
-      "burnedVersions": [],
-      "toVersion": 8,
-      "strategySha256": "a9805aafb92461e69841a5204c07490ec026c84285d2fe3f4608af17b5ea558d",
-      "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
+      "burnedVersions": [
+        8
+      ],
+      "toVersion": 9,
+      "strategySha256": "9ad19beacc9fe726bd77f3ebf69cd6a6fdad4788865667ba1ff05d828bb7dbd8",
+      "sourceStrategySha256": "a9805aafb92461e69841a5204c07490ec026c84285d2fe3f4608af17b5ea558d",
+      "candidateStrategy": {
+        "schemaVersion": 1,
+        "allowedDomains": [
+          "api.vendas.gpa.digital",
+          "www.paodeacucar.com"
+        ],
+        "purpose": "discovery",
+        "tier": "api",
+        "request": {
+          "method": "POST",
+          "url": "https://api.vendas.gpa.digital/pa/search/category-page",
+          "headers": {
+            "accept": "application/json"
+          },
+          "body": {
+            "partner": "linx",
+            "page": "{page}",
+            "sortBy": "descPrice",
+            "resultsPerPage": 36,
+            "multiCategory": "{segment}",
+            "storeId": 61,
+            "department": "ecom",
+            "customerPlus": true,
+            "filters": []
+          }
+        },
+        "itemsPath": "$.products",
+        "refFields": {
+          "url": "$.urlDetails",
+          "externalId": "$.id"
+        },
+        "pagination": {
+          "kind": "page",
+          "start": 1,
+          "step": 1,
+          "pageSize": 36,
+          "maxPages": 10
+        },
+        "segments": [
+          {
+            "value": "alimentos|alimentos-congelados",
+            "sourceCategory": "Alimentos Congelados",
+            "maxProducts": 288
+          },
+          {
+            "value": "alimentos|basico-da-despensa",
+            "sourceCategory": "Básico da Despensa",
+            "maxProducts": 252
+          },
+          {
+            "value": "alimentos|acougue",
+            "sourceCategory": "Açougue",
+            "maxProducts": 360
+          },
+          {
+            "value": "alimentos|padaria",
+            "sourceCategory": "Padaria",
+            "maxProducts": 288
+          },
+          {
+            "value": "alimentos|alimentos-refrigerados",
+            "sourceCategory": "Alimentos Refrigerados",
+            "maxProducts": 288
+          },
+          {
+            "value": "alimentos|hortifruti",
+            "sourceCategory": "Hortifruti",
+            "maxProducts": 36
+          },
+          {
+            "value": "alimentos|mercearia-salgada",
+            "sourceCategory": "Mercearia Salgada",
+            "maxProducts": 72
+          },
+          {
+            "value": "bebidas|vinhos",
+            "sourceCategory": "Vinhos",
+            "maxProducts": 144
+          },
+          {
+            "value": "bebidas|cervejas",
+            "sourceCategory": "Cervejas",
+            "maxProducts": 180
+          },
+          {
+            "value": "bebidas|nao-alcoolicas",
+            "sourceCategory": "Bebidas Não Alcoólicas",
+            "maxProducts": 36
+          }
+        ],
+        "maxProducts": 1944
+      },
+      "reason": "Replace the broad high-price sweep with bounded food and beverage category slices that cover the measurement catalog."
     },
     {
       "retailerId": "pao-de-acucar",
       "purpose": "extraction",
       "fromVersion": 5,
-      "burnedVersions": [],
-      "toVersion": 6,
+      "burnedVersions": [
+        6
+      ],
+      "toVersion": 7,
       "strategySha256": "1f20f83d5f2497cbf5ee68bead5f97ef08057eb05ca822cb4e3880b1d9eab0c3",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     },
@@ -63,19 +195,36 @@
       "retailerId": "st-marche",
       "purpose": "discovery",
       "fromVersion": 6,
-      "burnedVersions": [],
-      "toVersion": 7,
-      "strategySha256": "4df9fce7754d90ea9793b304705639b0040e26b6344b6dafc514f179c1c4dd14",
-      "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
+      "burnedVersions": [
+        7
+      ],
+      "toVersion": 8,
+      "strategySha256": "4fe53728ed14c287a271ea2f1e52accbd54e950637bda8e1870c32ddf770ccb4",
+      "sourceStrategySha256": "4df9fce7754d90ea9793b304705639b0040e26b6344b6dafc514f179c1c4dd14",
+      "candidateStrategy": {
+        "schemaVersion": 1,
+        "allowedDomains": [
+          "marche.com.br"
+        ],
+        "purpose": "discovery",
+        "tier": "sitemap",
+        "sitemapUrls": [
+          "https://marche.com.br/sitemap.xml"
+        ],
+        "maxSitemaps": 10,
+        "maxProducts": 100000
+      },
+      "reason": "Use the retailer-declared product sitemap and canonical product identity instead of collection pagination."
     },
     {
       "retailerId": "st-marche",
       "purpose": "extraction",
       "fromVersion": 5,
       "burnedVersions": [
-        6
+        6,
+        7
       ],
-      "toVersion": 7,
+      "toVersion": 8,
       "strategySha256": "47a06706867359b36c399e230e6996474e7cef07e4de11b8ffdf4e931600e76b",
       "reason": "Re-attest the unchanged strategy after the audited validator trust-anchor rotation."
     }

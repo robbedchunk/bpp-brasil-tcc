@@ -51,6 +51,7 @@ const PLAN_KEYS = [
   "toVersion",
 ].sort();
 const PLAN_WITH_BURNED_KEYS = [...PLAN_KEYS, "burnedVersions"].sort();
+const PLAN_REPAIR_KEYS = ["candidateStrategy", "sourceStrategySha256"];
 const RECOVERY_PARENT_KEYS = [
   "attestationKeyId",
   "planFileSha256",
@@ -161,7 +162,15 @@ export function parseSuccessorPlan(input) {
       && typeof candidate === "object"
       && !Array.isArray(candidate)
       && Object.hasOwn(candidate, "burnedVersions");
-    if (!exactKeys(candidate, hasBurnedVersions ? PLAN_WITH_BURNED_KEYS : PLAN_KEYS)) {
+    const hasCandidateStrategy = candidate !== null
+      && typeof candidate === "object"
+      && !Array.isArray(candidate)
+      && Object.hasOwn(candidate, "candidateStrategy");
+    const expectedKeys = [
+      ...(hasBurnedVersions ? PLAN_WITH_BURNED_KEYS : PLAN_KEYS),
+      ...(hasCandidateStrategy ? PLAN_REPAIR_KEYS : []),
+    ].sort();
+    if (!exactKeys(candidate, expectedKeys)) {
       throw new Error(`Successor plan entry ${index + 1} has unexpected fields`);
     }
     const burnedVersions = hasBurnedVersions ? candidate.burnedVersions : [];
@@ -180,6 +189,15 @@ export function parseSuccessorPlan(input) {
       || typeof candidate.strategySha256 !== "string"
       || !SHA256.test(candidate.strategySha256)
       || candidate.strategySha256 === "0".repeat(64)
+      || (hasCandidateStrategy && (
+        candidate.candidateStrategy === null
+        || typeof candidate.candidateStrategy !== "object"
+        || Array.isArray(candidate.candidateStrategy)
+        || typeof candidate.sourceStrategySha256 !== "string"
+        || !SHA256.test(candidate.sourceStrategySha256)
+        || candidate.sourceStrategySha256 === candidate.strategySha256
+        || valueSha256(candidate.candidateStrategy) !== candidate.strategySha256
+      ))
       || typeof candidate.reason !== "string"
       || candidate.reason.trim() !== candidate.reason
       || candidate.reason.length === 0
@@ -189,6 +207,9 @@ export function parseSuccessorPlan(input) {
     return {
       ...candidate,
       ...(hasBurnedVersions ? { burnedVersions: [...burnedVersions] } : {}),
+      ...(hasCandidateStrategy
+        ? { candidateStrategy: structuredClone(candidate.candidateStrategy) }
+        : {}),
     };
   });
   const identities = plans.map(({ retailerId, purpose }) => `${retailerId}/${purpose}`);
@@ -380,7 +401,8 @@ export function inspectPlannedConfigs(root, plans, options = {}) {
           `${relativePath} ${plan.purpose} must be version ${allowedVersions.join(" or ")}`,
         );
       }
-      if (valueSha256(strategy) !== plan.strategySha256) {
+      const sourceStrategySha256 = plan.sourceStrategySha256 ?? plan.strategySha256;
+      if (valueSha256(strategy) !== sourceStrategySha256) {
         throw new Error(`${relativePath} ${plan.purpose} strategy hash differs from its plan`);
       }
       const currentReceipt = `data/validation/${retailerId}-${plan.purpose}-v${version}.json`;

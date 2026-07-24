@@ -50,6 +50,7 @@ const plan = JSON.parse(readFileSync("data/validation/successor-plans.json", "ut
     fromVersion: number;
     burnedVersions?: number[];
     toVersion: number;
+    candidateStrategy?: Record<string, unknown>;
   }>;
 };
 
@@ -248,6 +249,9 @@ describe("validation successor preparation", () => {
       expect(statSync(preparedPath).mode & 0o777).toBe(0o600);
       const expected = structuredClone(original);
       for (const entry of plan.plans.filter((candidate) => candidate.retailerId === retailerId)) {
+        if (entry.candidateStrategy !== undefined) {
+          expected[entry.purpose] = structuredClone(entry.candidateStrategy);
+        }
         expected.strategyVersions[entry.purpose] = entry.toVersion;
         expected.validation[entry.purpose].receiptPath =
           `data/validation/${retailerId}-${entry.purpose}-v${entry.toVersion}.json`;

@@ -33,6 +33,11 @@ function isAllowedHostname(hostname: string, allowedDomains: string[]): boolean 
   });
 }
 
+function normalizeCollectionScopedProductPath(pathname: string): string {
+  const match = /^\/collections\/[^/]+\/products\/(.+)$/u.exec(pathname);
+  return match?.[1] === undefined ? pathname : `/products/${match[1]}`;
+}
+
 export function canonicalizeRetailerUrl(
   input: string,
   baseUrl: string,
@@ -53,6 +58,7 @@ export function canonicalizeRetailerUrl(
   }
 
   url.hostname = normalizeHostname(url.hostname);
+  url.pathname = normalizeCollectionScopedProductPath(url.pathname);
   url.hash = "";
   for (const key of [...url.searchParams.keys()]) {
     if (TRACKING_QUERY_KEYS.has(key.toLowerCase())) {

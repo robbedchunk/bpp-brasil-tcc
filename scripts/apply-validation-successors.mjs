@@ -81,7 +81,15 @@ function assertRegularFile(path, label) {
   }
 }
 
-function activeStrategy(database, plan, strategy, configState, evidence, evidenceTools) {
+function activeStrategy(
+  database,
+  plan,
+  sourceStrategy,
+  targetStrategy,
+  configState,
+  evidence,
+  evidenceTools,
+) {
   const rows = database.prepare(`
     SELECT strategy.id, strategy.version, strategy.strategy_json AS strategyJson,
            strategy.active, strategy.retired_at AS retiredAt
@@ -111,11 +119,11 @@ function activeStrategy(database, plan, strategy, configState, evidence, evidenc
   if (row.version === plan.fromVersion) {
     if (
       row.version !== plan.fromVersion
-      || row.strategyJson !== JSON.stringify(strategy)
+      || row.strategyJson !== JSON.stringify(sourceStrategy)
       || row.active !== 1
       || row.retiredAt !== null
       || (target !== undefined && (
-        target.strategyJson !== JSON.stringify(strategy)
+        target.strategyJson !== JSON.stringify(targetStrategy)
         || target.active !== 0
         || target.validatedAt !== null
         || target.attempted !== 0
@@ -147,7 +155,7 @@ function activeStrategy(database, plan, strategy, configState, evidence, evidenc
   `).all(plan.retailerId, plan.purpose, plan.fromVersion);
   const predecessor = predecessors.length === 1 ? predecessors[0] : undefined;
   if (
-    target.strategyJson !== JSON.stringify(strategy)
+    target.strategyJson !== JSON.stringify(targetStrategy)
     || target.active !== 1
     || target.validatedAt !== evidence.validatedAt
     || target.attempted !== evidence.attempted
@@ -156,7 +164,7 @@ function activeStrategy(database, plan, strategy, configState, evidence, evidenc
     || target.activatedAt === null
     || target.retiredAt !== null
     || predecessor === undefined
-    || predecessor.strategyJson !== JSON.stringify(strategy)
+    || predecessor.strategyJson !== JSON.stringify(sourceStrategy)
     || predecessor.active !== 0
     || predecessor.retiredAt === null
     || immutable === undefined
@@ -752,7 +760,8 @@ export async function applyValidationSuccessors(options) {
     for (const plan of plans) {
       const configEntry = configs.find(({ retailerId }) => retailerId === plan.retailerId);
       if (configEntry === undefined) throw new Error(`Missing config for ${plan.retailerId}`);
-      const strategy = configEntry.config[plan.purpose];
+      const sourceStrategy = configEntry.config[plan.purpose];
+      const strategy = plan.candidateStrategy ?? sourceStrategy;
       const configState = configEntry.config.strategyVersions[plan.purpose] === plan.toVersion
         ? "applied"
         : "pending";
@@ -786,7 +795,15 @@ export async function applyValidationSuccessors(options) {
         expectedValidator: build.expectedValidator,
         outcome,
       });
-      activeStrategy(database, plan, strategy, configState, evidence, evidenceTools);
+      activeStrategy(
+        database,
+        plan,
+        sourceStrategy,
+        strategy,
+        configState,
+        evidence,
+        evidenceTools,
+      );
       if (outcome === "failure") {
         skipped.push({
           retailerId: plan.retailerId,
@@ -803,6 +820,7 @@ export async function applyValidationSuccessors(options) {
       const source = sourceByRetailer.get(plan.retailerId);
       if (desired === undefined) throw new Error(`Missing desired config for ${plan.retailerId}`);
       if (source === undefined) throw new Error(`Missing source config for ${plan.retailerId}`);
+      desired[plan.purpose] = structuredClone(strategy);
       desired.strategyVersions[plan.purpose] = plan.toVersion;
       desired.validation[plan.purpose] = appliedMetadata(
         plan,
@@ -813,6 +831,7 @@ export async function applyValidationSuccessors(options) {
       if (configState === "applied") {
         const expected = currentExpectedByRetailer.get(plan.retailerId);
         if (expected === undefined) throw new Error(`Missing current config for ${plan.retailerId}`);
+        expected[plan.purpose] = structuredClone(strategy);
         expected.strategyVersions[plan.purpose] = plan.toVersion;
         expected.validation[plan.purpose] = appliedMetadata(
           plan,
