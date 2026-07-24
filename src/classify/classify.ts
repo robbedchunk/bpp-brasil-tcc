@@ -27,6 +27,7 @@ import type {
 
 export interface ClassifyNewProductsOptions {
   batchSize?: number;
+  concurrency?: number;
   version: number;
   confidenceThreshold: number;
   dryRun?: boolean;
@@ -638,6 +639,11 @@ export async function classifyNewProducts(
   dependencies: ClassificationDependencies,
 ): Promise<ClassificationRunSummary> {
   const batchSize = positiveInteger("batchSize", options.batchSize ?? 50, 500);
+  const concurrency = positiveInteger(
+    "concurrency",
+    options.concurrency ?? 1,
+    MAX_RUN_SHAPE_FAILURES,
+  );
   const version = positiveInteger("version", options.version, 1_000_000);
   const threshold = confidence(options.confidenceThreshold);
   const dryRun = options.dryRun === true;
@@ -743,8 +749,17 @@ export async function classifyNewProducts(
   let estimatedCostUsd = new Decimal(0);
   let failureSpendRunUsd = new Decimal(0);
 
-  for (let batchIndex = 0; batchIndex < plan.length; batchIndex += 1) {
-    const productBatch = plan[batchIndex] ?? [];
+  interface ScheduledBatch {
+    inputBatch: ClassificationInput[];
+    reservationId: string;
+    providerResult: Promise<ClassificationBatchResult>;
+  }
+  const scheduled: ScheduledBatch[] = [];
+  let nextBatchIndex = 0;
+
+  const scheduleNext = (): boolean => {
+    const productBatch = plan[nextBatchIndex];
+    if (productBatch === undefined) return false;
     const inputBatch = productBatch.map((product) => inputFor(product, allowedItems));
     const projectedCost = budgetGuard.estimateModelCost({
       model,
@@ -762,15 +777,41 @@ export async function classifyNewProducts(
       },
     );
     if (!reservation.reserved || reservation.reservationId === null) {
-      budgetDenied = plan.slice(batchIndex)
+      budgetDenied = plan.slice(nextBatchIndex)
         .reduce((count, batch) => count + batch.length, 0);
-      break;
+      nextBatchIndex = plan.length;
+      return false;
     }
-    const reservationId = reservation.reservationId;
+    const providerResult = dependencies.provider!.classify(inputBatch);
+    // Attach a rejection handler immediately because a later scheduled request
+    // may finish before it becomes the next batch awaited by the settlement loop.
+    void providerResult.catch(() => undefined);
+    scheduled.push({
+      inputBatch,
+      reservationId: reservation.reservationId,
+      providerResult,
+    });
+    nextBatchIndex += 1;
+    return true;
+  };
+
+  const replenish = (): void => {
+    const failureCapacity = MAX_RUN_SHAPE_FAILURES - shapeFailedBatches;
+    const target = Math.min(concurrency, failureCapacity);
+    while (scheduled.length < target && scheduleNext()) {
+      // scheduleNext mutates the queue until the bounded target is full.
+    }
+  };
+
+  replenish();
+  while (scheduled.length > 0) {
+    const scheduledBatch = scheduled.shift();
+    if (scheduledBatch === undefined) break;
+    const { inputBatch, reservationId } = scheduledBatch;
 
     let providerResult: ClassificationBatchResult;
     try {
-      providerResult = await dependencies.provider.classify(inputBatch);
+      providerResult = await scheduledBatch.providerResult;
     } catch (error) {
       if (!(error instanceof ClassificationProviderError) || error.attempts.length === 0) {
         throw error;
@@ -825,8 +866,8 @@ export async function classifyNewProducts(
       estimatedCostUsd = estimatedCostUsd.plus(settledFailureCost);
       if (shapeFailedBatches >= MAX_RUN_SHAPE_FAILURES) {
         shapeFailurePaused = true;
-        break;
       }
+      replenish();
       continue;
     }
     try {
@@ -884,8 +925,8 @@ export async function classifyNewProducts(
       estimatedCostUsd = estimatedCostUsd.plus(settledFailureCost);
       if (shapeFailedBatches >= MAX_RUN_SHAPE_FAILURES) {
         shapeFailurePaused = true;
-        break;
       }
+      replenish();
       continue;
     }
     const actualCost = budgetGuard.estimateModelCost({
@@ -968,6 +1009,7 @@ export async function classifyNewProducts(
       failedAttemptCost = transaction.immediate();
       estimatedCostUsd = estimatedCostUsd.plus(failedAttemptCost);
       failureSpendRunUsd = failureSpendRunUsd.plus(failedAttemptCost);
+      replenish();
       continue;
     }
     unclassified += batchUnclassified;
@@ -975,6 +1017,7 @@ export async function classifyNewProducts(
     classified += inputBatch.length;
     estimatedCostUsd = estimatedCostUsd.plus(actualCost).plus(failedAttemptCost);
     failureSpendRunUsd = failureSpendRunUsd.plus(failedAttemptCost);
+    replenish();
   }
 
   return {

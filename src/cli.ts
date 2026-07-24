@@ -632,6 +632,18 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       positiveLimitAtTwoThousand,
       50,
     )
+    .option(
+      "--concurrency <count>",
+      "concurrent classification requests (maximum 3)",
+      (value: string): number => {
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 3) {
+          throw new Error("--concurrency must be an integer from 1 to 3");
+        }
+        return parsed;
+      },
+      1,
+    )
     .option("--version <number>", "append-only classification version", classificationVersion, 1)
     .option(
       "--confidence-threshold <number>",
@@ -644,6 +656,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     .option("--json", "emit only the JSON classification summary")
     .action(async (options: {
       batchSize: number;
+      concurrency: number;
       version: number;
       confidenceThreshold: number;
       dryRun?: boolean;
@@ -681,6 +694,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           }
           const summary = await classifyNewProducts({
             batchSize: options.batchSize,
+            concurrency: options.concurrency,
             version: options.version,
             confidenceThreshold: options.confidenceThreshold,
             dryRun: options.dryRun === true,

@@ -100,12 +100,14 @@ function run(
   provider: ProductClassifier,
   overrides: {
     batchSize?: number;
+    concurrency?: number;
     alertSink?: { send(event: AlertEvent): Promise<void> };
     when?: string;
   } = {},
 ) {
   return classifyNewProducts({
     batchSize: overrides.batchSize ?? 40,
+    concurrency: overrides.concurrency ?? 1,
     confidenceThreshold: 0.8,
     version: 1,
   }, {
@@ -118,6 +120,56 @@ function run(
 }
 
 describe("adaptive batch split on shape failure", () => {
+  it("runs at most three provider requests concurrently and settles every reservation", async () => {
+    const database = openDatabase(":memory:");
+    try {
+      seedItems(database);
+      seedProducts(database, 6);
+      let active = 0;
+      let peak = 0;
+      const provider: ProductClassifier = {
+        async classify(inputs) {
+          active += 1;
+          peak = Math.max(peak, active);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          active -= 1;
+          return {
+            provider: "openai",
+            model: "gpt-5.6-luna-2026-06-30",
+            promptVersion: "fixture-v1",
+            promptHash: "b".repeat(64),
+            results: inputs.map((input) => ({
+              productId: input.productId,
+              ipcaItemId: "ipca-arroz",
+              confidence: 0.95,
+              rationaleCode: "exact_food_match",
+            })),
+            usage: { inputTokens: 10, outputTokens: 2 },
+          };
+        },
+      };
+
+      const result = await run(database, provider, {
+        batchSize: 1,
+        concurrency: 3,
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        batches: 6,
+        classified: 6,
+        pending: 0,
+      });
+      expect(peak).toBe(3);
+      expect(database.prepare(`
+        SELECT COUNT(*) AS count FROM classification_sync_reservations
+        WHERE status = 'reserved'
+      `).get()).toEqual({ count: 0 });
+    } finally {
+      database.close();
+    }
+  });
+
   it("halves the batch for previously failed products instead of resubmitting the identical request", async () => {
     const database = openDatabase(":memory:");
     try {
