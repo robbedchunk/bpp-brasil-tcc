@@ -1419,6 +1419,9 @@ describe("acceptance status and evidence", () => {
       expect(passed.criterion.status).toBe("pass");
       expect(passed.evidence[0]?.facts).toMatchObject({
         activeStrategies: 2,
+        expectedActivePairs: 2,
+        missingActivePairs: 0,
+        unexpectedActivePairs: 0,
         receiptFiles: 2,
         validReceipts: 2,
         missingActiveReceipts: 0,
@@ -1509,9 +1512,20 @@ describe("acceptance status and evidence", () => {
         extractionReceipt.validatedAt,
         new Date(Date.parse(extractionReceipt.validatedAt) + 10 * 60_000).toISOString(),
       );
-      expect(evaluateActiveStrategyValidationReceipts(root, database, now).criterion.status)
-        .toBe("pass");
+      const missingPurpose = evaluateActiveStrategyValidationReceipts(root, database, now);
+      expect(missingPurpose.criterion.status).toBe("fail");
+      expect(missingPurpose.criterion.reasonCodes).toContain("UNSAFE_CONFIGURATION");
+      expect(missingPurpose.evidence[0]?.facts).toMatchObject({
+        missingActivePairs: 1,
+      });
 
+      database.prepare(`
+        UPDATE strategies
+        SET active = 1,
+          activated_at = ?,
+          retired_at = NULL
+        WHERE retailer_id = 'carrefour' AND purpose = 'extraction'
+      `).run(extractionReceipt.validatedAt);
       database.prepare(`
         UPDATE strategies SET activated_at = ?
         WHERE retailer_id = 'carrefour' AND purpose = 'discovery'
@@ -1636,13 +1650,17 @@ describe("acceptance status and evidence", () => {
     database.close();
     const before = await readFile(resolve("analysis/output/latest.json"));
     const commandIds: string[] = [];
+    const commands = new Map<string, string>();
+    const commandArguments = new Map<string, string[]>();
     try {
       const report = await buildAcceptanceReport({
         projectRoot: resolve("."),
         databasePath,
         now: () => new Date("2026-07-11T03:00:00.000Z"),
-        runCommand: async (id) => {
+        runCommand: async (id, command, args) => {
           commandIds.push(id);
+          commands.set(id, command);
+          commandArguments.set(id, args);
           return {
             id,
             exitCode: 0,
@@ -1671,6 +1689,41 @@ describe("acceptance status and evidence", () => {
         "m4-agent-capability",
         "m5-healing",
         "m6-index-analysis",
+      ]);
+      expect(commands.get("m4-agent-capability")).toBe("env");
+      expect(commandArguments.get("m4-agent-capability")).toEqual([
+        "-u",
+        "LIVE_OPENAI",
+        "-u",
+        "CODEX_API_KEY",
+        "-u",
+        "OPENAI_API_KEY",
+        "-u",
+        "CODEX_BASE_URL",
+        "-u",
+        "OPENAI_BASE_URL",
+        "-u",
+        "OPENAI_EXPLORER_MODEL",
+        "-u",
+        "OPENAI_EXPLORER_REASONING_EFFORT",
+        "-u",
+        "OPENAI_EXPLORER_TIMEOUT_MS",
+        "-u",
+        "OPENAI_EXPLORER_HEALING_TIMEOUT_MS",
+        "-u",
+        "OPENAI_EXPLORER_INPUT_USD_PER_MILLION",
+        "-u",
+        "OPENAI_EXPLORER_OUTPUT_USD_PER_MILLION",
+        "-u",
+        "OPENAI_EXPLORER_RATE_VERSION",
+        "-u",
+        "PRECOS_MONTHLY_MODEL_USD",
+        "npm",
+        "test",
+        "--",
+        "tests/explorer",
+        "--exclude",
+        "tests/explorer/codex-live.test.ts",
       ]);
       expect(report.pendingGates.some(({ criterionId }) =>
         criterionId === "m4-guarded-agent-capability")).toBe(false);

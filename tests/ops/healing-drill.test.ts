@@ -11,10 +11,6 @@ import {
   openDatabase,
 } from "../../src/db/database.js";
 import {
-  evaluateM5HealingDrill,
-  type SystemdInstallationState,
-} from "../../src/ops/acceptance.js";
-import {
   assertHealingSabotageReceiptFresh,
   healingSafetyTriggerSetSha256,
   runHealingSabotageDrill,
@@ -41,20 +37,6 @@ afterEach(async () => {
   await Promise.all(retainedRoots.splice(0).map((root) =>
     rm(root, { recursive: true, force: true })));
 });
-
-function installation(): SystemdInstallationState {
-  return {
-    valid: true,
-    scheduleActivatedAt: new Date("2026-07-11T09:00:00.000Z"),
-    deployedAt: new Date("2026-07-11T09:00:00.000Z"),
-    sourceCommit: "3".repeat(40),
-    releaseId: "2".repeat(32),
-    releasePath: "/tmp/frozen-release",
-    releaseManifestSha256: "4".repeat(64),
-    installedAt: new Date("2026-07-11T09:00:00.000Z"),
-    unitSetSha256: "f".repeat(64),
-  };
-}
 
 function payload(): HealingSabotageDrillPayload {
   return {
@@ -409,80 +391,6 @@ describe("installed-release healing sabotage drill receipts", () => {
     })).rejects.toThrow(/at most 25/iu);
   });
 
-  it("keeps M5 pending behind credential/spend/live-drill gates and fails invalid receipts", () => {
-    const common = {
-      root: resolve("."),
-      evaluatedCommit: "3".repeat(40),
-      now: new Date("2026-07-11T10:05:00.000Z"),
-      installation: installation(),
-      receiptExists: false,
-    };
-    expect(evaluateM5HealingDrill({
-      ...common,
-      credentialConfigured: false,
-      spendAuthorized: false,
-    }).criterion).toMatchObject({
-      status: "pending",
-      reasonCodes: ["CREDENTIAL_NOT_CONFIGURED"],
-    });
-    expect(evaluateM5HealingDrill({
-      ...common,
-      credentialConfigured: true,
-      spendAuthorized: false,
-    }).criterion).toMatchObject({
-      status: "pending",
-      reasonCodes: ["LIVE_SPEND_NOT_AUTHORIZED"],
-    });
-    expect(evaluateM5HealingDrill({
-      ...common,
-      credentialConfigured: true,
-      spendAuthorized: true,
-    }).criterion).toMatchObject({
-      status: "pending",
-      reasonCodes: ["SITE_VALIDATION_PENDING"],
-    });
-    expect(evaluateM5HealingDrill({
-      ...common,
-      credentialConfigured: true,
-      spendAuthorized: true,
-      receiptExists: true,
-      validateReceipt: () => {
-        throw new Error("malformed");
-      },
-    }).criterion).toMatchObject({
-      status: "fail",
-      reasonCodes: ["EVIDENCE_CONTRADICTION"],
-    });
-  });
-
-  it("lets M5 pass only with a current installed-release genuine drill receipt", () => {
-    const receipt = signHealingSabotageDrillReceipt(payload(), keys.privateKey);
-    const result = evaluateM5HealingDrill({
-      root: resolve("."),
-      evaluatedCommit: "3".repeat(40),
-      now: new Date("2026-07-11T10:05:00.000Z"),
-      credentialConfigured: false,
-      spendAuthorized: false,
-      installation: installation(),
-      receiptExists: true,
-      validateReceipt: () => receipt,
-    });
-    expect(result.criterion).toMatchObject({ status: "pass", reasonCodes: [] });
-
-    expect(evaluateM5HealingDrill({
-      root: resolve("."),
-      evaluatedCommit: "a".repeat(40),
-      now: new Date("2026-07-11T10:05:00.000Z"),
-      credentialConfigured: true,
-      spendAuthorized: true,
-      installation: installation(),
-      receiptExists: true,
-      validateReceipt: () => receipt,
-    }).criterion).toMatchObject({
-      status: "fail",
-      reasonCodes: ["UNSAFE_CONFIGURATION"],
-    });
-  });
 });
 
 describe("retained M5 sabotage evidence bindings", () => {

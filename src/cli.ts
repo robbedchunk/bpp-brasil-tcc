@@ -211,6 +211,20 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-pipeline.lock");
   const explorerLockPath = (): string =>
     dependencies.lockPath ?? resolve(config().projectRoot, "var/precos-explorer.lock");
+  const authorizedStrategyGenerator = (
+    environment: NodeJS.ProcessEnv,
+  ): StrategyGenerator | undefined => {
+    if (dependencies.strategyGenerator !== undefined) {
+      return dependencies.strategyGenerator;
+    }
+    if (environment.LIVE_OPENAI !== "1") {
+      return undefined;
+    }
+    const apiKey = resolveExplorerApiKey(environment);
+    return apiKey === undefined
+      ? undefined
+      : new CodexStrategyGenerator({ apiKey, env: environment });
+  };
   const withHealingLocks = async <T>(operation: () => Promise<T>): Promise<T> => {
     const pipelinePath = pipelineLockPath();
     const explorerPath = explorerLockPath();
@@ -409,12 +423,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
     }) => {
       const applicationConfig = config();
       const environment = dependencies.env ?? process.env;
-      const apiKey = resolveExplorerApiKey(environment);
-      const generator = dependencies.strategyGenerator ?? (
-        apiKey === undefined
-          ? undefined
-          : new CodexStrategyGenerator({ apiKey, env: environment })
-      );
+      const generator = authorizedStrategyGenerator(environment);
       const outcome = await withProcessLock(
         dependencies.lockPath ?? resolve(applicationConfig.projectRoot, "var/precos-explorer.lock"),
         () => withDatabase((database) => {
@@ -449,7 +458,7 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
           severity: "warning",
           title: "Strategy exploration pending",
           message: outcome.outcome === "provider_unavailable"
-            ? "Explorer credentials are not configured; the active strategy was preserved"
+            ? "Live explorer use is not explicitly authorized or credentials are unavailable; the active strategy was preserved"
             : "Strategy exploration stopped under its configured safety controls",
           details: {
             retailerId: options.retailer,
@@ -492,12 +501,10 @@ export function buildCli(dependencies: CliDependencies = {}): Command {
       }
       const applicationConfig = config();
       const environment = dependencies.env ?? process.env;
-      const apiKey = resolveExplorerApiKey(environment);
-      const generator = dependencies.strategyGenerator ?? (
-        apiKey === undefined
-          ? undefined
-          : new CodexStrategyGenerator({ apiKey, env: environment })
-      );
+      const generator = options.pending === true
+        && dependencies.strategyGenerator === undefined
+        ? undefined
+        : authorizedStrategyGenerator(environment);
       const sink = dependencies.alertSink ?? createAlertSink({
         ...(applicationConfig.ntfyTopic === undefined
           ? {}

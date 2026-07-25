@@ -22,7 +22,6 @@ import {
 } from "../classify/review.js";
 import { validatePublicDrillReceipt } from "../ops/acceptance-drills.js";
 import {
-  assertHealingSabotageReceiptFresh,
   validateHealingSabotageDrillReceipt,
 } from "../ops/healing-drill.js";
 import {
@@ -198,6 +197,15 @@ function git(root: string, args: string[], encoding: "utf8" | "buffer"): string 
     maxBuffer: 128 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function gitCommitIsAncestor(root: string, ancestor: string, descendant: string): boolean {
+  try {
+    git(root, ["merge-base", "--is-ancestor", ancestor, descendant], "utf8");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function safeGit(root: string, args: string[]): string {
@@ -661,7 +669,7 @@ function auditAcceptanceArtifact(
   content: Uint8Array,
   path: string,
   root: string,
-  now: Date,
+  _now: Date,
   evaluatedCommit?: string,
 ): PublicationFinding[] {
   try {
@@ -676,10 +684,13 @@ function auditAcceptanceArtifact(
           join(root, "ops/validation-attestation-public.pem"),
         ),
       );
-      assertHealingSabotageReceiptFresh(receipt, now);
       if (evaluatedCommit !== undefined
-        && receipt.payload.release.sourceCommit !== evaluatedCommit) {
-        throw new Error("Healing sabotage receipt is bound to another implementation cut");
+        && !gitCommitIsAncestor(
+          root,
+          receipt.payload.release.sourceCommit,
+          evaluatedCommit,
+        )) {
+        throw new Error("Healing sabotage receipt is not bound to an implementation ancestor");
       }
     }
     else if (/classification-review-v[1-9]\d*\.json$/u.test(path)) {

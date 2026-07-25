@@ -15,6 +15,10 @@ import {
   validateFreshCloneReceipt,
 } from "../../src/publication/audit.js";
 import {
+  signHealingSabotageDrillReceipt,
+  type HealingSabotageDrillPayload,
+} from "../../src/ops/healing-drill.js";
+import {
   canonicalEvidenceJson,
   validationAttestationKeyId,
 } from "../../src/strategies/validation-evidence.js";
@@ -84,6 +88,94 @@ function options(root: string, databasePath = join(root, "missing.sqlite")) {
     now: () => new Date("2026-07-10T12:00:00.000Z"),
     requireClean: false,
   } as const;
+}
+
+function historicalHealingPayload(sourceCommit: string): HealingSabotageDrillPayload {
+  const retailerId = `m5-drill-${"1".repeat(12)}`;
+  return {
+    schemaVersion: 1,
+    drill: "installed-release-healing-sabotage",
+    status: "pass",
+    drillId: "1".repeat(32),
+    observedAt: "2024-01-01T12:00:00.000Z",
+    release: {
+      releaseId: "2".repeat(32),
+      sourceCommit,
+      manifestSha256: "3".repeat(64),
+      artifactSetSha256: "4".repeat(64),
+      implementationSha256: "5".repeat(64),
+    },
+    staging: {
+      databaseRelativePath: `var/acceptance/m5-healing/${"1".repeat(32)}/staging.sqlite`,
+      databaseSha256: "6".repeat(64),
+      schemaVersion: 15,
+      integrityCheck: "ok",
+      foreignKeyViolations: 0,
+      sourceSnapshotSha256Before: "7".repeat(64),
+      sourceSnapshotSha256After: "7".repeat(64),
+      sourceUnchanged: true,
+      templateRetailerId: "extra-mercado",
+      disposableRetailerId: retailerId,
+      configSha256: "8".repeat(64),
+      sabotageKind: "staging-only-invalid-json-field-selectors",
+      brokenStrategySha256: "9".repeat(64),
+      restoredSafetyTriggerSetSha256: "a".repeat(64),
+    },
+    brokenRun: {
+      id: "broken-run",
+      strategyId: `${retailerId}-extraction-v1`,
+      strategyVersion: 1,
+      attempted: 30,
+      ok: 0,
+      failed: 30,
+      successRate: 0,
+      status: "failed",
+    },
+    monitor: {
+      health: "drift",
+      action: "queued",
+      healingEventId: "healing-event",
+    },
+    healing: {
+      status: "recovered",
+      attempts: 1,
+      activated: true,
+      explorationRunId: "exploration-run",
+      successorStrategyId: `${retailerId}-extraction-v2`,
+      successorStrategyVersion: 2,
+    },
+    cost: {
+      provider: "codex-sdk",
+      model: "gpt-5.6-sol",
+      reservationStatus: "settled",
+      reservationAmountUsd: 25,
+      actualCostUsd: 0.12,
+      ledgerRows: 1,
+      inputTokens: 1_000,
+      outputTokens: 200,
+    },
+    validation: {
+      receiptPath: `data/validation/${retailerId}-extraction-v2.json`,
+      receiptSha256: "b".repeat(64),
+      sampleSetSha256: "c".repeat(64),
+      attempted: 30,
+      valid: 30,
+      score: 1,
+      executorMode: "trusted-live-host",
+      validatorArtifactSha256: "d".repeat(64),
+      challengeAlgorithm: "active-in-scope-category-url-bucket-round-robin-v1",
+    },
+    recoveredRun: {
+      id: "recovered-run",
+      strategyId: `${retailerId}-extraction-v2`,
+      strategyVersion: 2,
+      attempted: 30,
+      ok: 30,
+      failed: 0,
+      successRate: 1,
+      status: "completed",
+    },
+  };
 }
 
 describe("publication audit", () => {
@@ -547,6 +639,57 @@ describe("publication audit", () => {
       ...valid,
       verifierSha256: "f".repeat(64),
     }, publicKey)).toThrow(/attestation/i);
+  });
+
+  it("retains optional signed healing evidence as an ancestor-bound historical fact", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    await mkdir(join(root, "ops"), { recursive: true });
+    await writeFile(
+      join(root, "ops", "validation-attestation-public.pem"),
+      publicKey.export({ type: "spki", format: "pem" }),
+    );
+    git(root, "add", "ops/validation-attestation-public.pem");
+    git(root, "commit", "-qm", "add validation key");
+    const ancestorCommit = git(root, "rev-parse", "HEAD");
+    await writeFile(join(root, "docs", "methodology.md"), "# Methodology\nLater cut.\n");
+    git(root, "add", "docs/methodology.md");
+    git(root, "commit", "-qm", "later implementation cut");
+    const evaluatedCommit = git(root, "rev-parse", "HEAD");
+    const receiptPath = join(
+      root,
+      "data",
+      "acceptance",
+      "evidence",
+      "healing-sabotage-drill.json",
+    );
+    await mkdir(join(root, "data", "acceptance", "evidence"), { recursive: true });
+    const writeReceipt = async (sourceCommit: string) => {
+      const receipt = signHealingSabotageDrillReceipt(
+        historicalHealingPayload(sourceCommit),
+        privateKey,
+      );
+      await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+    };
+    const receiptFindings = async () => {
+      const report = await auditPublication({
+        ...options(root),
+        now: () => new Date("2026-07-24T12:00:00.000Z"),
+        requireAcceptanceEvidence: true,
+        evaluatedCommit,
+      });
+      return report.publicDataFindings.filter(({ location }) =>
+        location === "data/acceptance/evidence/healing-sabotage-drill.json");
+    };
+
+    await writeReceipt(ancestorCommit);
+    expect(await receiptFindings()).toEqual([]);
+
+    await writeReceipt("f".repeat(40));
+    expect(await receiptFindings()).toEqual([
+      expect.objectContaining({ ruleId: "PUBLIC_ACCEPTANCE_SCHEMA" }),
+    ]);
   });
 
   it("rejects malformed public acceptance timestamps, criteria, summaries, and evidence", async () => {

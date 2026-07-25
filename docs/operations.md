@@ -44,12 +44,21 @@ set -a
 set +a
 LIVE_OPENAI=1 npm run test:live -- tests/explorer/codex-live.test.ts
 LIVE_OPENAI=1 npm run test:live -- tests/classify/openai-live.test.ts
+LIVE_OPENAI=1 npm run precos -- explore --retailer <id> --purpose extraction --json
+LIVE_OPENAI=1 npm run precos -- heal --retailer <id> --purpose extraction --json
 npm run acceptance -- --json
 ```
 
 Do not export `LIVE_OPENAI` persistently. Without its per-command value of `1`,
-the live tests remain skipped even when private credentials are configured;
-the classification smoke also sets its provider retry limit to one.
+the live tests remain skipped and the `explore`/`heal` commands do not construct
+the Codex provider even when private credentials are configured. The installed
+healing timer can therefore drain and record queued work without authorizing
+paid model use. To authorize a specific manual healing invocation, prefix that
+single-retailer command with `LIVE_OPENAI=1`. `heal --pending` never constructs
+the live provider because one batch could contain multiple separately budgeted
+events; controlled fixture generators remain injectable for deterministic
+worker tests. The classification smoke also sets its provider retry limit to
+one.
 
 ## Local Control Room
 
@@ -243,7 +252,10 @@ When run, the signed public-safe receipt is
 database, validation receipt, logs, and any replay material remain mode-`0600`
 private evidence under `var/acceptance/m5-healing/<drill-id>/`; the copied
 signing key is deleted before publication. The receipt documents the optional
-experiment but is not required for M5 or overall delivery acceptance.
+experiment but is not required for M5 or overall delivery acceptance. It is
+historical signed evidence: later publication cuts verify its signature and
+that its implementation commit is an ancestor, but do not require it to be
+fresh or to match the latest source commit.
 
 ## Backup and restore-read drill
 

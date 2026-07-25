@@ -238,7 +238,10 @@ describe("heal CLI", () => {
 
     const result = await invoke(["heal", "--pending", "--json"], {
       database,
-      env: {},
+      env: {
+        CODEX_API_KEY: "stored-but-not-authorized-for-batch-healing",
+        LIVE_OPENAI: "1",
+      },
       now: () => new Date("2026-07-10T00:20:00.000Z"),
       alertSink: { send: async () => {} },
     });

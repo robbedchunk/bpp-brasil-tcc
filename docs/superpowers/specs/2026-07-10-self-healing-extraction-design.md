@@ -1,17 +1,22 @@
-# LLM-Generated Self-Healing Extraction Strategies — TCC Pilot
+# Guarded Agent-Compatible Self-Healing Extraction — TCC Pilot
 
-**Status:** Approved
+**Status:** Approved implementation design; evidence boundary amended 2026-07-24
 **Date:** 2026-07-10
 **Source of truth:** The execution charter supplied by the thesis author on
-2026-07-10. This document records that charter as an implementation design.
+2026-07-10, as narrowed by the 2026-07-24 delivery-evidence decision. The
+original empirical live-generation and labor-reduction claim is superseded;
+Sections 1 and 11 state the defended delivery claim.
 
 ## 1. Purpose and evidence
 
 The pilot supports the bachelor's thesis *Extração e Estruturação de Dados de
 Preços Online com Modelos de Linguagem: Proposta de Índice Complementar ao
-IPCA*. Its defended claim is that a language model can generate and repair
-deterministic online-price extraction strategies, reducing the manual
-maintenance cost of Billion Prices Project-style collection.
+IPCA*. Its defended delivery claim is architectural: the system contains a
+callable language-model agent adapter that can propose typed extraction
+strategies, but the agent has no activation authority. Strategy acceptance and
+automatic healing are demonstrated through deterministic, independently
+validated evidence. The pilot does not claim empirical live-generation quality
+or a measured reduction in manual maintenance.
 
 The system therefore treats operational evidence as a first-class output:
 

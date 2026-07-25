@@ -85,6 +85,67 @@ describe("explore CLI", () => {
     expect(alerts).toHaveLength(1);
   });
 
+  it("does not construct the live provider from a stored credential alone", async () => {
+    const database = databaseFixture();
+    let sawGenerator = true;
+
+    const result = await invoke([
+      "explore",
+      "--retailer",
+      "retailer-1",
+      "--json",
+    ], {
+      database,
+      env: { CODEX_API_KEY: "stored-but-not-authorized" },
+      exploreRetailer: async (_retailerId, _purpose, dependencies) => {
+        sawGenerator = dependencies.generator !== undefined;
+        return {
+          explorationRunId: "explore-not-authorized",
+          activated: false,
+          attempts: 1,
+          externalScore: null,
+          outcome: "provider_unavailable",
+          costUsd: 0,
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(sawGenerator).toBe(false);
+  });
+
+  it("constructs the live provider only with a credential and one-shot authorization", async () => {
+    const database = databaseFixture();
+    let sawGenerator = false;
+
+    const result = await invoke([
+      "explore",
+      "--retailer",
+      "retailer-1",
+      "--json",
+    ], {
+      database,
+      env: {
+        CODEX_API_KEY: "explicitly-authorized",
+        LIVE_OPENAI: "1",
+      },
+      exploreRetailer: async (_retailerId, _purpose, dependencies) => {
+        sawGenerator = dependencies.generator !== undefined;
+        return {
+          explorationRunId: "explore-authorized",
+          activated: false,
+          attempts: 1,
+          externalScore: null,
+          outcome: "provider_failed",
+          costUsd: 0,
+        };
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(sawGenerator).toBe(true);
+  });
+
   it("runs an explicitly injected offline fixture generator without credentials", async () => {
     const database = databaseFixture();
     const generator = { generate: async () => { throw new Error("not called by wiring test"); } };

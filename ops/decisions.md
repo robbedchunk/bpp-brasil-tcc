@@ -477,6 +477,16 @@
   model ceiling is USD 500. Paid execution still requires a durable reservation,
   a one-shot `LIVE_OPENAI=1`, and an explicit per-command authorization no
   greater than USD 25.
+- A stored `CODEX_API_KEY` or `OPENAI_API_KEY` is not authorization. The normal
+  `explore` and `heal` CLI paths construct the Codex provider only when the same
+  process also receives `LIVE_OPENAI=1`. The scheduled healing service does not
+  set that flag, so it can record or defer queued recovery without silently
+  turning a credential stored in `.env` into paid execution.
+- `heal --pending` never constructs the real provider, even if the live flag is
+  present, because a batch can contain multiple USD 25 events. Paid repair is a
+  direct one-retailer invocation, preserving the one-command/one-event
+  authorization boundary; deterministic worker tests may still inject their
+  controlled fixture generator.
 - The previous USD 5 event ceiling repeatedly turned the research question into
   a timeout/cost-optimization exercise. The wider envelope is intended to test
   whether recovery works; it does not weaken fail-closed accounting, immutable

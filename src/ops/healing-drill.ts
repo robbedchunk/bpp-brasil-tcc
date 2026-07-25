@@ -150,7 +150,7 @@ export const HealingSabotageDrillPayloadSchema = z.object({
     provider: z.literal("codex-sdk"),
     model: z.string().trim().min(1).max(200),
     reservationStatus: z.literal("settled"),
-    reservationAmountUsd: z.number().finite().positive().max(5),
+    reservationAmountUsd: z.number().finite().positive().max(MAX_EXPLORATION_EVENT_USD),
     actualCostUsd: z.number().finite().positive().max(5),
     ledgerRows: z.number().int().positive(),
     inputTokens: z.number().int().positive(),

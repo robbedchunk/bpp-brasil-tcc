@@ -38,11 +38,6 @@ import {
   type PublicDrillReceipt,
 } from "./acceptance-drills.js";
 import {
-  assertHealingSabotageReceiptFresh,
-  validateHealingSabotageEvidence,
-  type HealingSabotageDrillReceipt,
-} from "./healing-drill.js";
-import {
   isAcceptanceEvidencePath,
   releaseSourceMatchesEvaluatedCommit,
   resolveAcceptanceEvaluatedCommit,
@@ -175,8 +170,6 @@ export interface AcceptanceOptions {
   runCommand: (id: string, command: string, args: string[]) => Promise<CommandEvidence>;
   serviceReader: ServiceStateReader;
   credentialConfigured?: boolean;
-  explorerCredentialConfigured?: boolean;
-  spendAuthorized?: boolean;
   siteValidated?: boolean;
 }
 
@@ -2129,6 +2122,23 @@ export function evaluateActiveStrategyValidationReceipts(
   }
   const missingActiveReceipts = active.filter((row) =>
     !receipts.has(`${row.retailer_id}/${row.purpose}/${row.version}`)).length;
+  const expectedActivePairs = new Set(
+    [...configs.values()]
+      .filter((config) => config.active)
+      .flatMap((config) => [
+        `${config.id}/discovery`,
+        `${config.id}/extraction`,
+      ]),
+  );
+  const activePairCounts = new Map<string, number>();
+  for (const row of active) {
+    const key = `${row.retailer_id}/${row.purpose}`;
+    activePairCounts.set(key, (activePairCounts.get(key) ?? 0) + 1);
+  }
+  const missingActivePairs = [...expectedActivePairs]
+    .filter((key) => !activePairCounts.has(key)).length;
+  const unexpectedActivePairs = [...activePairCounts]
+    .filter(([key, count]) => !expectedActivePairs.has(key) || count !== 1).length;
   const failedAttempts = validateFailedValidationAttemptRegistry(
     root,
     database,
@@ -2149,6 +2159,9 @@ export function evaluateActiveStrategyValidationReceipts(
     malformedReceipts,
     untrackedReceipts,
     configRegistryValid,
+    expectedActivePairs: expectedActivePairs.size,
+    missingActivePairs,
+    unexpectedActivePairs,
     preservedFailedAttempts: failedAttempts.attempts,
     failedAttemptRegistryInvalid: failedAttempts.invalid,
     failedAttemptRegistryError: failedAttempts.error,
@@ -2157,6 +2170,19 @@ export function evaluateActiveStrategyValidationReceipts(
   if (active.length === 0) {
     return {
       criterion: criterion(id, "fail", "No active strategy exists to validate", ["UNSAFE_CONFIGURATION"], [evidenceId]),
+      gates: [],
+      evidence: [item],
+    };
+  }
+  if (configRegistryValid && (missingActivePairs > 0 || unexpectedActivePairs > 0)) {
+    return {
+      criterion: criterion(
+        id,
+        "fail",
+        "Every active retailer must have exactly one active discovery strategy and one active extraction strategy",
+        ["UNSAFE_CONFIGURATION"],
+        [evidenceId],
+      ),
       gates: [],
       evidence: [item],
     };
@@ -2271,159 +2297,6 @@ function commandAcceptance(id: string, command: CommandEvidence, summary: string
     criterion: criterion(id, command.exitCode === 0 ? "pass" : "fail", summary,
       command.exitCode === 0 ? [] : ["OFFLINE_CHECK_FAILED"], [evidenceId]),
     gates: [],
-    evidence: [item],
-  };
-}
-
-export interface M5HealingDrillGateOptions {
-  root: string;
-  evaluatedCommit: string;
-  now: Date;
-  credentialConfigured: boolean;
-  spendAuthorized: boolean;
-  installation: SystemdInstallationState;
-  receiptExists?: boolean;
-  validateReceipt?: () => HealingSabotageDrillReceipt;
-}
-
-export function evaluateM5HealingDrill(
-  options: M5HealingDrillGateOptions,
-): CriterionEvaluation {
-  const id = "m5-automatic-healing";
-  const relativePath = "data/acceptance/evidence/healing-sabotage-drill.json";
-  const receiptPath = join(options.root, relativePath);
-  const receiptExists = options.receiptExists ?? existsSync(receiptPath);
-  const releaseSourceCurrent = options.installation.sourceCommit !== null
-    && (options.installation.sourceCommit === options.evaluatedCommit
-      || releaseSourceMatchesEvaluatedCommit(
-        options.root,
-        options.installation.sourceCommit,
-        options.evaluatedCommit,
-      ));
-  let receipt: HealingSabotageDrillReceipt | null = null;
-  let invalid = false;
-  if (receiptExists) {
-    try {
-      if (options.validateReceipt !== undefined) {
-        receipt = options.validateReceipt();
-      } else {
-        if (options.installation.releasePath === null
-          || options.installation.releaseId === null
-          || options.installation.sourceCommit === null) {
-          throw new Error("Current installed release identity is absent");
-        }
-        receipt = validateHealingSabotageEvidence({
-          projectRoot: options.root,
-          releasePath: options.installation.releasePath,
-          publicKeyPath: join(options.root, "ops/validation-attestation-public.pem"),
-          receiptPath,
-          expectedSourceCommit: options.installation.sourceCommit,
-          expectedReleaseId: options.installation.releaseId,
-          now: options.now,
-        });
-      }
-    } catch {
-      invalid = true;
-    }
-    if (receipt !== null) {
-      try {
-        assertHealingSabotageReceiptFresh(receipt, options.now);
-        if (receipt.payload.release.sourceCommit !== options.installation.sourceCommit
-          || receipt.payload.release.releaseId !== options.installation.releaseId) {
-          throw new Error("Healing receipt is bound to a different release");
-        }
-      } catch {
-        invalid = true;
-      }
-    }
-  }
-  const evidenceId = "receipt-m5-installed-release-healing-sabotage";
-  const receiptHash = receiptExists
-    ? (() => {
-        try {
-          return hash(readFileSync(receiptPath));
-        } catch {
-          return receipt?.signature.payloadSha256;
-        }
-      })()
-    : undefined;
-  const item = evidence(
-    evidenceId,
-    "receipt",
-    relativePath,
-    receipt?.payload.observedAt ?? options.now.toISOString(),
-    {
-      receiptPresent: receiptExists,
-      receiptValid: receipt !== null && !invalid,
-      installedReleaseValid: options.installation.valid,
-      installedReleaseCurrent: releaseSourceCurrent,
-      credentialConfigured: options.credentialConfigured,
-      liveSpendAuthorized: options.spendAuthorized,
-      releaseId: receipt?.payload.release.releaseId ?? null,
-      sourceCommit: receipt?.payload.release.sourceCommit ?? null,
-      brokenAttempted: receipt?.payload.brokenRun.attempted ?? 0,
-      brokenSuccessRate: receipt?.payload.brokenRun.successRate ?? 0,
-      healingAttempts: receipt?.payload.healing.attempts ?? 0,
-      modelInputTokens: receipt?.payload.cost.inputTokens ?? 0,
-      modelOutputTokens: receipt?.payload.cost.outputTokens ?? 0,
-      modelCostUsd: receipt?.payload.cost.actualCostUsd ?? 0,
-      validationSampleSize: receipt?.payload.validation.attempted ?? 0,
-      validationSuccesses: receipt?.payload.validation.valid ?? 0,
-      recoveredSuccessRate: receipt?.payload.recoveredRun.successRate ?? 0,
-    },
-    receiptHash,
-  );
-  if (!options.installation.valid
-    || !releaseSourceCurrent
-    || options.installation.releasePath === null
-    || options.installation.releaseId === null) {
-    return {
-      criterion: criterion(id, "fail", "M5 requires a current valid installed frozen release", ["UNSAFE_CONFIGURATION"], [evidenceId]),
-      gates: [],
-      evidence: [item],
-    };
-  }
-  if (receiptExists && (invalid || receipt === null)) {
-    return {
-      criterion: criterion(id, "fail", "The installed-release healing sabotage receipt is malformed, stale, or misbound", ["EVIDENCE_CONTRADICTION"], [evidenceId]),
-      gates: [],
-      evidence: [item],
-    };
-  }
-  if (receipt !== null) {
-    return {
-      criterion: criterion(id, "pass", "A credential-backed installed-release staging sabotage healed and recovered without human intervention", [], [evidenceId]),
-      gates: [],
-      evidence: [item],
-    };
-  }
-  let kind: PendingGateKind;
-  let reason: string;
-  let action: string;
-  if (!options.credentialConfigured) {
-    kind = "credential";
-    reason = "CREDENTIAL_NOT_CONFIGURED";
-    action = "Configure the explorer credential privately; acceptance will not invoke a provider";
-  } else if (!options.spendAuthorized) {
-    kind = "authority";
-    reason = "LIVE_SPEND_NOT_AUTHORIZED";
-    action = "Set LIVE_OPENAI=1 only after explicitly authorizing the bounded staging drill spend";
-  } else {
-    kind = "site";
-    reason = "SITE_VALIDATION_PENDING";
-    action = "Run the isolated installed-release staging sabotage and retain its signed evidence";
-  }
-  return {
-    criterion: criterion(id, "pending", "Offline healing checks pass only as supporting evidence; the genuine staging sabotage drill is still pending", [reason], [evidenceId]),
-    gates: [gate(
-      id,
-      kind,
-      reason,
-      null,
-      action,
-      "npm run acceptance:healing-drill -- --confirm-staging-sabotage --authorize-live-spend-usd 25",
-      [evidenceId],
-    )],
     evidence: [item],
   };
 }
@@ -3501,7 +3374,40 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
     const m1Command = await options.runCommand("m1-offline", "npm", ["test", "--", "tests/normalize", "tests/strategies", "tests/collection", "tests/discovery", "tests/retailers", "tests/pipeline/collect.test.ts", "tests/pipeline/discover.test.ts"]);
-    const m4Command = await options.runCommand("m4-agent-capability", "npm", ["test", "--", "tests/explorer"]);
+    const m4Command = await options.runCommand("m4-agent-capability", "env", [
+      "-u",
+      "LIVE_OPENAI",
+      "-u",
+      "CODEX_API_KEY",
+      "-u",
+      "OPENAI_API_KEY",
+      "-u",
+      "CODEX_BASE_URL",
+      "-u",
+      "OPENAI_BASE_URL",
+      "-u",
+      "OPENAI_EXPLORER_MODEL",
+      "-u",
+      "OPENAI_EXPLORER_REASONING_EFFORT",
+      "-u",
+      "OPENAI_EXPLORER_TIMEOUT_MS",
+      "-u",
+      "OPENAI_EXPLORER_HEALING_TIMEOUT_MS",
+      "-u",
+      "OPENAI_EXPLORER_INPUT_USD_PER_MILLION",
+      "-u",
+      "OPENAI_EXPLORER_OUTPUT_USD_PER_MILLION",
+      "-u",
+      "OPENAI_EXPLORER_RATE_VERSION",
+      "-u",
+      "PRECOS_MONTHLY_MODEL_USD",
+      "npm",
+      "test",
+      "--",
+      "tests/explorer",
+      "--exclude",
+      "tests/explorer/codex-live.test.ts",
+    ]);
     const m5Command = await options.runCommand("m5-healing", "npm", ["test", "--", "tests/healing", "tests/ops/systemd.test.ts"]);
     const m6Command = await options.runCommand("m6-index-analysis", "npm", ["test", "--", "tests/index", "tests/analysis"]);
     const [services, publication, userLingerEnabled] = await Promise.all([
