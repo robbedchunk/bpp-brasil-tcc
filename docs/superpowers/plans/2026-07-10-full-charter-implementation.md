@@ -1027,11 +1027,14 @@ expect(report.publication.secretScanPassed).toBe(true);
 
 M0 checks clean setup/smoke; M1 offline suites and fixture inventory; M2 two
 distinct calendar days for at least two retailers with ≥0.9 success; M3 live
-retailer count and ≥0.8 high-confidence classification; M4 one valid agent result
-per active retailer with cost evidence; M5 sabotage plus drift/blocking tests; M6
-fresh exports/figures and golden math; M7 docs, backup, stale-heartbeat alert drill,
-ignored-artifact checks, and secret scan. Time-gated requirements return `pending`,
-never `pass`, until evidence actually exists.
+retailer count, ≥0.8 high-confidence classification, and the trusted receipt for
+every active strategy; M4 the callable Codex SDK adapter and guarded exploration
+workflow through deterministic provider tests, without requiring current
+live-agent provenance; M5 deterministic sabotage plus drift/blocking/healing
+tests and the installed worker; M6 fresh exports/figures and golden math; M7
+docs, backup, stale-heartbeat alert drill, ignored-artifact checks, and secret
+scan. Time-gated requirements return `pending`, never `pass`, until evidence
+actually exists.
 
 - [ ] **Step 3: Install schedules and run non-destructive production drills**
 

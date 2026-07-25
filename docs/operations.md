@@ -19,8 +19,10 @@ prints secrets. Set `INSTALL_TIMERS=1` only when intentionally deploying this
 checkout.
 
 Copy `.env.example` to `.env` only on the production host. Keep credential values
-out of shell history and Git. The deterministic pipeline works without model
-credentials; classification/exploration remain pending.
+out of shell history and Git. The deterministic pipeline and M4 capability
+acceptance work without model credentials. Classification may remain pending,
+and live exploration remains unavailable until an operator supplies a
+credential and explicit spend authorization.
 
 `OPENAI_BASE_URL` may point at any OpenAI-compatible gateway and is used by
 classification plus exploration when `CODEX_BASE_URL` is blank; a nonempty
@@ -30,10 +32,11 @@ classification already uses `OPENAI_CLASSIFICATION_MODEL`, and exploration
 uses `OPENAI_EXPLORER_MODEL`. Leaving both base URLs blank keeps the default
 `api.openai.com` endpoint.
 
-Once the configured gateway is running, an operator can load the private
-`.env`, explicitly opt in to one explorer generation that exercises streaming
-and tool calls, run exactly one classification Responses attempt, and then
-re-evaluate acceptance:
+Once the configured gateway is running, an operator may load the private `.env`
+and explicitly opt in to an explorer generation that exercises streaming and
+tool calls. That is an optional provider experiment, not M4 delivery evidence.
+The classification smoke remains useful when closing its independent coverage
+gate:
 
 ```bash
 set -a
@@ -209,33 +212,38 @@ production heartbeat view is hashed before and after and must be unchanged.
 npm run acceptance:drill -- alert --confirm-safe-drill --json
 ```
 
-## Installed-release healing sabotage drill
+## Optional installed-release live healing drill
 
-M5 is not satisfied by the offline mutated-layout suite alone. Its live staging
-drill validates the currently installed signed frozen release, takes an online
+M5 delivery acceptance is satisfied by the deterministic mutated-layout,
+sabotage, healing, recovery, and worker/timer suites. Those tests exercise the
+same trusted 30-reference activation boundary with controlled provider fixtures,
+so a paid live-agent result is not mandatory evidence.
+
+An operator may still run the stronger live staging experiment below. It
+validates the currently installed signed frozen release, takes an online
 file-backed copy of the production database while holding the pipeline and
 explorer locks, and creates a disposable retailer only inside that copy. It
 deliberately replaces the disposable API field selectors with invalid JSON
 paths, observes a drift-classified failed run and queued healing event, then
-uses the real Codex provider under a durable bounded budget reservation. The
+uses the real Codex provider under a durable bounded budget reservation. Any
 generated successor must pass the trusted host's exact 30-reference gate,
 activate, and recover a second 30-product run at at least 90% success.
 
-The command refuses before staging or provider work unless both the private
-credential and explicit spend authorization are present:
+Because this is optional paid experimentation, the command refuses before
+staging or provider work unless both the private credential and explicit spend
+authorization are present:
 
 ```bash
 LIVE_OPENAI=1 npm run acceptance:healing-drill -- \
   --confirm-staging-sabotage --authorize-live-spend-usd 25
 ```
 
-The signed public-safe receipt is
+When run, the signed public-safe receipt is
 `data/acceptance/evidence/healing-sabotage-drill.json`. The file-backed staging
 database, validation receipt, logs, and any replay material remain mode-`0600`
 private evidence under `var/acceptance/m5-healing/<drill-id>/`; the copied
-signing key is deleted before publication. Acceptance rejects a malformed,
-stale, or prior-release receipt and never turns fake/offline providers into a
-live M5 pass.
+signing key is deleted before publication. The receipt documents the optional
+experiment but is not required for M5 or overall delivery acceptance.
 
 ## Backup and restore-read drill
 

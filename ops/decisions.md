@@ -482,3 +482,28 @@
   whether recovery works; it does not weaken fail-closed accounting, immutable
   token/cost evidence, provider isolation, or the rule that deterministic
   collection continues when model work is paused.
+
+## 2026-07-24 — Agent capability and delivery-evidence boundary
+
+- Delivery acceptance does not require any currently active strategy to carry
+  live-agent generation provenance, and it does not require a paid provider
+  call. The research claim is the guarded mechanism: the project contains a
+  callable Codex SDK adapter and disposable exploration workflow, but every
+  candidate remains untrusted until the independent host accepts exactly 30
+  references with at least 27 valid results.
+- M3 remains the authoritative production-strategy boundary. Configured,
+  generated, and healed strategies use the same signed, immutable validation
+  receipt and database activation gate; provenance never weakens that gate.
+- M4 verifies the real provider adapter, sandbox restrictions, structured
+  output handling, budget accounting, and exploration/activation workflow with
+  deterministic offline tests. This proves that the API mechanism is wired; it
+  does not claim that a live model produced the current strategy set or measure
+  live model-generation quality.
+- M5 verifies drift detection and automatic healing through deterministic
+  sabotage, recovery, and worker/timer tests. A paid installed-release healing
+  drill remains an optional operational experiment, not a thesis-delivery
+  requirement and not a prerequisite for a passing acceptance report.
+- Historical exploration and cost rows remain append-only facts, but acceptance
+  does not depend on them. Public prose must distinguish implemented capability
+  from empirical live-agent provenance and must not infer reduced maintenance
+  effort from an unrequired provider run.

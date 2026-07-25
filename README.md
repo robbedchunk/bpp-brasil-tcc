@@ -4,9 +4,13 @@ This repository is a **research pilot under active development** for the
 bachelor's thesis *Extração e Estruturação de Dados de Preços Online com
 Modelos de Linguagem: Proposta de Índice Complementar ao IPCA*.
 
-The defended claim is the self-healing extraction **method**: a language model
-can generate and repair typed, externally validated extraction strategies while
-daily price collection remains deterministic. The daily food-at-home index is a
+The defended claim is the guarded self-healing extraction **method**: the system
+can call a language-model agent to propose typed extraction strategies, but no
+proposal can enter deterministic daily collection without independent trusted
+validation. Delivery acceptance proves that provider mechanism, the common
+strategy-acceptance boundary, and automatic healing with deterministic
+adversarial tests. It does **not** require or claim that a live model generated
+the current production strategy set. The daily food-at-home index is a
 demonstration artifact and makes **no statistical validation claim**.
 
 ## What it does
@@ -38,6 +42,14 @@ time-, credential-, site-, and authority-gated criteria. See the generated
 [acceptance report](docs/acceptance-report.md) for the current evidence snapshot.
 The currently published research snapshot may legitimately say `no_index_data`
 or `no_overlap`; those states never become invented prices or official values.
+
+M4 is a capability and safety-boundary check, not a live-generation provenance
+check. Its offline suite exercises the real Codex SDK adapter contract,
+restricted disposable workspace, structured-output parsing, budget accounting,
+trusted host validation, and atomic activation path with deterministic provider
+fixtures. M3 independently requires signed 30-reference receipts for every
+active strategy, and M5 exercises sabotage and automatic recovery. Paid live
+exploration remains an optional operator-controlled experiment.
 
 ## Requirements
 

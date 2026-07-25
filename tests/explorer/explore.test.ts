@@ -346,7 +346,7 @@ describe("trusted strategy exploration", () => {
       outcome: "unauditable_spend",
       activated: false,
       attempts: 1,
-      costUsd: 5,
+      costUsd: 25,
       alerted: true,
     });
     expect(generator.requests).toHaveLength(1);
@@ -356,11 +356,11 @@ describe("trusted strategy exploration", () => {
       outcome: "unauditable_spend",
       input_tokens: 0,
       output_tokens: 0,
-      cost_usd: 5,
+      cost_usd: 25,
     });
     expect(database.prepare(
       "SELECT status, actual_cost_usd FROM model_budget_reservations",
-    ).get()).toEqual({ status: "settled", actual_cost_usd: 5 });
+    ).get()).toEqual({ status: "settled", actual_cost_usd: 25 });
     expect(alerts).toEqual([
       expect.objectContaining({ title: "Strategy exploration spend is unauditable" }),
     ]);

@@ -240,8 +240,9 @@ Tests are deliberately evidence-focused:
 - a mutated-layout fixture for each live retailer;
 - database migration/invariant and CLI smoke tests;
 - one hand-computed golden index chain including missing-price behavior;
-- deterministic exploration-provider fixtures plus an opt-in live Codex SDK
-  end-to-end test when credentials and budget are available;
+- deterministic exploration-provider fixtures that exercise the real Codex SDK
+  adapter contract, with an optional live end-to-end experiment when credentials
+  and budget are available;
 - a staging sabotage that activates a broken strategy and proves the automatic
   healer installs a valid successor without human action;
 - an operations smoke test for setup, backup rotation, lock behavior, stale
@@ -262,8 +263,10 @@ Each milestone receives its own acceptance audit and local commit:
 - M1: offline fixture-tested tiers 1–3 for both strategy purposes;
 - M2: live hand-authored low-tier discovery/collection for at least two stores;
 - M3: the full retailer panel, IPCA items, and incremental classification;
-- M4: Codex SDK exploration with trusted external validation and cost logging;
-- M5: automatic healing proven by mutated fixtures and staging sabotage;
+- M4: callable Codex SDK exploration capability behind trusted external
+  validation and cost controls; current live-agent provenance is not required;
+- M5: automatic healing proven by deterministic mutated fixtures, sabotage,
+  recovery, and the installed worker;
 - M6: index, SIDRA export, and reproducible thesis figures;
 - M7: public-safe documentation, backups, alert/heartbeat drills, and a clean
   secret scan.

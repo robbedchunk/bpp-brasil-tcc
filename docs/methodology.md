@@ -2,12 +2,15 @@
 
 ## Research question and evidence
 
-The thesis tests whether an LLM can generate and automatically repair online
-price extraction strategies, reducing manual maintenance. Operational evidence
-is therefore primary: daily retailer success rates, drift/blocking events,
-automatic-healing outcomes and recovery time, strategy-tier transitions, and
-model usage/cost. The experimental index demonstrates the resulting data; it is
-not a statistically validated inflation measure.
+The thesis evaluates a guarded architecture that can ask an LLM agent to propose
+online price-extraction strategies while keeping the collection and acceptance
+boundaries deterministic. The delivery evidence is the callable provider
+mechanism, independent strategy validation, daily retailer success,
+drift/blocking detection, and deterministic automatic-healing outcomes. Live
+agent generation of the current strategy set is not required and no claim about
+live model-generation quality or reduced human effort is inferred from delivery
+acceptance. The experimental index demonstrates the resulting data; it is not a
+statistically validated inflation measure.
 
 ## Strategy ladder
 
@@ -31,6 +34,14 @@ sole output is typed strategy JSON. The trusted host parses it and independently
 validates exactly 30 unique product references; activation requires at least 27
 fully valid results (score `>= 0.9`). Daily collection executes only stored
 strategies and never invokes the model.
+
+The Codex SDK adapter, streaming/output-schema integration, restricted
+workspace, budget ledger, and activation path are exercised with deterministic
+provider fixtures. This verifies that the API call mechanism is implemented
+without converting a paid provider invocation into mandatory thesis evidence.
+Configured, generated, and healed candidates face the same gate, so the
+reliability claim rests on what is accepted and executed rather than on who or
+what proposed it.
 
 Activation also requires an Ed25519-signed schema-v2 trusted-host receipt named
 for the exact retailer, purpose, and strategy version. Before execution the live

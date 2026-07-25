@@ -50,6 +50,7 @@ import {
   validateAcceptanceReportShape,
   validateTimerDefinitions,
   type AcceptanceReport,
+  type CommandEvidence,
 } from "../../src/ops/acceptance.js";
 import { insertTrustedStrategyValidationEvidence } from "../helpers/strategy-validation.js";
 
@@ -351,83 +352,15 @@ function seedCollection(
   }
 }
 
-function seedM4Evidence(database: Database.Database, estimateSource: string): void {
-  database.prepare(`
-    INSERT INTO retailers(id, name, base_url, cep, domains_json)
-    VALUES ('agent-retailer', 'Agent retailer', 'https://agent.example.test', '01001000', '["agent.example.test"]')
-  `).run();
-  for (const purpose of ["discovery", "extraction"]) {
-    const strategyId = `agent-${purpose}`;
-    const previousStrategyId = `hand-${purpose}`;
-    const explorationId = `exploration-${purpose}`;
-    database.prepare(`
-      INSERT INTO strategies(
-        id, retailer_id, purpose, tier, version, strategy_json, provenance,
-        validation_sample_size, validation_successes, validation_rate, active,
-        retired_at
-      ) VALUES (?, 'agent-retailer', ?, 1, 1, '{}', 'hand-written',
-        30, 27, 0.9, 0, '2026-07-10T10:00:00.000Z')
-    `).run(previousStrategyId, purpose);
-    database.prepare(`
-      INSERT INTO strategies(
-        id, retailer_id, purpose, tier, version, strategy_json, provenance,
-        model, prompt_version, validation_sample_size, validation_successes,
-        validation_rate, active, validated_at, activated_at
-      ) VALUES (?, 'agent-retailer', ?, 1, 2, '{}',
-        'Codex SDK; trusted host validation', 'gpt-test', 'prompt-v1',
-        30, 27, 0.9, 0, '2026-07-10T10:00:00.000Z', NULL)
-    `).run(strategyId, purpose);
-    insertTrustedStrategyValidationEvidence(database, strategyId);
-    database.prepare(`
-      UPDATE strategies
-      SET active = 1, activated_at = '2026-07-10T10:00:00.000Z'
-      WHERE id = ?
-    `).run(strategyId);
-    database.prepare(`
-      INSERT INTO exploration_runs(
-        id, retailer_id, purpose, trigger, previous_strategy_id,
-        candidate_strategy_id, status,
-        outcome, event_budget, events_used, input_tokens, output_tokens,
-        cost_usd, started_at, finished_at
-      ) VALUES (?, 'agent-retailer', ?, 'fixture', ?, ?, 'finished', 'activated',
-        1, 1, 100, 20, 0.1, '2026-07-10T09:00:00.000Z', '2026-07-10T10:00:00.000Z')
-    `).run(explorationId, purpose, previousStrategyId, strategyId);
-    database.prepare(`
-      INSERT INTO exploration_attempts(
-        id, exploration_run_id, attempt_number, model, prompt_version,
-        prompt_hash, input_tokens, cached_input_tokens, output_tokens,
-        reasoning_output_tokens, cost_usd, cost_estimated, estimate_source,
-        rate_version, external_sample_size, external_successes, external_score,
-        outcome, created_at
-      ) VALUES (?, ?, 1, 'gpt-test', 'prompt-v1', ?, 100, 10, 20, 5,
-        0.1, 1, ?, 'rates-v1', 30, 27, 0.9, 'activated',
-        '2026-07-10T10:00:00.000Z')
-    `).run(`attempt-${purpose}`, explorationId, "a".repeat(64), estimateSource);
-    database.prepare(`
-      INSERT INTO model_budget_reservations(
-        id, category, retailer_id, exploration_run_id, amount_usd,
-        actual_cost_usd, status, month_start, reserved_at, settled_at
-      ) VALUES (?, 'strategy-exploration', 'agent-retailer', ?, 1, 0.1,
-        'settled', '2026-07-01', '2026-07-10T09:00:00.000Z',
-        '2026-07-10T10:00:00.000Z')
-    `).run(`reservation-${purpose}`, explorationId);
-    database.prepare(`
-      INSERT INTO cost_ledger(
-        id, category, retailer_id, exploration_run_id, provider, model,
-        input_tokens, output_tokens, cost_usd, occurred_at, details_json
-      ) VALUES (?, 'strategy-exploration', 'agent-retailer', ?, 'codex-sdk',
-        'gpt-test', 100, 20, 0.1, '2026-07-10T10:00:00.000Z',
-        ?)
-    `).run(`ledger-${purpose}`, explorationId, JSON.stringify({
-      attemptNumber: 1,
-      cachedInputTokens: 10,
-      reasoningOutputTokens: 5,
-      costEstimated: true,
-      estimateSource,
-      rateVersion: "rates-v1",
-      promptHash: "a".repeat(64),
-    }));
-  }
+function commandEvidence(exitCode = 0): CommandEvidence {
+  return {
+    id: "m4-agent-capability",
+    exitCode,
+    startedAt: "2026-07-10T11:59:00.000Z",
+    finishedAt: "2026-07-10T12:00:00.000Z",
+    outputSha256: "a".repeat(64),
+    facts: { completed: true },
+  };
 }
 
 describe("acceptance status and evidence", () => {
@@ -1050,43 +983,32 @@ describe("acceptance status and evidence", () => {
       .toMatchObject({ contradictoryHeartbeats: 0 });
   });
 
-  it("keeps M4 credential and spend gates pending without invoking a provider", () => {
-    const database = fixture();
-    seedRetailer(database, "alpha");
-    const withoutCredential = evaluateM4(database, {
-      credentialConfigured: false,
-      spendAuthorized: false,
-      siteValidated: false,
+  it("accepts guarded agent capability without requiring credentials, spend, or live provenance", () => {
+    const result = evaluateM4({
+      agentCapabilityCommand: commandEvidence(),
+      activeStrategyAcceptancePassed: true,
     }, new Date("2026-07-10T12:00:00.000Z"));
-    expect(withoutCredential.criterion.status).toBe("pending");
-    expect(withoutCredential.criterion.reasonCodes).toEqual(["CREDENTIAL_NOT_CONFIGURED"]);
 
-    const withoutSpend = evaluateM4(database, {
-      credentialConfigured: true,
-      spendAuthorized: false,
-      siteValidated: false,
-    }, new Date("2026-07-10T12:00:00.000Z"));
-    expect(withoutSpend.criterion.status).toBe("pending");
-    expect(withoutSpend.criterion.reasonCodes).toEqual(["LIVE_SPEND_NOT_AUTHORIZED"]);
+    expect(result.criterion.status).toBe("pass");
+    expect(result.gates).toEqual([]);
+    expect(result.evidence[0]?.facts).toMatchObject({
+      agentApiMechanismTestedOffline: true,
+      activeStrategyAcceptancePassed: true,
+      liveAgentGenerationEvidenceRequired: false,
+      automaticHealingEvaluatedSeparatelyInM5: true,
+      trustedValidationSampleSize: 30,
+      trustedValidationMinimumSuccesses: 27,
+    });
   });
 
-  it("requires explicit token and cost-status evidence before M4 can pass", () => {
-    const valid = fixture();
-    seedM4Evidence(valid, "published rate card");
-    expect(evaluateM4(valid, {
-      credentialConfigured: true,
-      spendAuthorized: true,
-      siteValidated: true,
-    }, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("pass");
-
-    const missingStatus = fixture();
-    seedM4Evidence(missingStatus, "");
-    const result = evaluateM4(missingStatus, {
-      credentialConfigured: true,
-      spendAuthorized: true,
-      siteValidated: true,
+  it("fails M4 when the guarded Codex SDK capability suite fails", () => {
+    const result = evaluateM4({
+      agentCapabilityCommand: commandEvidence(1),
+      activeStrategyAcceptancePassed: true,
     }, new Date("2026-07-10T12:00:00.000Z"));
+
     expect(result.criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toEqual(["OFFLINE_CHECK_FAILED"]);
   });
 
   it("does not approve a three-retailer exception from an unaudited authority flag", () => {
@@ -1602,40 +1524,14 @@ describe("acceptance status and evidence", () => {
     }
   });
 
-  it("fails malformed activated M4 evidence even when the credential is absent", () => {
-    const database = fixture();
-    seedM4Evidence(database, "published rate card");
-    database.exec("DROP TRIGGER cost_ledger_no_update");
-    database.prepare("UPDATE cost_ledger SET retailer_id = NULL WHERE id = 'ledger-extraction'").run();
-    const result = evaluateM4(database, {
-      credentialConfigured: false,
-      spendAuthorized: false,
-      siteValidated: false,
+  it("fails M4 when active strategies do not pass the independent acceptance boundary", () => {
+    const result = evaluateM4({
+      agentCapabilityCommand: commandEvidence(),
+      activeStrategyAcceptancePassed: false,
     }, new Date("2026-07-10T12:00:00.000Z"));
+
     expect(result.criterion.status).toBe("fail");
-    expect(result.criterion.reasonCodes).toContain("EVIDENCE_CONTRADICTION");
-  });
-
-  it("requires exact 30-reference and 27-success M4 activation evidence", () => {
-    const shortSample = fixture();
-    seedM4Evidence(shortSample, "published rate card");
-    shortSample.exec("DROP TRIGGER exploration_attempts_no_update");
-    shortSample.prepare("UPDATE exploration_attempts SET external_sample_size = 29 WHERE id = 'attempt-extraction'").run();
-    expect(evaluateM4(shortSample, {
-      credentialConfigured: true,
-      spendAuthorized: true,
-      siteValidated: true,
-    }, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("fail");
-
-    const tooFewSuccesses = fixture();
-    seedM4Evidence(tooFewSuccesses, "published rate card");
-    tooFewSuccesses.exec("DROP TRIGGER exploration_attempts_no_update");
-    tooFewSuccesses.prepare("UPDATE exploration_attempts SET external_successes = 26, external_score = 0.8666666666666667 WHERE id = 'attempt-extraction'").run();
-    expect(evaluateM4(tooFewSuccesses, {
-      credentialConfigured: true,
-      spendAuthorized: true,
-      siteValidated: true,
-    }, new Date("2026-07-10T12:00:00.000Z")).criterion.status).toBe("fail");
+    expect(result.criterion.reasonCodes).toEqual(["EVIDENCE_CONTRADICTION"]);
   });
 
   it("validates tracked review state and fails open critical findings", async () => {
@@ -1741,7 +1637,7 @@ describe("acceptance status and evidence", () => {
     const before = await readFile(resolve("analysis/output/latest.json"));
     const commandIds: string[] = [];
     try {
-      await buildAcceptanceReport({
+      const report = await buildAcceptanceReport({
         projectRoot: resolve("."),
         databasePath,
         now: () => new Date("2026-07-11T03:00:00.000Z"),
@@ -1770,7 +1666,16 @@ describe("acceptance status and evidence", () => {
           },
         },
       });
-      expect(commandIds).toEqual(["m1-offline", "m5-healing", "m6-index-analysis"]);
+      expect(commandIds).toEqual([
+        "m1-offline",
+        "m4-agent-capability",
+        "m5-healing",
+        "m6-index-analysis",
+      ]);
+      expect(report.pendingGates.some(({ criterionId }) =>
+        criterionId === "m4-guarded-agent-capability")).toBe(false);
+      expect(report.evidence.some(({ id }) =>
+        id === "receipt-m5-installed-release-healing-sabotage")).toBe(false);
       expect(await readFile(resolve("analysis/output/latest.json"))).toEqual(before);
     } finally {
       await rm(directory, { recursive: true, force: true });
