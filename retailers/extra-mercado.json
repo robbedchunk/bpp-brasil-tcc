@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 10,
-    "extraction": 10
+    "discovery": 11,
+    "extraction": 11
   },
   "discovery": {
     "schemaVersion": 1,
@@ -156,9 +156,9 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Pinned trusted-live-host successor validation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/extra-mercado-discovery-v10.json",
-      "receiptSha256": "e1207724e169faa6fb192d6ff4271a43547aff85779834778012609c1d6583b9"
+      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "receiptPath": "data/validation/extra-mercado-discovery-v11.json",
+      "receiptSha256": null
     },
     "extraction": {
       "externallyValidated": true,
@@ -166,9 +166,9 @@
       "sampleSize": 30,
       "successes": 29,
       "score": 0.9666666666666667,
-      "evidence": "Pinned trusted-live-host successor validation passed 29/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/extra-mercado-extraction-v10.json",
-      "receiptSha256": "270f90342774a4a0dedb95c5b28236fbe336b9b961dcdef065619cfbaa0aea14"
+      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "receiptPath": "data/validation/extra-mercado-extraction-v11.json",
+      "receiptSha256": null
     }
   }
 }

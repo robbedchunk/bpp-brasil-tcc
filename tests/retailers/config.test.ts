@@ -410,7 +410,7 @@ describe("live retailer configuration", () => {
       ok: false,
       failure: {
         category: "missing-fields",
-        message: expect.stringMatching(/title|field|missing/iu),
+        message: expect.stringMatching(/seller|exactly once/iu),
         responded: true,
       },
     });
@@ -442,7 +442,7 @@ describe("live retailer configuration", () => {
       { retailerId: "carrefour", tier: 2 },
       { retailerId: "extra-mercado", tier: 2 },
       { retailerId: "pao-de-acucar", tier: 2 },
-      { retailerId: "st-marche", tier: 1 },
+      { retailerId: "st-marche", tier: 3 },
     ]);
     const provenance = database.prepare(
       `SELECT purpose, provenance FROM strategies

@@ -605,13 +605,13 @@ describe("trusted strategy exploration", () => {
     await expect(exploreRetailer("retailer-1", "extraction", {
       database,
       generator,
-      eventBudgetUsd: 5.01,
-    })).rejects.toThrow(/eventBudgetUsd.*at most.*5/iu);
+      eventBudgetUsd: 25.01,
+    })).rejects.toThrow(/eventBudgetUsd.*at most.*25/iu);
     await expect(exploreRetailer("retailer-1", "extraction", {
       database,
       generator,
-      monthlyBudgetUsd: 50.01,
-    })).rejects.toThrow(/monthlyBudgetUsd.*at most.*50/iu);
+      monthlyBudgetUsd: 500.01,
+    })).rejects.toThrow(/monthlyBudgetUsd.*at most.*500/iu);
     expect(database.prepare("SELECT COUNT(*) AS n FROM exploration_runs").get())
       .toEqual({ n: 0 });
   });

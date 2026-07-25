@@ -470,3 +470,15 @@
   were valid but never activated under the previous trust anchor, so the
   current successor declaration preserves them as occupied and advances to
   v9, v6, and v7 respectively.
+
+## 2026-07-24 — Research-oriented model budget envelope
+
+- The hard exploration/healing event ceiling is USD 25 and the default monthly
+  model ceiling is USD 500. Paid execution still requires a durable reservation,
+  a one-shot `LIVE_OPENAI=1`, and an explicit per-command authorization no
+  greater than USD 25.
+- The previous USD 5 event ceiling repeatedly turned the research question into
+  a timeout/cost-optimization exercise. The wider envelope is intended to test
+  whether recovery works; it does not weaken fail-closed accounting, immutable
+  token/cost evidence, provider isolation, or the rule that deterministic
+  collection continues when model work is paused.

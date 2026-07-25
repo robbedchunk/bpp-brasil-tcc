@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 12,
-    "extraction": 10
+    "discovery": 13,
+    "extraction": 11
   },
   "discovery": {
     "schemaVersion": 1,
@@ -192,9 +192,9 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Pinned trusted-live-host successor validation for the trusted generated activation passed 27/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/pao-de-acucar-discovery-v12.json",
-      "receiptSha256": "0c299f3e75d0a1532227d93ef9cc9a18078a7b782f4eec4d714e7ecbfab22e81"
+      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "receiptPath": "data/validation/pao-de-acucar-discovery-v13.json",
+      "receiptSha256": null
     },
     "extraction": {
       "externallyValidated": true,
@@ -202,9 +202,9 @@
       "sampleSize": 30,
       "successes": 29,
       "score": 0.9666666666666667,
-      "evidence": "Pinned trusted-live-host successor validation for the trusted generated activation passed 29/30 independent active, in-scope category/URL-bucket challenge references.",
-      "receiptPath": "data/validation/pao-de-acucar-extraction-v10.json",
-      "receiptSha256": "3b33366fe42aaf71825a36f7be73f28a7544d09e97f0bc613731634b9fcae7dc"
+      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "receiptPath": "data/validation/pao-de-acucar-extraction-v11.json",
+      "receiptSha256": null
     }
   }
 }

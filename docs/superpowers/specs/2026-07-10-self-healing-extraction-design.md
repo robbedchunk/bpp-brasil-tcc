@@ -116,8 +116,8 @@ The loop ends on success or its configured event budget.
 
 Exploration is never part of daily page collection. Model, prompt hash, token
 usage, estimated USD cost, validation attempts, score, and resulting tier are
-persisted for every generation event. The per-event guardrail is approximately
-USD 5 per retailer; projected monthly model spending above USD 50 raises an
+persisted for every generation event. The per-event guardrail is at most
+USD 25 per retailer; projected monthly model spending above USD 500 raises an
 alert and pauses non-essential model work, never deterministic collection.
 
 ## 6. Persistence and observability
@@ -283,4 +283,3 @@ and a named retailer swap after three fully blocked days. Decisions are logged.
 The affected subsystem pauses and alerts rather than guessing when work would
 add a paid service, escalate scraping countermeasures, publish an unapproved
 artifact, reduce the panel below three retailers, or change index methodology.
-

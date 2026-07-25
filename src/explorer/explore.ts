@@ -349,7 +349,7 @@ export async function exploreRetailer(
   const maxAttempts = positiveInteger("maxAttempts", dependencies.maxAttempts ?? 3);
   const eventBudgetUsd = boundedPositive(
     "eventBudgetUsd",
-    dependencies.eventBudgetUsd ?? 5,
+    dependencies.eventBudgetUsd ?? MAX_EXPLORATION_EVENT_USD,
     MAX_EXPLORATION_EVENT_USD,
   );
   const configuredMonthlyBudgetUsd = monthlyModelBudgetUsdFromEnv(

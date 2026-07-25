@@ -6,8 +6,8 @@ export const RELEASED_CLASSIFICATION_BATCH_STATUSES = [
   "finalize_failed",
   "submission_released",
 ] as const;
-export const MAX_EXPLORATION_EVENT_USD = 5;
-export const MAX_MONTHLY_MODEL_USD = 50;
+export const MAX_EXPLORATION_EVENT_USD = 25;
+export const MAX_MONTHLY_MODEL_USD = 500;
 
 export function monthlyModelBudgetUsdFromEnv(
   env: NodeJS.ProcessEnv = process.env,

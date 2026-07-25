@@ -21,7 +21,7 @@
 - Respect robots.txt for discovery; page failures are categorized and counted but never abort the whole run.
 - Require independent validation on 30 samples with score at least 0.9 before activating a strategy.
 - Treat response-with-empty-fields as drift and 403/429/CAPTCHA/repeated timeout as blocking; blocking never triggers model healing.
-- Pause non-essential LLM work and alert when projected monthly OpenAI spend exceeds USD 50; deterministic collection continues.
+- Pause non-essential LLM work and alert when projected monthly OpenAI spend exceeds USD 500; deterministic collection continues.
 - Keep observations, runs, failures, classifications, strategy history, exploration attempts, and healing evidence append-only.
 - Use promo price when present; carry missing product prices up to 7 days; Jevons within retailer/sub-item, equal retailer mean, then covered-weight-renormalized Laspeyres chaining.
 - Keep code and README in English. Record material autonomous choices in `ops/decisions.md`.
@@ -604,8 +604,8 @@ git commit -m "feat(m2): activate initial retailer strategies"
 ```ts
 expect(redact({ OPENAI_API_KEY: "secret", url: "ok" })).toEqual({ OPENAI_API_KEY: "[REDACTED]", url: "ok" });
 expect(checkHeartbeat(now, lastSuccess25HoursAgo)).toMatchObject({ stale: true });
-expect(budgetGuard.decide({ projectedMonthlyUsd: 50.01, essential: false })).toBe("pause");
-expect(budgetGuard.decide({ projectedMonthlyUsd: 99, essential: true })).toBe("continue");
+expect(budgetGuard.decide({ projectedMonthlyUsd: 500.01, essential: false })).toBe("pause");
+expect(budgetGuard.decide({ projectedMonthlyUsd: 999, essential: true })).toBe("continue");
 ```
 
 - [ ] **Step 2: Confirm ops tests fail**
@@ -773,7 +773,7 @@ billing fields are unavailable, persist a documented estimate flag rather than
 invent precision. Retire the previous active strategy and activate the successor
 in one transaction only after score ≥0.9. Default the exploration model through
 `OPENAI_EXPLORER_MODEL` to current frontier `gpt-5.6-sol`, reasoning effort
-`medium`, while preserving the USD 5 event cap. The SDK reports tokens but not
+`medium`, while preserving the USD 25 event cap. The SDK reports tokens but not
 USD; calculate estimates from a dated, tested price table and mark them estimated.
 
 - [ ] **Step 5: Run offline and opt-in live acceptance, then commit**

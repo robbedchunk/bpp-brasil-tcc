@@ -22,7 +22,7 @@ afterEach(async () => {
 });
 
 describe("exploration budget reservations", () => {
-  it("rejects event allowances above USD 5 while permitting an operator monthly cap", () => {
+  it("rejects event allowances above USD 25 while permitting an operator monthly cap", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     seedRetailer(database);
@@ -38,17 +38,17 @@ describe("exploration budget reservations", () => {
     expect(() => reserveExplorationBudget(database, {
       explorationRunId,
       retailerId: "retailer-1",
-      eventAllowanceUsd: 5.01,
-      monthlyLimitUsd: 50,
+      eventAllowanceUsd: 25.01,
+      monthlyLimitUsd: 500,
       now,
-    })).toThrow(/eventAllowanceUsd.*at most.*5/iu);
+    })).toThrow(/eventAllowanceUsd.*at most.*25/iu);
     expect(reserveExplorationBudget(database, {
       explorationRunId,
       retailerId: "retailer-1",
-      eventAllowanceUsd: 5,
-      monthlyLimitUsd: 50.01,
+      eventAllowanceUsd: 25,
+      monthlyLimitUsd: 500.01,
       now,
-    })).toMatchObject({ reserved: true, amountUsd: 5 });
+    })).toMatchObject({ reserved: true, amountUsd: 25 });
   });
 
   it("atomically admits only one concurrent USD 5 event under a USD 5 monthly limit", async () => {

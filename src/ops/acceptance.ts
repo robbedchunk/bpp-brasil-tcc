@@ -2572,7 +2572,7 @@ export function evaluateM5HealingDrill(
       reason,
       null,
       action,
-      "npm run acceptance:healing-drill -- --confirm-staging-sabotage --authorize-live-spend-usd 5",
+      "npm run acceptance:healing-drill -- --confirm-staging-sabotage --authorize-live-spend-usd 25",
       [evidenceId],
     )],
     evidence: [item],

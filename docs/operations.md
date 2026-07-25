@@ -226,7 +226,7 @@ credential and explicit spend authorization are present:
 
 ```bash
 LIVE_OPENAI=1 npm run acceptance:healing-drill -- \
-  --confirm-staging-sabotage --authorize-live-spend-usd 5
+  --confirm-staging-sabotage --authorize-live-spend-usd 25
 ```
 
 The signed public-safe receipt is

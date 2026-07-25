@@ -387,7 +387,7 @@ describe("installed-release healing sabotage drill receipts", () => {
       publicKeyPath: "/does/not/exist/public.pem",
       privateKeyPath: "/does/not/exist/private.pem",
       confirmStagingSabotage: true,
-      authorizedSpendUsd: 5,
+      authorizedSpendUsd: 25,
     };
     await expect(runHealingSabotageDrill({
       ...common,
@@ -402,6 +402,11 @@ describe("installed-release healing sabotage drill receipts", () => {
       authorizedSpendUsd: 0,
       env: { LIVE_OPENAI: "1", OPENAI_API_KEY: "private-test-placeholder" },
     })).rejects.toThrow(/authorize-live-spend/iu);
+    await expect(runHealingSabotageDrill({
+      ...common,
+      authorizedSpendUsd: 25.01,
+      env: { LIVE_OPENAI: "1", OPENAI_API_KEY: "private-test-placeholder" },
+    })).rejects.toThrow(/at most 25/iu);
   });
 
   it("keeps M5 pending behind credential/spend/live-drill gates and fails invalid receipts", () => {

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { BudgetGuard, monthlyModelBudgetUsdFromEnv } from "../../src/ops/budget.js";
 
 describe("budget guard", () => {
-  it("defaults the monthly model budget to USD 50 and validates operator overrides", () => {
-    expect(monthlyModelBudgetUsdFromEnv({})).toBe(50);
+  it("defaults the monthly model budget to USD 500 and validates operator overrides", () => {
+    expect(monthlyModelBudgetUsdFromEnv({})).toBe(500);
     expect(monthlyModelBudgetUsdFromEnv({ PRECOS_MONTHLY_MODEL_USD: "125.5" }))
       .toBe(125.5);
     for (const value of ["0", "-1", "Infinity", "not-a-number"]) {
@@ -14,9 +14,9 @@ describe("budget guard", () => {
   });
 
   it("builds default guards that honor the operator monthly override", () => {
-    const betweenDefaultAndOverride = { projectedMonthlyUsd: 75, essential: false };
+    const betweenDefaultAndOverride = { projectedMonthlyUsd: 750, essential: false };
 
-    expect(BudgetGuard.fromEnv({ PRECOS_MONTHLY_MODEL_USD: "100" })
+    expect(BudgetGuard.fromEnv({ PRECOS_MONTHLY_MODEL_USD: "1000" })
       .decide(betweenDefaultAndOverride)).toBe("continue");
     expect(BudgetGuard.fromEnv({}).decide(betweenDefaultAndOverride)).toBe("pause");
     expect(() => BudgetGuard.fromEnv({ PRECOS_MONTHLY_MODEL_USD: "not-a-number" }))

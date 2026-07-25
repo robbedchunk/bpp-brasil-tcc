@@ -59,6 +59,10 @@ import {
   validateFrozenRelease,
   type ReleaseManifest,
 } from "./release-manifest.js";
+import {
+  MAX_EXPLORATION_EVENT_USD,
+  monthlyModelBudgetUsdFromEnv,
+} from "./budget.js";
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u).refine(
   (value) => value !== "0".repeat(64),
@@ -677,7 +681,7 @@ async function executeLiveWorkflow(input: {
         generator,
         env: input.env,
         eventBudgetUsd: input.authorizedSpendUsd,
-        monthlyBudgetUsd: 50,
+        monthlyBudgetUsd: monthlyModelBudgetUsdFromEnv(input.env),
         replayRoot: join(runtimeRoot, "data/raw-html"),
       });
       if (worker.recovered !== 1 || worker.processed !== 1) {
@@ -907,8 +911,11 @@ export async function runHealingSabotageDrill(
     throw new Error("A real explorer credential is required for the healing drill");
   }
   if (!Number.isFinite(options.authorizedSpendUsd)
-    || options.authorizedSpendUsd <= 0 || options.authorizedSpendUsd > 5) {
-    throw new Error("--authorize-live-spend-usd must be positive and at most 5");
+    || options.authorizedSpendUsd <= 0
+    || options.authorizedSpendUsd > MAX_EXPLORATION_EVENT_USD) {
+    throw new Error(
+      `--authorize-live-spend-usd must be positive and at most ${MAX_EXPLORATION_EVENT_USD}`,
+    );
   }
   if (!inside(projectRoot, databasePath) || databasePath === resolve(projectRoot, "var")) {
     throw new Error("Healing drill source database must remain inside the project root");
