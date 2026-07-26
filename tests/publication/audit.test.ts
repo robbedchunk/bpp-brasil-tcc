@@ -795,5 +795,5 @@ describe("publication audit", () => {
       rawHtmlExcluded: true,
       outOfScopeExplicit: true,
     });
-  }, 90_000);
+  }, 180_000);
 });

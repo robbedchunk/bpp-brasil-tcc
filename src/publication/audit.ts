@@ -14,7 +14,6 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
-import { parse } from "csv-parse/sync";
 
 import {
   ClassificationReviewResultSchema,
@@ -216,6 +215,94 @@ function safeGit(root: string, args: string[]): string {
   }
 }
 
+function gitCatFileBatch(root: string, objectIds: readonly string[]): Map<string, Buffer> {
+  const unique = [...new Set(objectIds)];
+  if (unique.length === 0) return new Map();
+  const output = execFileSync("git", ["cat-file", "--batch"], {
+    cwd: root,
+    input: Buffer.from(`${unique.join("\n")}\n`),
+    maxBuffer: 256 * 1024 * 1024,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  const blobs = new Map<string, Buffer>();
+  let offset = 0;
+  for (const requestedId of unique) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    if (headerEnd < 0) throw new Error(`Git batch response is truncated for ${requestedId}`);
+    const header = output.subarray(offset, headerEnd).toString("utf8");
+    const match = /^([a-f0-9]+) blob (\d+)$/u.exec(header);
+    if (match?.[1] === undefined || match[2] === undefined) {
+      throw new Error(`Git batch response is invalid for ${requestedId}`);
+    }
+    const size = Number(match[2]);
+    const contentStart = headerEnd + 1;
+    const contentEnd = contentStart + size;
+    if (!Number.isSafeInteger(size) || size < 0 || contentEnd >= output.length
+      || output[contentEnd] !== 0x0a) {
+      throw new Error(`Git batch blob is invalid for ${requestedId}`);
+    }
+    blobs.set(requestedId, Buffer.from(output.subarray(contentStart, contentEnd)));
+    offset = contentEnd + 1;
+  }
+  return blobs;
+}
+
+function gitCatFileSizes(root: string, objectIds: readonly string[]): Map<string, number> {
+  const unique = [...new Set(objectIds)];
+  if (unique.length === 0) return new Map();
+  const output = execFileSync(
+    "git",
+    ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    {
+      cwd: root,
+      input: Buffer.from(`${unique.join("\n")}\n`),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  const sizes = new Map<string, number>();
+  const lines = output.trimEnd().split("\n");
+  if (lines.length !== unique.length) {
+    throw new Error("Git batch size response is incomplete");
+  }
+  for (const [index, line] of lines.entries()) {
+    const match = /^([a-f0-9]+) blob (\d+)$/u.exec(line);
+    const requestedId = unique[index];
+    if (requestedId === undefined || match?.[2] === undefined) {
+      throw new Error(`Git batch size response is invalid for ${requestedId ?? "unknown"}`);
+    }
+    const size = Number(match[2]);
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error(`Git blob size is invalid for ${requestedId}`);
+    }
+    sizes.set(requestedId, size);
+  }
+  return sizes;
+}
+
+function boundedBlobBatches(
+  objectIds: readonly string[],
+  sizes: ReadonlyMap<string, number>,
+): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let batchBytes = 0;
+  for (const objectId of objectIds) {
+    const bytes = sizes.get(objectId);
+    if (bytes === undefined) throw new Error(`Git blob size is missing for ${objectId}`);
+    if (batch.length > 0 && (batch.length >= 128 || batchBytes + bytes > 32 * 1024 * 1024)) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(objectId);
+    batchBytes += bytes;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
 function currentPaths(root: string): string[] {
   const output = git(
     root,
@@ -225,16 +312,25 @@ function currentPaths(root: string): string[] {
   return output.toString("utf8").split("\0").filter(Boolean).map(normalizePath).sort();
 }
 
-function currentModes(root: string): Map<string, string> {
-  const modes = new Map<string, string>();
+interface CurrentIndexEntry {
+  mode: string;
+  objectId: string;
+}
+
+function currentIndexEntries(root: string): Map<string, CurrentIndexEntry> {
+  const entries = new Map<string, CurrentIndexEntry>();
   const output = git(root, ["ls-files", "-s", "-z"], "buffer").toString("utf8");
   for (const entry of output.split("\0").filter(Boolean)) {
-    const match = /^(\d+) [a-f0-9]+ \d+\t([\s\S]+)$/u.exec(entry);
-    if (match?.[1] !== undefined && match[2] !== undefined) {
-      modes.set(normalizePath(match[2]), match[1]);
+    const match = /^(\d+) ([a-f0-9]+) (\d+)\t([\s\S]+)$/u.exec(entry);
+    if (match?.[1] !== undefined && match[2] !== undefined
+      && match[3] === "0" && match[4] !== undefined) {
+      entries.set(normalizePath(match[4]), {
+        mode: match[1],
+        objectId: match[2],
+      });
     }
   }
-  return modes;
+  return entries;
 }
 
 function finding(
@@ -482,26 +578,94 @@ function auditCsv(content: Uint8Array, location: string): PublicationFinding[] {
     results.push(finding("PUBLIC_CSV_PRIVATE_PATH", "public-export", location, "Public CSV contains a private absolute path"));
   }
   try {
-    const rows = parse(text, { bom: false, relax_column_count: false, skip_empty_lines: false }) as string[][];
-    const header = rows[0] ?? [];
-    if (header.length === 0 || header.some((column) => column === "") || new Set(header).size !== header.length) {
+    let header: string[] | null = null;
+    let rowNumber = 0;
+    let row: string[] = [];
+    let cell = "";
+    let inQuotes = false;
+    let afterQuote = false;
+    let atCellStart = true;
+    let justEndedRow = false;
+    const finishCell = (): void => {
+      row.push(cell);
+      cell = "";
+      afterQuote = false;
+      atCellStart = true;
+    };
+    const finishRow = (): void => {
+      finishCell();
+      rowNumber += 1;
+      if (header === null) {
+        header = row;
+        if (header.length === 0 || header.some((column) => column === "")
+          || new Set(header).size !== header.length) {
+          results.push(finding("PUBLIC_CSV_HEADER", "public-export", location, "Public CSV header is missing, empty, or duplicated"));
+        }
+        for (const column of header) {
+          if (PRIVATE_COLUMN.test(column)) {
+            results.push(finding("PUBLIC_CSV_PRIVATE_COLUMN", "public-export", `${location}:${column}`, "Public CSV exposes a private runtime column"));
+          }
+        }
+      } else {
+        if (row.length !== header.length) throw new Error("CSV row width differs from its header");
+        for (const [columnIndex, value] of row.entries()) {
+          const cellLocation = `${location}:${header[columnIndex] ?? `column-${columnIndex + 1}`}:row-${rowNumber}`;
+          if (RAW_HTML_CONTENT.test(value)) {
+            results.push(finding("PUBLIC_CSV_RAW_HTML", "public-export", cellLocation, "Raw HTML content is not publishable"));
+          }
+          if (PUBLIC_PRIVATE_CONTENT.test(value)) {
+            results.push(finding("PUBLIC_CSV_PRIVATE_DATA", "public-export", cellLocation, "Cookie, session, authorization, or personal data is not publishable"));
+          }
+        }
+      }
+      row = [];
+      justEndedRow = true;
+    };
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index]!;
+      if (inQuotes) {
+        if (character === "\"") {
+          if (text[index + 1] === "\"") {
+            cell += "\"";
+            index += 1;
+          } else {
+            inQuotes = false;
+            afterQuote = true;
+          }
+        } else {
+          cell += character;
+        }
+        justEndedRow = false;
+        continue;
+      }
+      if (afterQuote && character !== "," && character !== "\n" && character !== "\r") {
+        throw new Error("CSV has characters after a closing quote");
+      }
+      if (character === "\"" && atCellStart) {
+        inQuotes = true;
+        atCellStart = false;
+        justEndedRow = false;
+      } else if (character === "\"") {
+        throw new Error("CSV has an unexpected quote");
+      } else if (character === ",") {
+        finishCell();
+        justEndedRow = false;
+      } else if (character === "\n") {
+        finishRow();
+      } else if (character === "\r") {
+        if (text[index + 1] !== "\n") throw new Error("CSV has a bare carriage return");
+        index += 1;
+        finishRow();
+      } else {
+        cell += character;
+        atCellStart = false;
+        justEndedRow = false;
+      }
+    }
+    if (inQuotes) throw new Error("CSV has an unterminated quoted field");
+    if (!justEndedRow || row.length > 0 || cell.length > 0 || afterQuote) finishRow();
+    if (header === null) {
       results.push(finding("PUBLIC_CSV_HEADER", "public-export", location, "Public CSV header is missing, empty, or duplicated"));
-    }
-    for (const column of header) {
-      if (PRIVATE_COLUMN.test(column)) {
-        results.push(finding("PUBLIC_CSV_PRIVATE_COLUMN", "public-export", `${location}:${column}`, "Public CSV exposes a private runtime column"));
-      }
-    }
-    for (const [rowIndex, row] of rows.slice(1).entries()) {
-      for (const [columnIndex, cell] of row.entries()) {
-        const cellLocation = `${location}:${header[columnIndex] ?? `column-${columnIndex + 1}`}:row-${rowIndex + 2}`;
-        if (RAW_HTML_CONTENT.test(cell)) {
-          results.push(finding("PUBLIC_CSV_RAW_HTML", "public-export", cellLocation, "Raw HTML content is not publishable"));
-        }
-        if (PUBLIC_PRIVATE_CONTENT.test(cell)) {
-          results.push(finding("PUBLIC_CSV_PRIVATE_DATA", "public-export", cellLocation, "Cookie, session, authorization, or personal data is not publishable"));
-        }
-      }
     }
   } catch {
     results.push(finding("PUBLIC_CSV_INVALID", "public-export", location, "Public CSV is not structurally valid"));
@@ -1010,7 +1174,13 @@ export async function auditPublication(
   }
   const evaluatedRevision = options.evaluatedCommit ?? "HEAD";
   const paths = currentPaths(root);
-  const modes = currentModes(root);
+  const indexEntries = currentIndexEntries(root);
+  const stagedBlobs = gitCatFileBatch(
+    root,
+    [...indexEntries.values()]
+      .filter((entry) => entry.mode !== "160000")
+      .map((entry) => entry.objectId),
+  );
   const trackedSecrets: PublicationFinding[] = [];
   const trackedPrivateArtifacts: PublicationFinding[] = [];
   const trackedRawHtml: PublicationFinding[] = [];
@@ -1023,7 +1193,8 @@ export async function auditPublication(
   for (const path of paths) {
     const absolute = resolve(root, path);
     if (!inside(root, absolute)) continue;
-    const mode = modes.get(path);
+    const indexEntry = indexEntries.get(path);
+    const mode = indexEntry?.mode;
     if (mode === "160000") {
       unsafeLinksOrSubmodules.push(finding("TRACKED_SUBMODULE", "repository-shape", path, "Git submodules are outside the publication audit boundary"));
       continue;
@@ -1039,12 +1210,10 @@ export async function auditPublication(
       continue;
     }
     let content: Buffer;
-    if (mode !== undefined) {
-      try {
-        content = git(root, ["show", `:${path}`], "buffer");
-      } catch {
-        continue;
-      }
+    if (indexEntry !== undefined) {
+      const staged = stagedBlobs.get(indexEntry.objectId);
+      if (staged === undefined) continue;
+      content = staged;
     } else {
       if (metadata?.isFile() !== true) continue;
       content = readFileSync(absolute);
@@ -1113,15 +1282,25 @@ export async function auditPublication(
   }
 
   const historicalSecrets: PublicationFinding[] = [];
-  for (const [objectId, objectPaths] of historicalEntries(history)) {
-    const content = git(root, ["cat-file", "blob", objectId], "buffer");
-    for (const path of objectPaths) {
-      historicalSecrets.push(...secretFindings(content, path, "git-history", objectId));
-      const kind = privatePathKind(path);
-      if (kind === "raw") {
-        trackedRawHtml.push(finding("HISTORICAL_RAW_HTML", "git-history", path, "Runtime raw HTML/replay evidence exists in reachable Git history", objectId));
-      } else if (kind === "private") {
-        trackedPrivateArtifacts.push(finding("HISTORICAL_PRIVATE_ARTIFACT", "git-history", path, "Private runtime material exists in reachable Git history", objectId));
+  const historical = [...historicalEntries(history)];
+  const historicalById = new Map(historical);
+  const historicalIds = historical.map(([objectId]) => objectId);
+  const historicalSizes = gitCatFileSizes(root, historicalIds);
+  for (const batch of boundedBlobBatches(historicalIds, historicalSizes)) {
+    const blobs = gitCatFileBatch(root, batch);
+    for (const objectId of batch) {
+      const objectPaths = historicalById.get(objectId);
+      if (objectPaths === undefined) continue;
+      const content = blobs.get(objectId);
+      if (content === undefined) continue;
+      for (const path of objectPaths) {
+        historicalSecrets.push(...secretFindings(content, path, "git-history", objectId));
+        const kind = privatePathKind(path);
+        if (kind === "raw") {
+          trackedRawHtml.push(finding("HISTORICAL_RAW_HTML", "git-history", path, "Runtime raw HTML/replay evidence exists in reachable Git history", objectId));
+        } else if (kind === "private") {
+          trackedPrivateArtifacts.push(finding("HISTORICAL_PRIVATE_ARTIFACT", "git-history", path, "Private runtime material exists in reachable Git history", objectId));
+        }
       }
     }
   }
@@ -1153,10 +1332,16 @@ export async function auditPublication(
       writeFileSync(temporary, content, { mode: 0o600 });
       const sidecars = (["wal", "shm"] as const).map((suffix) => ({ suffix, bytes: worktreeFiles.get(`${path}-${suffix}`)?.length ?? 0 }));
       publicDataFindings.push(...auditDatabase(temporary, root, path, sidecars));
+      auditedDatabasePaths.add(resolve(root, path));
     }
     const configuredDatabase = resolve(options.databasePath);
     if (existsSync(configuredDatabase)) {
-      publicDataFindings.push(...auditDatabase(configuredDatabase, root));
+      const configuredWal = `${configuredDatabase}-wal`;
+      const hasConfiguredWal = existsSync(configuredWal) && lstatSync(configuredWal).size > 0;
+      if (!auditedDatabasePaths.has(configuredDatabase) || hasConfiguredWal) {
+        publicDataFindings.push(...auditDatabase(configuredDatabase, root));
+        auditedDatabasePaths.add(configuredDatabase);
+      }
       if (options.requireAcceptanceEvidence === true) {
         const database = new Database(configuredDatabase, { readonly: true, fileMustExist: true });
         try {

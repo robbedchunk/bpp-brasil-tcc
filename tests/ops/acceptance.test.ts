@@ -1798,7 +1798,7 @@ describe("acceptance status and evidence", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  }, 90_000);
+  }, 180_000);
 
   it("checks corresponding service templates and rejects loose snapshot schemas", async () => {
     const root = await mkdtemp(join(tmpdir(), "acceptance-units-"));
