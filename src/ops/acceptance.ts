@@ -25,7 +25,6 @@ import {
 } from "../retailers/config.js";
 import { parseStrategy } from "../strategies/schema.js";
 import {
-  readTrustedValidatorArtifactSha256,
   readValidationVerificationPublicKey,
   StrategyValidationEvidenceSchema,
   strategyEvidenceSha256,
@@ -1906,20 +1905,12 @@ export function evaluateActiveStrategyValidationReceipts(
   let preservedReceipts = 0;
   let untrackedReceipts = 0;
   let verificationPublicKey: import("node:crypto").KeyObject | null = null;
-  let trustedValidatorArtifactSha256: string | null = null;
   try {
     verificationPublicKey = readValidationVerificationPublicKey(
       join(root, "ops/validation-attestation-public.pem"),
     );
   } catch {
     verificationPublicKey = null;
-  }
-  try {
-    trustedValidatorArtifactSha256 = readTrustedValidatorArtifactSha256(
-      join(root, "ops/validator-bundle.sha256"),
-    );
-  } catch {
-    trustedValidatorArtifactSha256 = null;
   }
   for (const name of files) {
     const relativePath = `data/validation/${name}`;
@@ -1956,29 +1947,12 @@ export function evaluateActiveStrategyValidationReceipts(
       if (receiptPublicKey === null) {
         throw new TypeError("Validation verification public key is unavailable");
       }
-      const authoritativeRefs = strategy?.active === 1
-        ? (database.prepare(`
-            SELECT canonical_url, retailer_product_id, source_category
-            FROM products
-            WHERE retailer_id = ?
-            ORDER BY canonical_url
-          `).all(strategy.retailer_id) as Array<{
-            canonical_url: string;
-            retailer_product_id: string | null;
-            source_category: string | null;
-          }>).map((ref) => ({
-            canonicalUrl: ref.canonical_url,
-            externalId: ref.retailer_product_id,
-            sourceCategory: ref.source_category,
-          }))
-        : undefined;
       const validated = validateStrategyEvidence(parsed, {
         retailerId: parsed.retailerId,
         purpose: parsed.purpose,
         strategyVersion: parsed.strategyVersion,
         strategy: declaredStrategy,
         verificationPublicKey: receiptPublicKey,
-        ...(authoritativeRefs === undefined ? {} : { authoritativeRefs }),
       });
       if (!gitSucceeds(root, [
         "merge-base",
@@ -1991,12 +1965,14 @@ export function evaluateActiveStrategyValidationReceipts(
         );
       }
       const canonicalReceiptSha256 = validationReceiptSha256(validated);
+      const sourceArtifactSha256 = strategy === undefined || strategy.active === 1
+        ? committedBlob(
+            root,
+            validated.executor.sourceCommit,
+            "ops/validator-bundle.sha256",
+          ).toString("utf8").trim()
+        : null;
       if (strategy === undefined) {
-        const sourceArtifactSha256 = committedBlob(
-          root,
-          validated.executor.sourceCommit,
-          "ops/validator-bundle.sha256",
-        ).toString("utf8").trim();
         if (!sourceCommitDeclaresStrategyVersion(root, validated.executor.sourceCommit, {
           retailerId: validated.retailerId,
           purpose: validated.purpose,
@@ -2064,8 +2040,9 @@ export function evaluateActiveStrategyValidationReceipts(
         : strategy.retired_at !== null
           && Date.parse(strategy.retired_at) >= Date.parse(validated.validatedAt);
       const activeArtifactBindingValid = strategy.active !== 1 || (
-        trustedValidatorArtifactSha256 !== null
-        && validated.executor.artifactSha256 === trustedValidatorArtifactSha256
+        sourceArtifactSha256 !== null
+        && SHA256.test(sourceArtifactSha256)
+        && validated.executor.artifactSha256 === sourceArtifactSha256
         && validated.executor.challengeAlgorithm
           === "active-in-scope-category-url-bucket-round-robin-v1"
       );

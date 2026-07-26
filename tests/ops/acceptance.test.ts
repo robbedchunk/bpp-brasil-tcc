@@ -1430,6 +1430,25 @@ describe("acceptance status and evidence", () => {
         configRegistryValid: true,
       });
 
+      await writeFile(
+        join(root, "ops", "validator-bundle.sha256"),
+        `${"e".repeat(64)}\n`,
+      );
+      execFileSync("git", ["add", "ops/validator-bundle.sha256"], { cwd: root });
+      execFileSync("git", ["commit", "-qm", "rotate validator for a later rollout"], { cwd: root });
+      database.prepare(`
+        UPDATE products
+        SET source_category = 'Categoria atualizada', active = 0, in_scope = 0
+        WHERE id = 'carrefour-validation-0'
+      `).run();
+      const preservedBinding = evaluateActiveStrategyValidationReceipts(root, database, now);
+      expect(preservedBinding.criterion.status).toBe("pass");
+      expect(preservedBinding.evidence[0]?.facts).toMatchObject({
+        activeStrategies: 2,
+        validReceipts: 2,
+        malformedReceipts: 0,
+      });
+
       const attacks: Array<[
         string,
         (receipt: StrategyValidationEvidence) => void,
