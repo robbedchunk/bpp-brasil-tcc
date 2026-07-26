@@ -625,6 +625,19 @@ export function registerRetailerConfigs(
           );
         }
 
+        database.prepare(
+          `UPDATE strategies
+           SET validation_sample_size = ?, validation_successes = ?,
+               validation_rate = ?, validated_at = ?
+           WHERE id = ?`,
+        ).run(
+          sampleSize,
+          successes,
+          sampleSize === 0 ? null : score,
+          validatedAt,
+          id,
+        );
+
         if (strategyActive === 1 && activationEvidence !== null) {
           const receiptPath = validation.receiptPath;
           const receiptSha256 = validation.receiptSha256;
@@ -685,17 +698,12 @@ export function registerRetailerConfigs(
 
         database.prepare(
           `UPDATE strategies
-             SET active = ?, validation_sample_size = ?, validation_successes = ?,
-                 validation_rate = ?, validated_at = ?,
+             SET active = ?,
                  activated_at = CASE WHEN ? = 1 THEN COALESCE(activated_at, ?) ELSE activated_at END,
                  retired_at = retired_at
            WHERE id = ?`,
         ).run(
           strategyActive,
-          sampleSize,
-          successes,
-          sampleSize === 0 ? null : score,
-          validatedAt,
           strategyActive,
           validatedAt,
           id,

@@ -501,6 +501,16 @@ describe("live retailer configuration", () => {
     ]);
     expect(database.prepare("SELECT active FROM retailers WHERE id = ?").get(current.id))
       .toEqual({ active: 1 });
+
+    registerRetailerConfigs(database, [successor]);
+    expect(database.prepare(
+      `SELECT version, active, validation_sample_size AS sampleSize
+       FROM strategies WHERE retailer_id = ? AND purpose = 'discovery'
+       ORDER BY version`,
+    ).all(current.id)).toEqual([
+      { version: current.strategyVersions.discovery, active: 0, sampleSize: 30 },
+      { version: successorVersion, active: 1, sampleSize: 30 },
+    ]);
   });
 
   it("rejects activation when the receipt aggregate differs from config metadata", () => {
