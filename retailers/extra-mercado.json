@@ -152,23 +152,23 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:55:27.441Z",
+      "validatedAt": "2026-07-26T16:05:38.063Z",
       "sampleSize": 30,
-      "successes": 27,
-      "score": 0.9,
+      "successes": 30,
+      "score": 1,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/extra-mercado-discovery-v12.json",
-      "receiptSha256": null
+      "receiptSha256": "6816afce80188c2ef14db956c8ce6b3b49272e87f929e9431f80ab816e9cf4cc"
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:55:42.010Z",
+      "validatedAt": "2026-07-26T16:05:52.667Z",
       "sampleSize": 30,
-      "successes": 29,
-      "score": 0.9666666666666667,
+      "successes": 30,
+      "score": 1,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/extra-mercado-extraction-v12.json",
-      "receiptSha256": null
+      "receiptSha256": "fe1ae0037f712ffada04bad6e63f043ec82e10d3f9b961f8ff3c5b3ec2f953d5"
     }
   }
 }
