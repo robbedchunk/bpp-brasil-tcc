@@ -158,23 +158,11 @@ function createPoliteGate(
 }
 
 function robotsOrigins(strategy: DiscoveryStrategy): string[] {
-  const renderForOrigin = (template: string): string => template.replace(
-    /\{(?:page|pageSize|offset|from|to|cursor|segment)\}/gu,
-    "0",
-  );
   const urls = strategy.tier === "sitemap"
     ? strategy.sitemapUrls
-    : strategy.tier === "api"
-      ? [renderForOrigin(strategy.request.url)]
-      : strategy.tier === "dom-crawl"
-        ? strategy.startUrls
-        : strategy.operations.flatMap((operation) => {
-            if (operation.op === "goto") return [renderForOrigin(operation.url)];
-            if (operation.op === "http") {
-              return [renderForOrigin(operation.request.url)];
-            }
-            return [];
-          });
+    : strategy.tier === "dom-crawl"
+      ? strategy.startUrls
+      : [];
   return [...new Set(urls.map((url) => new URL(url).origin))];
 }
 
