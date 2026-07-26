@@ -102,6 +102,11 @@ One flag to know about: `INSTALL_TIMERS=1 bash ops/setup.sh` installs the
 production systemd timers. Leave it unset on any machine that is not meant to
 run the pilot on a schedule.
 
+One clone-time expectation: `data/precos.sqlite` ships through Git LFS
+(~290 MB) and downloads during checkout. If a fresh clone stalls or errors on
+that single file, the LFS bandwidth quota is the likely cause rather than
+anything in the repository itself.
+
 ## Exploring
 
 Pick whatever answers the current question; nothing here changes data or

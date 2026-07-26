@@ -30,6 +30,9 @@ data/reviews/*.csv
 # Personal working documents (kept out of the pseudonymous history)
 *.docx
 
+# Local agent scaffolding (not part of the published artifact)
+.superpowers/
+
 # Test and editor artifacts
 playwright-report/
 test-results/

@@ -42,8 +42,8 @@ gate:
 set -a
 . ./.env
 set +a
-LIVE_OPENAI=1 npm run test:live -- tests/explorer/codex-live.test.ts
-LIVE_OPENAI=1 npm run test:live -- tests/classify/openai-live.test.ts
+LIVE_OPENAI=1 npm run test -- tests/explorer/codex-live.test.ts
+LIVE_OPENAI=1 npm run test -- tests/classify/openai-live.test.ts
 LIVE_OPENAI=1 npm run precos -- explore --retailer <id> --purpose extraction --json
 LIVE_OPENAI=1 npm run precos -- heal --retailer <id> --purpose extraction --json
 npm run acceptance -- --json

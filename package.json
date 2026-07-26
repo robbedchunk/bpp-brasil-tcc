@@ -39,7 +39,6 @@
     "acceptance:drill": "tsx ops/acceptance.ts drill",
     "acceptance:healing-drill": "node scripts/run-healing-sabotage-drill.mjs",
     "test": "vitest run",
-    "test:live": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
