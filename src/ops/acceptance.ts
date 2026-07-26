@@ -2220,7 +2220,7 @@ export function evaluateActiveStrategyValidationReceipts(
 
 export interface M4CapabilityOptions {
   agentCapabilityCommand: CommandEvidence;
-  activeStrategyAcceptancePassed: boolean;
+  activeStrategyAcceptanceValid: boolean;
 }
 
 export function evaluateM4(
@@ -2235,7 +2235,7 @@ export function evaluateM4(
     facts: {
       ...commandEvidence.facts,
       agentApiMechanismTestedOffline: options.agentCapabilityCommand.exitCode === 0,
-      activeStrategyAcceptancePassed: options.activeStrategyAcceptancePassed,
+      activeStrategyAcceptanceValid: options.activeStrategyAcceptanceValid,
       liveAgentGenerationEvidenceRequired: false,
       automaticHealingEvaluatedSeparatelyInM5: true,
       trustedValidationSampleSize: 30,
@@ -2255,7 +2255,7 @@ export function evaluateM4(
       evidence: [resultEvidence],
     };
   }
-  if (!options.activeStrategyAcceptancePassed) {
+  if (!options.activeStrategyAcceptanceValid) {
     return {
       criterion: criterion(
         id,
@@ -3515,7 +3515,7 @@ export async function buildAcceptanceReport(options: AcceptanceOptions): Promise
     }
     const m4 = evaluateM4({
       agentCapabilityCommand: m4Command,
-      activeStrategyAcceptancePassed: strategyValidationReceipts.criterion.status === "pass",
+      activeStrategyAcceptanceValid: strategyValidationReceipts.criterion.status === "pass",
     }, now);
     const m5 = commandAcceptance("m5-automatic-healing", m5Command, "Isolated sabotage, drift/blocking, recovery, and timer suites pass");
     const m5Review = reviewFindingState(root, "M5", now);

@@ -1032,14 +1032,14 @@ describe("acceptance status and evidence", () => {
   it("accepts guarded agent capability without requiring credentials, spend, or live provenance", () => {
     const result = evaluateM4({
       agentCapabilityCommand: commandEvidence(),
-      activeStrategyAcceptancePassed: true,
+      activeStrategyAcceptanceValid: true,
     }, new Date("2026-07-10T12:00:00.000Z"));
 
     expect(result.criterion.status).toBe("pass");
     expect(result.gates).toEqual([]);
     expect(result.evidence[0]?.facts).toMatchObject({
       agentApiMechanismTestedOffline: true,
-      activeStrategyAcceptancePassed: true,
+      activeStrategyAcceptanceValid: true,
       liveAgentGenerationEvidenceRequired: false,
       automaticHealingEvaluatedSeparatelyInM5: true,
       trustedValidationSampleSize: 30,
@@ -1050,7 +1050,7 @@ describe("acceptance status and evidence", () => {
   it("fails M4 when the guarded Codex SDK capability suite fails", () => {
     const result = evaluateM4({
       agentCapabilityCommand: commandEvidence(1),
-      activeStrategyAcceptancePassed: true,
+      activeStrategyAcceptanceValid: true,
     }, new Date("2026-07-10T12:00:00.000Z"));
 
     expect(result.criterion.status).toBe("fail");
@@ -1606,7 +1606,7 @@ describe("acceptance status and evidence", () => {
   it("fails M4 when active strategies do not pass the independent acceptance boundary", () => {
     const result = evaluateM4({
       agentCapabilityCommand: commandEvidence(),
-      activeStrategyAcceptancePassed: false,
+      activeStrategyAcceptanceValid: false,
     }, new Date("2026-07-10T12:00:00.000Z"));
 
     expect(result.criterion.status).toBe("fail");
