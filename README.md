@@ -78,6 +78,10 @@ npm run analysis
 environment, verifies Chromium, and initializes SQLite. It does not enable
 production timers unless `INSTALL_TIMERS=1` is explicitly set.
 
+[SETUP.md](SETUP.md) is the fresh-clone orientation brief — context, the
+offline/outward boundary, and non-Debian notes — written to be handed directly
+to a coding agent.
+
 ## Main commands
 
 ```bash
