@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-26T17:34:11.771Z",
+  "generatedAt": "2026-07-26T18:06:28.560Z",
   "timezone": "America/Sao_Paulo",
   "evaluatedCommit": "8a878ec159e1159855cfee5dd2f4025c17623e68",
   "databaseSha256": "48ed9593bf4f658f0c0aa13e745c50ef1e5a8dade89967930ac15c7ed423212c",
@@ -76,11 +76,9 @@
         },
         {
           "id": "m3-classification-human-review",
-          "status": "pending",
-          "summary": "The classification precision check awaits an explicit human review",
-          "reasonCodes": [
-            "AUTHORITY_APPROVAL_REQUIRED"
-          ],
+          "status": "pass",
+          "summary": "A completed 200-row human review is bound to the current classification version",
+          "reasonCodes": [],
           "evidenceIds": [
             "file-m3-classification-human-review"
           ]
@@ -173,7 +171,7 @@
   },
   "publication": {
     "schemaVersion": 1,
-    "generatedAt": "2026-07-26T17:35:04.209Z",
+    "generatedAt": "2026-07-26T18:07:26.587Z",
     "commit": "8a878ec159e1159855cfee5dd2f4025c17623e68",
     "status": "pass",
     "trackedSecrets": [],
@@ -206,17 +204,6 @@
       "recheckCommand": "npm run acceptance -- --json",
       "evidenceIds": [
         "db-m2-heartbeat-linked-collection-runs"
-      ]
-    },
-    {
-      "criterionId": "m3-classification-human-review",
-      "kind": "authority",
-      "reasonCode": "AUTHORITY_APPROVAL_REQUIRED",
-      "since": null,
-      "nextAction": "Run scripts/classification-review.ts export, have the author label every row, then run its evaluate command",
-      "recheckCommand": "npm run acceptance -- --json",
-      "evidenceIds": [
-        "file-m3-classification-human-review"
       ]
     },
     {
@@ -262,12 +249,12 @@
       "id": "command-m1-offline",
       "kind": "command",
       "source": "m1-offline",
-      "observedAt": "2026-07-26T17:34:14.964Z",
-      "sha256": "84d7495a50f36a056a4249013b9906fee5eff2ab8959e6c49ba7a1c19d5c68a3",
+      "observedAt": "2026-07-26T18:06:32.856Z",
+      "sha256": "cc683a38756eb3e08a14ac24570cc77adf06b454e8da6f76986e6a7f4c58b1eb",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:34:11.774Z",
-        "finishedAt": "2026-07-26T17:34:14.964Z",
+        "startedAt": "2026-07-26T18:06:28.562Z",
+        "finishedAt": "2026-07-26T18:06:32.856Z",
         "completed": true
       }
     },
@@ -275,12 +262,12 @@
       "id": "command-m4-agent-capability",
       "kind": "command",
       "source": "m4-agent-capability",
-      "observedAt": "2026-07-26T17:34:11.771Z",
-      "sha256": "75a8c966f204deb3e32010905df07f2d16e50e8fd950b11c80179e1b724f78d3",
+      "observedAt": "2026-07-26T18:06:28.560Z",
+      "sha256": "bac479063d03622b313f2f5792878a75b2c87b4182688d5ab66c5751e9786632",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:34:14.965Z",
-        "finishedAt": "2026-07-26T17:34:16.737Z",
+        "startedAt": "2026-07-26T18:06:32.857Z",
+        "finishedAt": "2026-07-26T18:06:34.599Z",
         "completed": true,
         "agentApiMechanismTestedOffline": true,
         "activeStrategyAcceptanceValid": true,
@@ -294,12 +281,12 @@
       "id": "command-m5-healing",
       "kind": "command",
       "source": "m5-healing",
-      "observedAt": "2026-07-26T17:34:24.843Z",
-      "sha256": "14a72e888522120274b6eea52682b6927bf38f4a11ed98b54e494373b5142f99",
+      "observedAt": "2026-07-26T18:06:42.540Z",
+      "sha256": "a791f37ff3f19b9bd5d4e012553e053ccc6020d1a4a1f56bb27af33a96aed170",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:34:16.737Z",
-        "finishedAt": "2026-07-26T17:34:24.843Z",
+        "startedAt": "2026-07-26T18:06:34.599Z",
+        "finishedAt": "2026-07-26T18:06:42.540Z",
         "completed": true
       }
     },
@@ -307,12 +294,12 @@
       "id": "command-m6-index-analysis",
       "kind": "command",
       "source": "m6-index-analysis",
-      "observedAt": "2026-07-26T17:34:34.574Z",
-      "sha256": "963912ccc58623524c84ea04fa49de0b4b7e92b43df898cf0cc121d8b70f5257",
+      "observedAt": "2026-07-26T18:06:51.971Z",
+      "sha256": "1dab0d8ab0a55c643e9299b3395f4aa6ec3724bdf11e7df2181c12c8ef898941",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:34:24.843Z",
-        "finishedAt": "2026-07-26T17:34:34.574Z",
+        "startedAt": "2026-07-26T18:06:42.540Z",
+        "finishedAt": "2026-07-26T18:06:51.971Z",
         "completed": true
       }
     },
@@ -320,7 +307,7 @@
       "id": "db-m2-heartbeat-linked-collection-runs",
       "kind": "database-query",
       "source": "m2-heartbeat-linked-collection-runs",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "facts": {
         "linkedRuns": 0,
         "ignoredManualLinkedRuns": 70,
@@ -337,7 +324,7 @@
       "id": "db-m3-latest-classification-coverage",
       "kind": "database-query",
       "source": "m3-latest-classification-coverage",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "facts": {
         "activeRetailers": 4,
         "activeProducts": 9154,
@@ -351,7 +338,7 @@
       "id": "db-m3-live-panel",
       "kind": "database-query",
       "source": "m3-live-panel",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "facts": {
         "activeRetailers": 4,
         "degradedRetailers": 0,
@@ -368,7 +355,7 @@
       "id": "file-m1-fixture-inventory",
       "kind": "file",
       "source": "tests/fixtures",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "facts": {
         "requiredOfflineTestFiles": 11,
         "requiredOfflineTestFilesPresent": 11,
@@ -383,7 +370,7 @@
       "id": "file-m3-active-strategy-validation-receipts",
       "kind": "file",
       "source": "data/validation",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "sha256": "8bdc84a68d15847e06d470defb7d895bf5871990b190066a95c2427b326e7905",
       "facts": {
         "activeStrategies": 8,
@@ -407,24 +394,25 @@
       "id": "file-m3-classification-human-review",
       "kind": "file",
       "source": "data/acceptance/evidence/classification-review-v1.json",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
+      "sha256": "51ed17e93cf74d592e75d4892977fea50a17bde94df78a1161b455e3e41293f6",
       "facts": {
         "latestClassificationVersion": 1,
         "activeClassificationRows": 6977,
-        "artifactPresent": false,
-        "artifactValid": false,
+        "artifactPresent": true,
+        "artifactValid": true,
         "requiredSampleSize": 200,
-        "sampleSize": 0,
-        "populationSize": 0,
-        "precision": null,
-        "agreementRate": null
+        "sampleSize": 200,
+        "populationSize": 12217,
+        "precision": 0.75,
+        "agreementRate": 0.315
       }
     },
     {
       "id": "file-m5-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -464,7 +452,7 @@
       "id": "file-m6-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -476,7 +464,7 @@
       "id": "file-m7-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -488,7 +476,7 @@
       "id": "receipt-m0-fresh-clone",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "sha256": "0c107e0e037c7871a19d148d1a0a8507562a8109c7c3713c380b708f7a3a030c",
       "facts": {
         "receiptPresent": true,
@@ -518,7 +506,7 @@
       "id": "service-m3-classification-automation",
       "kind": "service",
       "source": "precos-classification.service",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "facts": {
         "dailyRunObserved": false,
         "classificationUnitInstalled": true,
@@ -531,7 +519,7 @@
       "id": "service-m7-publication-operations",
       "kind": "service",
       "source": "m7-publication-and-six-timers",
-      "observedAt": "2026-07-26T17:34:11.771Z",
+      "observedAt": "2026-07-26T18:06:28.560Z",
       "facts": {
         "publicationStatus": "pass",
         "publicationFindings": 0,
@@ -550,7 +538,7 @@
         "alertDrillMatches": true,
         "backupDrillMatches": true,
         "backupIntegrityAndAgeValid": true,
-        "backupAgeHours": 0.05522359415690104,
+        "backupAgeHours": 0.5932205386013455,
         "latestCollectionHeartbeatFresh": false,
         "latestCollectionHeartbeatAgeHours": null,
         "firstDailyWindowElapsed": false,
