@@ -151,13 +151,13 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:56:39.012Z",
+      "validatedAt": "2026-07-26T16:16:49.526Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/st-marche-discovery-v11.json",
-      "receiptSha256": null
+      "receiptSha256": "cc37b387b656aa0806480bc6ae9e59e7691cfaf4740a4971f1ff1f2b94adf972"
     },
     "extraction": {
       "externallyValidated": true,
