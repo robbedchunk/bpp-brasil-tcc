@@ -187,7 +187,7 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/carrefour-discovery-v14.json",
       "receiptSha256": null
     },
@@ -197,7 +197,7 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/carrefour-extraction-v14.json",
       "receiptSha256": null
     }

@@ -156,7 +156,7 @@
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
-      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/extra-mercado-discovery-v11.json",
       "receiptSha256": null
     },
@@ -166,7 +166,7 @@
       "sampleSize": 30,
       "successes": 29,
       "score": 0.9666666666666667,
-      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/extra-mercado-extraction-v11.json",
       "receiptSha256": null
     }

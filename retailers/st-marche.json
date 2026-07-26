@@ -155,7 +155,7 @@
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/st-marche-discovery-v10.json",
       "receiptSha256": null
     },
@@ -165,7 +165,7 @@
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
-      "evidence": "Trusted-live-host successor validation receipt bound below.",
+      "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/st-marche-extraction-v10.json",
       "receiptSha256": null
     }

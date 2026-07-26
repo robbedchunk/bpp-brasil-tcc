@@ -216,6 +216,7 @@ describe("collection pipeline", () => {
     const summary = await runCollection("retailer-1", {
       database,
       limit: 9_999,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
       execute: async () => {
         calls += 1;
         return { ok: false, failure: { category: "parse", message: "x", responded: true } };
