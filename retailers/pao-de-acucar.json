@@ -198,13 +198,13 @@
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:56:33.939Z",
+      "validatedAt": "2026-07-26T16:15:27.896Z",
       "sampleSize": 30,
-      "successes": 29,
-      "score": 0.9666666666666667,
+      "successes": 30,
+      "score": 1,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/pao-de-acucar-extraction-v13.json",
-      "receiptSha256": null
+      "receiptSha256": "c6ec5cc1fbb970f485b5d71a18da2e43c970611e8f9ece60841e8cca87974ad1"
     }
   }
 }
