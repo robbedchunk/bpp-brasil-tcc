@@ -193,13 +193,13 @@
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:54:39.532Z",
+      "validatedAt": "2026-07-26T16:04:29.227Z",
       "sampleSize": 30,
       "successes": 27,
       "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/carrefour-extraction-v15.json",
-      "receiptSha256": null
+      "receiptSha256": "9b10891f42c1110361c9a9541a6118da67553311ffaf0483920387f02c0242d8"
     }
   }
 }
