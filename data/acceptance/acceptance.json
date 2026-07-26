@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-26T17:25:45.212Z",
+  "generatedAt": "2026-07-26T17:34:11.771Z",
   "timezone": "America/Sao_Paulo",
-  "evaluatedCommit": "d382126f2144a66a962bcd46a249cd4b1be84ca5",
+  "evaluatedCommit": "8a878ec159e1159855cfee5dd2f4025c17623e68",
   "databaseSha256": "48ed9593bf4f658f0c0aa13e745c50ef1e5a8dade89967930ac15c7ed423212c",
   "overallStatus": "pending",
   "milestones": {
@@ -173,8 +173,8 @@
   },
   "publication": {
     "schemaVersion": 1,
-    "generatedAt": "2026-07-26T17:26:40.582Z",
-    "commit": "d382126f2144a66a962bcd46a249cd4b1be84ca5",
+    "generatedAt": "2026-07-26T17:35:04.209Z",
+    "commit": "8a878ec159e1159855cfee5dd2f4025c17623e68",
     "status": "pass",
     "trackedSecrets": [],
     "historicalSecrets": [],
@@ -234,7 +234,7 @@
       "criterionId": "m6-index-analysis",
       "kind": "time",
       "reasonCode": "OFFICIAL_OVERLAP_NOT_AVAILABLE",
-      "since": "2026-07-26T17:25:32.617Z",
+      "since": "2026-07-26T17:34:02.542Z",
       "nextAction": "Collect through an overlapping closed official month, then regenerate the comparison",
       "recheckCommand": "npm run research:snapshot && npm run acceptance -- --json",
       "evidenceIds": [
@@ -248,7 +248,7 @@
       "criterionId": "m7-publication-operations",
       "kind": "time",
       "reasonCode": "SCHEDULED_RUN_NOT_YET_DUE",
-      "since": "2026-07-26T17:21:40.846Z",
+      "since": "2026-07-26T17:30:38.970Z",
       "nextAction": "Let both installed São Paulo schedules reach their first real windows",
       "recheckCommand": "npm run acceptance -- --json",
       "evidenceIds": [
@@ -262,12 +262,12 @@
       "id": "command-m1-offline",
       "kind": "command",
       "source": "m1-offline",
-      "observedAt": "2026-07-26T17:25:48.529Z",
-      "sha256": "4fcc9c5b27601be2766edd456059a0db3dcb6e7feac757010e1a5d55c09d180b",
+      "observedAt": "2026-07-26T17:34:14.964Z",
+      "sha256": "84d7495a50f36a056a4249013b9906fee5eff2ab8959e6c49ba7a1c19d5c68a3",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:25:45.215Z",
-        "finishedAt": "2026-07-26T17:25:48.529Z",
+        "startedAt": "2026-07-26T17:34:11.774Z",
+        "finishedAt": "2026-07-26T17:34:14.964Z",
         "completed": true
       }
     },
@@ -275,15 +275,15 @@
       "id": "command-m4-agent-capability",
       "kind": "command",
       "source": "m4-agent-capability",
-      "observedAt": "2026-07-26T17:25:45.212Z",
-      "sha256": "fbe01bfc2f766ca004e877906256199419699a745e9eaf84871a422ef658e7d9",
+      "observedAt": "2026-07-26T17:34:11.771Z",
+      "sha256": "75a8c966f204deb3e32010905df07f2d16e50e8fd950b11c80179e1b724f78d3",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:25:48.529Z",
-        "finishedAt": "2026-07-26T17:25:50.385Z",
+        "startedAt": "2026-07-26T17:34:14.965Z",
+        "finishedAt": "2026-07-26T17:34:16.737Z",
         "completed": true,
         "agentApiMechanismTestedOffline": true,
-        "activeStrategyAcceptancePassed": true,
+        "activeStrategyAcceptanceValid": true,
         "liveAgentGenerationEvidenceRequired": false,
         "automaticHealingEvaluatedSeparatelyInM5": true,
         "trustedValidationSampleSize": 30,
@@ -294,12 +294,12 @@
       "id": "command-m5-healing",
       "kind": "command",
       "source": "m5-healing",
-      "observedAt": "2026-07-26T17:25:58.662Z",
-      "sha256": "9879dec4b229aa865607bd13446c300ed8d7ef10ba880e2d3b703ad3e873330b",
+      "observedAt": "2026-07-26T17:34:24.843Z",
+      "sha256": "14a72e888522120274b6eea52682b6927bf38f4a11ed98b54e494373b5142f99",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:25:50.385Z",
-        "finishedAt": "2026-07-26T17:25:58.662Z",
+        "startedAt": "2026-07-26T17:34:16.737Z",
+        "finishedAt": "2026-07-26T17:34:24.843Z",
         "completed": true
       }
     },
@@ -307,12 +307,12 @@
       "id": "command-m6-index-analysis",
       "kind": "command",
       "source": "m6-index-analysis",
-      "observedAt": "2026-07-26T17:26:08.666Z",
-      "sha256": "a87ee58529566ea99335bfb079402173143b354a5febd94b213bc927c3718420",
+      "observedAt": "2026-07-26T17:34:34.574Z",
+      "sha256": "963912ccc58623524c84ea04fa49de0b4b7e92b43df898cf0cc121d8b70f5257",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-26T17:25:58.662Z",
-        "finishedAt": "2026-07-26T17:26:08.666Z",
+        "startedAt": "2026-07-26T17:34:24.843Z",
+        "finishedAt": "2026-07-26T17:34:34.574Z",
         "completed": true
       }
     },
@@ -320,7 +320,7 @@
       "id": "db-m2-heartbeat-linked-collection-runs",
       "kind": "database-query",
       "source": "m2-heartbeat-linked-collection-runs",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "linkedRuns": 0,
         "ignoredManualLinkedRuns": 70,
@@ -329,15 +329,15 @@
         "qualifyingConsecutiveRetailers": 0,
         "qualifyingDayPair": null,
         "contradictoryHeartbeats": 0,
-        "scheduleActivatedAt": "2026-07-26T17:21:40.846Z",
-        "expectedReleaseId": "386f972542c07e68111ae85bc5593669"
+        "scheduleActivatedAt": "2026-07-26T17:30:38.970Z",
+        "expectedReleaseId": "d489fb05881b92d98dcd38397c1c28f0"
       }
     },
     {
       "id": "db-m3-latest-classification-coverage",
       "kind": "database-query",
       "source": "m3-latest-classification-coverage",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "activeRetailers": 4,
         "activeProducts": 9154,
@@ -351,7 +351,7 @@
       "id": "db-m3-live-panel",
       "kind": "database-query",
       "source": "m3-live-panel",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "activeRetailers": 4,
         "degradedRetailers": 0,
@@ -368,7 +368,7 @@
       "id": "file-m1-fixture-inventory",
       "kind": "file",
       "source": "tests/fixtures",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "requiredOfflineTestFiles": 11,
         "requiredOfflineTestFilesPresent": 11,
@@ -383,7 +383,7 @@
       "id": "file-m3-active-strategy-validation-receipts",
       "kind": "file",
       "source": "data/validation",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "sha256": "8bdc84a68d15847e06d470defb7d895bf5871990b190066a95c2427b326e7905",
       "facts": {
         "activeStrategies": 8,
@@ -407,7 +407,7 @@
       "id": "file-m3-classification-human-review",
       "kind": "file",
       "source": "data/acceptance/evidence/classification-review-v1.json",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "latestClassificationVersion": 1,
         "activeClassificationRows": 6977,
@@ -424,7 +424,7 @@
       "id": "file-m5-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -436,7 +436,7 @@
       "id": "file-m6-current-binding",
       "kind": "file",
       "source": "data/exports/latest.json+analysis/output/latest.json",
-      "observedAt": "2026-07-26T17:25:32.617Z",
+      "observedAt": "2026-07-26T17:34:02.542Z",
       "sha256": "f622cf71cee472ddfdd51e35a3af22725b78432a82109baa33300a50dde0584f",
       "facts": {
         "databaseCountsMatch": true,
@@ -464,7 +464,7 @@
       "id": "file-m6-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -476,7 +476,7 @@
       "id": "file-m7-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -488,8 +488,8 @@
       "id": "receipt-m0-fresh-clone",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-26T17:25:45.212Z",
-      "sha256": "c0b9b4efa1d324c4df9b9557a6115e5de5a97758216f993099c9cd58f1b89f16",
+      "observedAt": "2026-07-26T17:34:11.771Z",
+      "sha256": "0c107e0e037c7871a19d148d1a0a8507562a8109c7c3713c380b708f7a3a030c",
       "facts": {
         "receiptPresent": true,
         "receiptMatchesEvaluatedCommit": true,
@@ -507,8 +507,8 @@
       "id": "receipt-m6-analysis-regenerate",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-26T17:25:32.617Z",
-      "sha256": "c0b9b4efa1d324c4df9b9557a6115e5de5a97758216f993099c9cd58f1b89f16",
+      "observedAt": "2026-07-26T17:34:02.542Z",
+      "sha256": "0c107e0e037c7871a19d148d1a0a8507562a8109c7c3713c380b708f7a3a030c",
       "facts": {
         "freshCloneMatchesEvaluatedCommit": true,
         "analysisCommandSucceeded": true
@@ -518,7 +518,7 @@
       "id": "service-m3-classification-automation",
       "kind": "service",
       "source": "precos-classification.service",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "dailyRunObserved": false,
         "classificationUnitInstalled": true,
@@ -531,7 +531,7 @@
       "id": "service-m7-publication-operations",
       "kind": "service",
       "source": "m7-publication-and-six-timers",
-      "observedAt": "2026-07-26T17:25:45.212Z",
+      "observedAt": "2026-07-26T17:34:11.771Z",
       "facts": {
         "publicationStatus": "pass",
         "publicationFindings": 0,
@@ -541,16 +541,16 @@
         "systemdInstallReceiptValid": true,
         "installedReleaseMatchesEvaluatedCommit": true,
         "systemdInstalledAt": "2026-07-11T04:33:13.125Z",
-        "systemdDeployedAt": "2026-07-26T17:21:40.846Z",
-        "systemdReleaseId": "386f972542c07e68111ae85bc5593669",
-        "systemdUnitSetSha256": "4d6a5fc6b9123b4f23c5e9e859d6fb514848b1faa5079d4b5c62d0e22ff769f1",
+        "systemdDeployedAt": "2026-07-26T17:30:38.970Z",
+        "systemdReleaseId": "d489fb05881b92d98dcd38397c1c28f0",
+        "systemdUnitSetSha256": "50df6014109271c7243155aff185e9986faf2f514d4fb945a8f5763876214a43",
         "userLingerEnabled": true,
         "renderedUnitFiles": 13,
         "failedServiceUnits": 0,
         "alertDrillMatches": true,
         "backupDrillMatches": true,
         "backupIntegrityAndAgeValid": true,
-        "backupAgeHours": 0.06349663818359375,
+        "backupAgeHours": 0.05522359415690104,
         "latestCollectionHeartbeatFresh": false,
         "latestCollectionHeartbeatAgeHours": null,
         "firstDailyWindowElapsed": false,
