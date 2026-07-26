@@ -930,8 +930,54 @@ describe("acceptance status and evidence", () => {
     }, new Date("2026-07-10T12:00:00.000Z"));
     expect(m3Criterion(result, "m3-live-panel").status).toBe("pass");
     expect(m3Criterion(result, "m3-classification-coverage").status).toBe("pass");
-    expect(result.evidence.find((item) => item.id === "db-m3-latest-classification-coverage")?.facts.activeProducts).toBe(20);
-    expect(result.evidence.find((item) => item.id === "db-m3-latest-classification-coverage")?.facts.highConfidenceProducts).toBe(16);
+    const coverage = result.evidence.find(
+      (item) => item.id === "db-m3-latest-classification-coverage",
+    )?.facts;
+    expect(coverage?.activeProducts).toBe(20);
+    expect(coverage?.classificationEligibleProducts).toBe(20);
+    expect(coverage?.pendingDescriptiveTitleProducts).toBe(0);
+    expect(coverage?.highConfidenceProducts).toBe(16);
+  });
+
+  it("reports unobserved discovery placeholders outside classification coverage", () => {
+    const database = fixture();
+    for (const retailer of ["alpha", "beta", "gamma", "delta"]) {
+      seedRetailer(database, retailer, 5);
+    }
+    database.prepare(`
+      INSERT INTO ipca_items(id, code, name, weight, weight_period, source_url, citation)
+      VALUES ('item', '1', 'Item', 1, '2026-01', 'https://example.test', 'fixture')
+    `).run();
+    const products = database.prepare("SELECT id FROM products ORDER BY id").all() as Array<{ id: string }>;
+    const insert = database.prepare(`
+      INSERT INTO classifications(id, product_id, ipca_item_id, version, decision, confidence, method)
+      VALUES (?, ?, 'item', 1, 'accepted', ?, 'fixture')
+    `);
+    for (const [index, product] of products.entries()) {
+      insert.run(`classification-${index}`, product.id, index < 16 ? 0.8 : 0.79);
+    }
+    database.prepare(`
+      INSERT INTO products(
+        id, retailer_id, canonical_url, title, first_seen, last_seen
+      ) VALUES (
+        'unobserved-placeholder', 'alpha', 'https://alpha.example.test/pending',
+        'pending', '2026-07-10', '2026-07-10'
+      )
+    `).run();
+
+    const result = evaluateM3(database, {
+      credentialConfigured: true,
+      siteValidated: true,
+    }, new Date("2026-07-10T12:00:00.000Z"));
+    const coverage = result.evidence.find(
+      (item) => item.id === "db-m3-latest-classification-coverage",
+    )?.facts;
+
+    expect(m3Criterion(result, "m3-classification-coverage").status).toBe("pass");
+    expect(coverage?.activeProducts).toBe(21);
+    expect(coverage?.classificationEligibleProducts).toBe(20);
+    expect(coverage?.pendingDescriptiveTitleProducts).toBe(1);
+    expect(coverage?.highConfidenceProducts).toBe(16);
   });
 
   it("ignores predeployment legacy heartbeat schema for the current M3 panel", () => {

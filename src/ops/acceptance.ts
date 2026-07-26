@@ -924,7 +924,16 @@ WITH ranked AS (
 )
 SELECT retailer.id AS retailer_id,
   COUNT(product.id) AS active_in_scope_products,
-  SUM(CASE WHEN ranked.ipca_item_id IS NOT NULL AND ranked.confidence >= 0.8 THEN 1 ELSE 0 END) AS high_confidence_products
+  SUM(CASE
+    WHEN product.descriptive_title = 1 OR ranked.id IS NOT NULL THEN 1
+    ELSE 0
+  END) AS classification_eligible_products,
+  SUM(CASE
+    WHEN (product.descriptive_title = 1 OR ranked.id IS NOT NULL)
+      AND ranked.ipca_item_id IS NOT NULL
+      AND ranked.confidence >= 0.8 THEN 1
+    ELSE 0
+  END) AS high_confidence_products
 FROM retailers AS retailer
 JOIN products AS product ON product.retailer_id = retailer.id
 LEFT JOIN ranked ON ranked.product_id = product.id AND ranked.rank = 1
@@ -958,6 +967,7 @@ export function evaluateM3(
   const rows = database.prepare(M3_QUERY).all() as Array<{
     retailer_id: string;
     active_in_scope_products: number;
+    classification_eligible_products: number;
     high_confidence_products: number;
   }>;
   const retailerFacts = database.prepare(`
@@ -966,8 +976,13 @@ export function evaluateM3(
     FROM retailers WHERE active = 1
   `).get() as { activeRetailers: number; degradedRetailers: number };
   const activeProducts = rows.reduce((sum, row) => sum + row.active_in_scope_products, 0);
+  const classificationEligibleProducts = rows.reduce(
+    (sum, row) => sum + row.classification_eligible_products,
+    0,
+  );
   const highConfidence = rows.reduce((sum, row) => sum + row.high_confidence_products, 0);
-  const ratioPass = activeProducts > 0 && highConfidence * 5 >= activeProducts * 4;
+  const ratioPass = classificationEligibleProducts > 0
+    && highConfidence * 5 >= classificationEligibleProducts * 4;
   const panelExceptionPass = retailerFacts.activeRetailers === 3
     && options.decisionsDocumented === true
     && options.namedBackupDocumented === true
@@ -1063,8 +1078,12 @@ export function evaluateM3(
   const classificationEvidence = evidence(classificationEvidenceId, "database-query", "m3-latest-classification-coverage", now.toISOString(), {
     activeRetailers: retailerFacts.activeRetailers,
     activeProducts,
+    classificationEligibleProducts,
+    pendingDescriptiveTitleProducts: activeProducts - classificationEligibleProducts,
     highConfidenceProducts: highConfidence,
-    classificationCoverage: activeProducts === 0 ? 0 : highConfidence / activeProducts,
+    classificationCoverage: classificationEligibleProducts === 0
+      ? 0
+      : highConfidence / classificationEligibleProducts,
   });
 
   let panelCriterion: AcceptanceCriterion;
@@ -1098,7 +1117,7 @@ export function evaluateM3(
   let classificationCriterion: AcceptanceCriterion;
   let classificationGate: PendingGate | null = null;
   if (ratioPass) {
-    classificationCriterion = criterion("m3-classification-coverage", "pass", "Latest-version high-confidence classification covers at least 80% of active products", [], [classificationEvidenceId]);
+    classificationCriterion = criterion("m3-classification-coverage", "pass", "Latest-version high-confidence classification covers at least 80% of classification-eligible active products", [], [classificationEvidenceId]);
   } else if (!options.credentialConfigured) {
     classificationCriterion = criterion("m3-classification-coverage", "pending", "High-confidence classification coverage remains credential-gated", ["CREDENTIAL_NOT_CONFIGURED"], [classificationEvidenceId]);
     classificationGate = gate("m3-classification-coverage", "credential", "CREDENTIAL_NOT_CONFIGURED", null,

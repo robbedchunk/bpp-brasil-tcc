@@ -118,7 +118,10 @@ coverage counts and are excluded from index aggregation. A stratified review
 sample supports a separate thesis precision check. Classification eligibility
 starts only after a successful observation supplies a descriptive title; a
 numeric external ID, URL slug, or pending-title placeholder is never sent to the
-model. Every published research snapshot pins one declared classification
+model. Classification coverage therefore uses classification-eligible active
+products as its denominator and reports active discovery references still
+awaiting a descriptive title separately; already-classified legacy rows remain
+eligible. Every published research snapshot pins one declared classification
 version for all products; the automated publication frame is version 1 until a
 reviewed implementation change advances it. A partial newer reclassification
 therefore cannot create a hybrid historical series.

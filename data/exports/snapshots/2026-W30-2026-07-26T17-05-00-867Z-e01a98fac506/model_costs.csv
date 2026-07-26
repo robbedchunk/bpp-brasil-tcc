@@ -1,0 +1,11 @@
+month,retailer_id,category,provider,model,input_tokens,output_tokens,cost_usd,event_count
+2026-07,,classification-recovery,internal-recovery,gpt-5.6-luna,0,0,0.48994250,4
+2026-07,,classification_failure,openai,gpt-5.6-luna,3398864,124025,10.35753500,42
+2026-07,carrefour,classification,openai,gpt-5.6-luna,5541853,206764,16.95602503,2773
+2026-07,carrefour,strategy-exploration,codex-sdk,gpt-5.6-sol,302828,6551,10.00000000,5
+2026-07,extra-mercado,classification,openai,gpt-5.6-luna,6780731,253337,20.75193263,3393
+2026-07,extra-mercado,strategy-exploration,codex-sdk,gpt-5.6-sol,1099573,18952,16.22799000,8
+2026-07,pao-de-acucar,classification,openai,gpt-5.6-luna,6414857,240097,19.63816680,3212
+2026-07,pao-de-acucar,strategy-exploration,codex-sdk,gpt-5.6-sol,444076,6881,4.85362000,2
+2026-07,st-marche,classification,openai,gpt-5.6-luna,5673709,212248,17.36844053,2839
+2026-07,st-marche,strategy-exploration,codex-sdk,gpt-5.6-sol,529563,9863,15.88741000,4

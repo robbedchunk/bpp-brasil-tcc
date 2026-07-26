@@ -517,3 +517,19 @@
   does not depend on them. Public prose must distinguish implemented capability
   from empirical live-agent provenance and must not infer reduced maintenance
   effort from an unrequired provider run.
+
+## 2026-07-26 — Classification coverage population
+
+- Classification coverage is measured over active, in-scope products that have
+  a trusted descriptive title. Active discovery references whose only title is
+  a numeric ID, URL slug, or pending placeholder are reported separately and
+  are not sent to the model.
+- This aligns acceptance with the existing classifier safety boundary and
+  avoids an impossible denominator: the current catalog has 2,177 active
+  discovery references that are intentionally classification-ineligible.
+  Counting them as classification failures capped achievable coverage below
+  80% even if every eligible product were classified.
+- Already-classified legacy rows remain in the denominator even if their
+  current `descriptive_title` flag is false. Low-confidence, ambiguous, and
+  review-required results also remain in the denominator; the change cannot
+  improve coverage by discarding a model outcome.

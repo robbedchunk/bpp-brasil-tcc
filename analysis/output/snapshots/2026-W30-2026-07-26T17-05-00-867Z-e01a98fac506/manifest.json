@@ -1,0 +1,250 @@
+{
+  "caveats": [
+    "sem validação estatística",
+    "não é intervalo de confiança",
+    "índice experimental e faixa descritiva entre varejistas",
+    "preço promocional quando positivo; carregamento por produto limitado a sete dias",
+    "média igual entre varejistas e pesos POF renormalizados sobre subitens cobertos",
+    "painel por CEP e série oficial SNIPC São Paulo N7 têm definições geográficas distintas"
+  ],
+  "generatedAt": "2026-07-26T17:05:00.867Z",
+  "input": {
+    "manifestSha256": "e7873c1a1a6c6463e33949cd4430cebbe5aa731db34d7f51a60d948a4f31d397",
+    "snapshotId": "2026-W30-2026-07-26T17-05-00-867Z-e01a98fac506"
+  },
+  "inputs": [
+    {
+      "bytes": 20013,
+      "columns": [
+        "run_id",
+        "retailer_id",
+        "retailer_name",
+        "collection_day",
+        "stage",
+        "status",
+        "attempted",
+        "ok",
+        "failed",
+        "success_rate",
+        "strategy_id",
+        "strategy_version",
+        "started_at",
+        "finished_at",
+        "error_category"
+      ],
+      "path": "runs.csv",
+      "rows": 104,
+      "sha256": "ce312b6f9475d24c142e4eb8856bbed802dbf55f8c6662c8e7c6cd7191b9e7a6"
+    },
+    {
+      "bytes": 398,
+      "columns": [
+        "event_id",
+        "retailer_id",
+        "retailer_name",
+        "purpose",
+        "status",
+        "onset_run_id",
+        "previous_strategy_id",
+        "successor_strategy_id",
+        "attempts",
+        "tier_from",
+        "tier_to",
+        "drift_started_at",
+        "detected_at",
+        "recovered_at",
+        "duration_seconds"
+      ],
+      "path": "healing_events.csv",
+      "rows": 1,
+      "sha256": "b410a6c475cefa45e9e44b469bb9bf8424d65bbd56afc0624a6cdf7c57997e74"
+    },
+    {
+      "bytes": 2334,
+      "columns": [
+        "date",
+        "previous_date",
+        "chain_segment",
+        "daily_relative",
+        "index_level",
+        "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca",
+        "coverage_fraction",
+        "covered_subitem_count",
+        "retailer_count",
+        "product_pair_count",
+        "descriptive_low_relative",
+        "descriptive_high_relative",
+        "method_version"
+      ],
+      "path": "aggregate_daily.csv",
+      "rows": 17,
+      "sha256": "fd57e6fb4292162f0e9b25e646ee91fd45ff6ea007dc3004a29edd022f44f002"
+    },
+    {
+      "bytes": 1496,
+      "columns": [
+        "date",
+        "covered_weight_pct_total_ipca",
+        "total_food_at_home_weight_pct_total_ipca",
+        "coverage_fraction",
+        "covered_subitem_count",
+        "retailer_count",
+        "product_pair_count",
+        "unclassified_count",
+        "no_healthy_run_count",
+        "unavailable_count",
+        "carried_expired_count",
+        "no_denominator_count",
+        "invalid_price_count"
+      ],
+      "path": "coverage_daily.csv",
+      "rows": 17,
+      "sha256": "491b643f3912d0405a87e9f1ef1afb59947cd0f7482938414c75eea96cb34542"
+    },
+    {
+      "bytes": 90,
+      "columns": [
+        "month",
+        "experimental_variation_pct",
+        "official_variation_pct",
+        "status",
+        "experimental_chain_segment"
+      ],
+      "path": "monthly_comparison.csv",
+      "rows": 0,
+      "sha256": "8831bc11380fa79c39c875d222a6a004ad89ce755e942928c8de48f4c54beb3b"
+    }
+  ],
+  "methodVersion": "tcc-food-at-home-v1",
+  "outputs": [
+    {
+      "bytes": 132600,
+      "path": "success-rate.png",
+      "rows": null,
+      "sha256": "01f0fa6d4dcdf3db41716a6a96e1138dee456c0ff2c30a0675a334a569a02154"
+    },
+    {
+      "bytes": 316,
+      "path": "healing-events.csv",
+      "rows": 1,
+      "sha256": "bd0ed9a15b7ed895809907fe05a6d6667557f5db8cd4ab53eb034f04298b9936"
+    },
+    {
+      "bytes": 132274,
+      "path": "index-vs-ipca.png",
+      "rows": null,
+      "sha256": "8eb90a35f647122b765bbbd08f2a00f3c58f90c073a23dbd74122290fd14ce24"
+    },
+    {
+      "bytes": 2003,
+      "path": "index-coverage-and-dispersion.csv",
+      "rows": 17,
+      "sha256": "d08601ee535fefc23f4d6a932c7b459f38e14db56a016fa342c0e7c0290c8336"
+    }
+  ],
+  "plotting": {
+    "backend": "Agg",
+    "font": "DejaVu Sans",
+    "indexComparisonPixels": [
+      1600,
+      1200
+    ],
+    "indexFootnote": "Preço promocional quando positivo; carregamento por produto por até sete dias; média igual entre varejistas; pesos POF renormalizados.\nÍndice experimental; sem validação estatística. Faixa descritiva; não é intervalo de confiança. CEP do painel e área SNIPC São Paulo N7 diferem.",
+    "successRateDateLimits": [
+      "2026-07-09",
+      "2026-07-27"
+    ],
+    "successRateDateLocator": "daily",
+    "successRateHealingLegend": [
+      "detecção de deriva",
+      "recuperação automática"
+    ],
+    "successRatePixels": [
+      1600,
+      900
+    ]
+  },
+  "schemaVersion": 1,
+  "snapshotId": "2026-W30-2026-07-26T17-05-00-867Z-e01a98fac506",
+  "statuses": {
+    "noIndexData": false,
+    "noOfficialOverlap": true
+  },
+  "summaries": {
+    "dailySuccessRates": {
+      "carrefour:2026-07-11": 0.906796116505,
+      "carrefour:2026-07-12": 0.8445,
+      "carrefour:2026-07-13": 0.8245,
+      "carrefour:2026-07-14": 0.8955,
+      "carrefour:2026-07-15": 0.85,
+      "carrefour:2026-07-16": 0.5605,
+      "carrefour:2026-07-17": 0.907,
+      "carrefour:2026-07-18": 0.8555,
+      "carrefour:2026-07-19": 0.868333333333,
+      "carrefour:2026-07-20": 0.9145,
+      "carrefour:2026-07-21": 0.8575,
+      "carrefour:2026-07-22": 0.8575,
+      "carrefour:2026-07-23": 0.8775,
+      "carrefour:2026-07-24": 0.8915,
+      "carrefour:2026-07-25": 0.902231668438,
+      "carrefour:2026-07-26": 0.898888888889,
+      "extra-mercado:2026-07-10": 0.508196721311,
+      "extra-mercado:2026-07-11": 0.986206896552,
+      "extra-mercado:2026-07-12": 0.948,
+      "extra-mercado:2026-07-13": 0.9285,
+      "extra-mercado:2026-07-14": 0.9155,
+      "extra-mercado:2026-07-15": 0.87,
+      "extra-mercado:2026-07-16": 0.884,
+      "extra-mercado:2026-07-17": 0.8925,
+      "extra-mercado:2026-07-18": 0.8875,
+      "extra-mercado:2026-07-19": 0.886666666667,
+      "extra-mercado:2026-07-20": 0.913,
+      "extra-mercado:2026-07-21": 0.8885,
+      "extra-mercado:2026-07-22": 0.876,
+      "extra-mercado:2026-07-23": 0.8745,
+      "extra-mercado:2026-07-24": 0.868,
+      "extra-mercado:2026-07-25": 0.847,
+      "extra-mercado:2026-07-26": 0.858333333333,
+      "pao-de-acucar:2026-07-10": 0.508196721311,
+      "pao-de-acucar:2026-07-11": 0.994581280788,
+      "pao-de-acucar:2026-07-12": 0.982,
+      "pao-de-acucar:2026-07-13": 0.95,
+      "pao-de-acucar:2026-07-14": 0.9315,
+      "pao-de-acucar:2026-07-15": 0.9155,
+      "pao-de-acucar:2026-07-16": 0.909,
+      "pao-de-acucar:2026-07-17": 0.931,
+      "pao-de-acucar:2026-07-18": 0.9135,
+      "pao-de-acucar:2026-07-19": 0.903333333333,
+      "pao-de-acucar:2026-07-20": 0.9265,
+      "pao-de-acucar:2026-07-21": 0.883,
+      "pao-de-acucar:2026-07-22": 0.836,
+      "pao-de-acucar:2026-07-23": 0.8675,
+      "pao-de-acucar:2026-07-24": 0.871,
+      "pao-de-acucar:2026-07-25": 0.884974093264,
+      "pao-de-acucar:2026-07-26": 0.888333333333,
+      "st-marche:2026-07-11": 1.0,
+      "st-marche:2026-07-12": 0.9995,
+      "st-marche:2026-07-13": 0.9995,
+      "st-marche:2026-07-14": 0.9995,
+      "st-marche:2026-07-15": 0.9995,
+      "st-marche:2026-07-16": 0.9955,
+      "st-marche:2026-07-17": 0.9945,
+      "st-marche:2026-07-18": 0.9955,
+      "st-marche:2026-07-19": 0.993888888889,
+      "st-marche:2026-07-20": 0.996,
+      "st-marche:2026-07-21": 0.9955,
+      "st-marche:2026-07-22": 0.9955,
+      "st-marche:2026-07-23": 0.994,
+      "st-marche:2026-07-24": 0.9955,
+      "st-marche:2026-07-25": 0.997413347129,
+      "st-marche:2026-07-26": 0.997777777778
+    }
+  },
+  "versions": {
+    "matplotlib": "3.11.0",
+    "numpy": "2.5.1",
+    "pandas": "3.0.3",
+    "python": "3.14.4"
+  }
+}
