@@ -29,6 +29,8 @@ data/reviews/*.csv
 
 # Personal working documents (kept out of the pseudonymous history)
 *.docx
+thesis-latex/
+LatexRelatPrelimGrupo_v1.zip
 
 # Local agent scaffolding (not part of the published artifact)
 .superpowers/
