@@ -1,21 +1,19 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-07-25T01:01:24.929Z",
+  "generatedAt": "2026-07-26T17:25:45.212Z",
   "timezone": "America/Sao_Paulo",
-  "evaluatedCommit": "1cad20fd9525e64edb2568eb86c9e1c7a295398b",
-  "databaseSha256": "8f0c7136502f6f6791de18729079e196fc2a031596011e5203554151a6db46f8",
-  "overallStatus": "fail",
+  "evaluatedCommit": "d382126f2144a66a962bcd46a249cd4b1be84ca5",
+  "databaseSha256": "48ed9593bf4f658f0c0aa13e745c50ef1e5a8dade89967930ac15c7ed423212c",
+  "overallStatus": "pending",
   "milestones": {
     "M0": {
-      "status": "fail",
+      "status": "pass",
       "criteria": [
         {
           "id": "m0-foundation-reproducibility",
-          "status": "fail",
-          "summary": "Foundation or clean-clone reproducibility evidence is missing or invalid",
-          "reasonCodes": [
-            "REQUIRED_ARTIFACT_MISSING"
-          ],
+          "status": "pass",
+          "summary": "Clean-clone receipt, declared runtime, migrations, and read-only database checks pass",
+          "reasonCodes": [],
           "evidenceIds": [
             "receipt-m0-fresh-clone"
           ]
@@ -23,15 +21,13 @@
       ]
     },
     "M1": {
-      "status": "fail",
+      "status": "pass",
       "criteria": [
         {
           "id": "m1-offline-determinism",
-          "status": "fail",
+          "status": "pass",
           "summary": "Offline normalization, extraction, discovery, and retailer safety suites pass",
-          "reasonCodes": [
-            "OFFLINE_CHECK_FAILED"
-          ],
+          "reasonCodes": [],
           "evidenceIds": [
             "command-m1-offline",
             "file-m1-fixture-inventory"
@@ -40,13 +36,15 @@
       ]
     },
     "M2": {
-      "status": "pass",
+      "status": "pending",
       "criteria": [
         {
           "id": "m2-two-consecutive-days",
-          "status": "pass",
-          "summary": "Two retailers have two consecutive qualifying scheduled collection days",
-          "reasonCodes": [],
+          "status": "pending",
+          "summary": "Two consecutive qualifying collection days have not yet matured",
+          "reasonCodes": [
+            "TIME_WINDOW_NOT_ELAPSED"
+          ],
           "evidenceIds": [
             "db-m2-heartbeat-linked-collection-runs"
           ]
@@ -54,13 +52,15 @@
       ]
     },
     "M3": {
-      "status": "fail",
+      "status": "pending",
       "criteria": [
         {
           "id": "m3-live-panel",
-          "status": "pass",
-          "summary": "The live panel has current substantive scheduled collection evidence",
-          "reasonCodes": [],
+          "status": "pending",
+          "summary": "The live panel awaits its first substantive scheduled collection",
+          "reasonCodes": [
+            "SCHEDULED_RUN_NOT_YET_DUE"
+          ],
           "evidenceIds": [
             "db-m3-live-panel"
           ]
@@ -68,7 +68,7 @@
         {
           "id": "m3-classification-coverage",
           "status": "pass",
-          "summary": "Latest-version high-confidence classification covers at least 80% of active products",
+          "summary": "Latest-version high-confidence classification covers at least 80% of classification-eligible active products",
           "reasonCodes": [],
           "evidenceIds": [
             "db-m3-latest-classification-coverage"
@@ -87,11 +87,9 @@
         },
         {
           "id": "m3-active-strategy-validation-receipts",
-          "status": "fail",
-          "summary": "The strategy-validation receipt registry is malformed or misbound",
-          "reasonCodes": [
-            "EVIDENCE_CONTRADICTION"
-          ],
+          "status": "pass",
+          "summary": "Every active strategy has a published, identity-bound 30-sample validation receipt",
+          "reasonCodes": [],
           "evidenceIds": [
             "file-m3-active-strategy-validation-receipts"
           ]
@@ -108,15 +106,13 @@
       ]
     },
     "M4": {
-      "status": "fail",
+      "status": "pass",
       "criteria": [
         {
           "id": "m4-guarded-agent-capability",
-          "status": "fail",
-          "summary": "The agent API mechanism is implemented, but active strategies did not pass the trusted acceptance boundary",
-          "reasonCodes": [
-            "EVIDENCE_CONTRADICTION"
-          ],
+          "status": "pass",
+          "summary": "The Codex SDK mechanism is wired behind trusted strategy acceptance; live generation provenance is not a delivery requirement",
+          "reasonCodes": [],
           "evidenceIds": [
             "command-m4-agent-capability"
           ]
@@ -139,17 +135,18 @@
       ]
     },
     "M6": {
-      "status": "fail",
+      "status": "pending",
       "criteria": [
         {
           "id": "m6-index-analysis",
-          "status": "fail",
-          "summary": "Index/analysis tests or clean-clone one-command regeneration evidence failed",
+          "status": "pending",
+          "summary": "Current artifacts are valid but a nonempty official overlap comparison is not yet available",
           "reasonCodes": [
-            "OFFLINE_CHECK_FAILED"
+            "OFFICIAL_OVERLAP_NOT_AVAILABLE"
           ],
           "evidenceIds": [
             "command-m6-index-analysis",
+            "file-m6-current-binding",
             "file-m6-review-findings",
             "receipt-m6-analysis-regenerate"
           ]
@@ -157,14 +154,14 @@
       ]
     },
     "M7": {
-      "status": "fail",
+      "status": "pending",
       "criteria": [
         {
           "id": "m7-publication-operations",
-          "status": "fail",
-          "summary": "Publication audit reports a public safety defect",
+          "status": "pending",
+          "summary": "The first applicable scheduled daily/backup windows have not both elapsed",
           "reasonCodes": [
-            "SECRET_OR_PRIVATE_ARTIFACT"
+            "SCHEDULED_RUN_NOT_YET_DUE"
           ],
           "evidenceIds": [
             "file-m7-review-findings",
@@ -176,56 +173,12 @@
   },
   "publication": {
     "schemaVersion": 1,
-    "generatedAt": "2026-07-25T01:02:41.542Z",
-    "commit": "1cad20fd9525e64edb2568eb86c9e1c7a295398b",
-    "status": "fail",
+    "generatedAt": "2026-07-26T17:26:40.582Z",
+    "commit": "d382126f2144a66a962bcd46a249cd4b1be84ca5",
+    "status": "pass",
     "trackedSecrets": [],
-    "historicalSecrets": [
-      {
-        "ruleId": "SECRET_OPENAI_KEY",
-        "scope": "git-history",
-        "location": "_DEPRECATED/experiments/discovery_cache/discovery_mercado_carrefour_com_br.json:8452",
-        "objectId": "c28e53d256462f1f43e70fc6ee5b9611f3ccc50e",
-        "message": "Credential-like material matched a publication safety rule"
-      },
-      {
-        "ruleId": "SECRET_URI_CREDENTIALS",
-        "scope": "git-history",
-        "location": "_DEPRECATED/infrastructure/readme.md:52",
-        "objectId": "061c4cfd61102c48cbb9cb1420d0683788005d96",
-        "message": "Credential-like material matched a publication safety rule"
-      },
-      {
-        "ruleId": "SECRET_OPENAI_KEY",
-        "scope": "git-history",
-        "location": "experiments/discovery_cache/discovery_mercado_carrefour_com_br.json:8452",
-        "objectId": "c28e53d256462f1f43e70fc6ee5b9611f3ccc50e",
-        "message": "Credential-like material matched a publication safety rule"
-      },
-      {
-        "ruleId": "SECRET_URI_CREDENTIALS",
-        "scope": "git-history",
-        "location": "infrastructure/readme.md:52",
-        "objectId": "061c4cfd61102c48cbb9cb1420d0683788005d96",
-        "message": "Credential-like material matched a publication safety rule"
-      }
-    ],
-    "trackedPrivateArtifacts": [
-      {
-        "ruleId": "HISTORICAL_PRIVATE_ARTIFACT",
-        "scope": "git-history",
-        "location": "final-be/.env.example",
-        "objectId": "0534e9b60d7c8afb0eda512e0778c2e6a5ddb31a",
-        "message": "Private runtime material exists in reachable Git history"
-      },
-      {
-        "ruleId": "HISTORICAL_PRIVATE_ARTIFACT",
-        "scope": "git-history",
-        "location": "final-be/.env",
-        "objectId": "2424f2fd2d3ec5f23c3d23c64833b018fa89a92b",
-        "message": "Private runtime material exists in reachable Git history"
-      }
-    ],
+    "historicalSecrets": [],
+    "trackedPrivateArtifacts": [],
     "trackedRawHtml": [],
     "unsafeLinksOrSubmodules": [],
     "publicDataFindings": [],
@@ -241,52 +194,20 @@
       "acceptanceReportLinked": true
     },
     "workingTreeClean": true,
-    "findings": [
-      {
-        "ruleId": "SECRET_OPENAI_KEY",
-        "scope": "git-history",
-        "location": "_DEPRECATED/experiments/discovery_cache/discovery_mercado_carrefour_com_br.json:8452",
-        "objectId": "c28e53d256462f1f43e70fc6ee5b9611f3ccc50e",
-        "message": "Credential-like material matched a publication safety rule"
-      },
-      {
-        "ruleId": "SECRET_URI_CREDENTIALS",
-        "scope": "git-history",
-        "location": "_DEPRECATED/infrastructure/readme.md:52",
-        "objectId": "061c4cfd61102c48cbb9cb1420d0683788005d96",
-        "message": "Credential-like material matched a publication safety rule"
-      },
-      {
-        "ruleId": "SECRET_OPENAI_KEY",
-        "scope": "git-history",
-        "location": "experiments/discovery_cache/discovery_mercado_carrefour_com_br.json:8452",
-        "objectId": "c28e53d256462f1f43e70fc6ee5b9611f3ccc50e",
-        "message": "Credential-like material matched a publication safety rule"
-      },
-      {
-        "ruleId": "HISTORICAL_PRIVATE_ARTIFACT",
-        "scope": "git-history",
-        "location": "final-be/.env.example",
-        "objectId": "0534e9b60d7c8afb0eda512e0778c2e6a5ddb31a",
-        "message": "Private runtime material exists in reachable Git history"
-      },
-      {
-        "ruleId": "HISTORICAL_PRIVATE_ARTIFACT",
-        "scope": "git-history",
-        "location": "final-be/.env",
-        "objectId": "2424f2fd2d3ec5f23c3d23c64833b018fa89a92b",
-        "message": "Private runtime material exists in reachable Git history"
-      },
-      {
-        "ruleId": "SECRET_URI_CREDENTIALS",
-        "scope": "git-history",
-        "location": "infrastructure/readme.md:52",
-        "objectId": "061c4cfd61102c48cbb9cb1420d0683788005d96",
-        "message": "Credential-like material matched a publication safety rule"
-      }
-    ]
+    "findings": []
   },
   "pendingGates": [
+    {
+      "criterionId": "m2-two-consecutive-days",
+      "kind": "time",
+      "reasonCode": "TIME_WINDOW_NOT_ELAPSED",
+      "since": null,
+      "nextAction": "Let the installed daily schedule collect the next real São Paulo calendar day",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "db-m2-heartbeat-linked-collection-runs"
+      ]
+    },
     {
       "criterionId": "m3-classification-human-review",
       "kind": "authority",
@@ -297,6 +218,43 @@
       "evidenceIds": [
         "file-m3-classification-human-review"
       ]
+    },
+    {
+      "criterionId": "m3-live-panel",
+      "kind": "time",
+      "reasonCode": "SCHEDULED_RUN_NOT_YET_DUE",
+      "since": null,
+      "nextAction": "Let the installed daily schedule collect every active retailer with a healthy substantive run",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "db-m3-live-panel"
+      ]
+    },
+    {
+      "criterionId": "m6-index-analysis",
+      "kind": "time",
+      "reasonCode": "OFFICIAL_OVERLAP_NOT_AVAILABLE",
+      "since": "2026-07-26T17:25:32.617Z",
+      "nextAction": "Collect through an overlapping closed official month, then regenerate the comparison",
+      "recheckCommand": "npm run research:snapshot && npm run acceptance -- --json",
+      "evidenceIds": [
+        "command-m6-index-analysis",
+        "file-m6-current-binding",
+        "file-m6-review-findings",
+        "receipt-m6-analysis-regenerate"
+      ]
+    },
+    {
+      "criterionId": "m7-publication-operations",
+      "kind": "time",
+      "reasonCode": "SCHEDULED_RUN_NOT_YET_DUE",
+      "since": "2026-07-26T17:21:40.846Z",
+      "nextAction": "Let both installed São Paulo schedules reach their first real windows",
+      "recheckCommand": "npm run acceptance -- --json",
+      "evidenceIds": [
+        "file-m7-review-findings",
+        "service-m7-publication-operations"
+      ]
     }
   ],
   "evidence": [
@@ -304,12 +262,12 @@
       "id": "command-m1-offline",
       "kind": "command",
       "source": "m1-offline",
-      "observedAt": "2026-07-25T01:01:28.192Z",
-      "sha256": "beea8f4c5ddf212547b0cca10702cbd807b2051cb8cf9d70e846ff6defb5d2ee",
+      "observedAt": "2026-07-26T17:25:48.529Z",
+      "sha256": "4fcc9c5b27601be2766edd456059a0db3dcb6e7feac757010e1a5d55c09d180b",
       "facts": {
-        "exitCode": 1,
-        "startedAt": "2026-07-25T01:01:24.931Z",
-        "finishedAt": "2026-07-25T01:01:28.192Z",
+        "exitCode": 0,
+        "startedAt": "2026-07-26T17:25:45.215Z",
+        "finishedAt": "2026-07-26T17:25:48.529Z",
         "completed": true
       }
     },
@@ -317,15 +275,15 @@
       "id": "command-m4-agent-capability",
       "kind": "command",
       "source": "m4-agent-capability",
-      "observedAt": "2026-07-25T01:01:24.929Z",
-      "sha256": "66a053a638f2fc2aa0bb8f8cceb9bb3643c4ac2b18f28e4cceab948261ada0b2",
+      "observedAt": "2026-07-26T17:25:45.212Z",
+      "sha256": "fbe01bfc2f766ca004e877906256199419699a745e9eaf84871a422ef658e7d9",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-25T01:01:28.192Z",
-        "finishedAt": "2026-07-25T01:01:29.954Z",
+        "startedAt": "2026-07-26T17:25:48.529Z",
+        "finishedAt": "2026-07-26T17:25:50.385Z",
         "completed": true,
         "agentApiMechanismTestedOffline": true,
-        "activeStrategyAcceptancePassed": false,
+        "activeStrategyAcceptancePassed": true,
         "liveAgentGenerationEvidenceRequired": false,
         "automaticHealingEvaluatedSeparatelyInM5": true,
         "trustedValidationSampleSize": 30,
@@ -336,12 +294,12 @@
       "id": "command-m5-healing",
       "kind": "command",
       "source": "m5-healing",
-      "observedAt": "2026-07-25T01:01:37.918Z",
-      "sha256": "942ca33a672764016993b9c718b9cb7b54e280162d9f7e369bbab64d725fb561",
+      "observedAt": "2026-07-26T17:25:58.662Z",
+      "sha256": "9879dec4b229aa865607bd13446c300ed8d7ef10ba880e2d3b703ad3e873330b",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-25T01:01:29.954Z",
-        "finishedAt": "2026-07-25T01:01:37.918Z",
+        "startedAt": "2026-07-26T17:25:50.385Z",
+        "finishedAt": "2026-07-26T17:25:58.662Z",
         "completed": true
       }
     },
@@ -349,12 +307,12 @@
       "id": "command-m6-index-analysis",
       "kind": "command",
       "source": "m6-index-analysis",
-      "observedAt": "2026-07-25T01:01:47.808Z",
-      "sha256": "6da3ba8f2b072bb276b3d83c37f10817757c40b5bab0295a5358bbb1876975a7",
+      "observedAt": "2026-07-26T17:26:08.666Z",
+      "sha256": "a87ee58529566ea99335bfb079402173143b354a5febd94b213bc927c3718420",
       "facts": {
         "exitCode": 0,
-        "startedAt": "2026-07-25T01:01:37.918Z",
-        "finishedAt": "2026-07-25T01:01:47.808Z",
+        "startedAt": "2026-07-26T17:25:58.662Z",
+        "finishedAt": "2026-07-26T17:26:08.666Z",
         "completed": true
       }
     },
@@ -362,45 +320,47 @@
       "id": "db-m2-heartbeat-linked-collection-runs",
       "kind": "database-query",
       "source": "m2-heartbeat-linked-collection-runs",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
-        "linkedRuns": 32,
-        "ignoredManualLinkedRuns": 30,
-        "qualifyingRuns": 15,
-        "qualifyingRetailers": 4,
-        "qualifyingConsecutiveRetailers": 2,
-        "qualifyingDayPair": "2026-07-17/2026-07-18",
+        "linkedRuns": 0,
+        "ignoredManualLinkedRuns": 70,
+        "qualifyingRuns": 0,
+        "qualifyingRetailers": 0,
+        "qualifyingConsecutiveRetailers": 0,
+        "qualifyingDayPair": null,
         "contradictoryHeartbeats": 0,
-        "scheduleActivatedAt": "2026-07-16T16:31:18.229Z",
-        "expectedReleaseId": "a7caaaf10c27cdaf7cd72347e85f2f75"
+        "scheduleActivatedAt": "2026-07-26T17:21:40.846Z",
+        "expectedReleaseId": "386f972542c07e68111ae85bc5593669"
       }
     },
     {
       "id": "db-m3-latest-classification-coverage",
       "kind": "database-query",
       "source": "m3-latest-classification-coverage",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
         "activeRetailers": 4,
-        "activeProducts": 7984,
-        "highConfidenceProducts": 7043,
-        "classificationCoverage": 0.8821392785571143
+        "activeProducts": 9154,
+        "classificationEligibleProducts": 6977,
+        "pendingDescriptiveTitleProducts": 2177,
+        "highConfidenceProducts": 6282,
+        "classificationCoverage": 0.9003869858105202
       }
     },
     {
       "id": "db-m3-live-panel",
       "kind": "database-query",
       "source": "m3-live-panel",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
         "activeRetailers": 4,
         "degradedRetailers": 0,
         "panelExceptionApproved": false,
-        "recentScheduledSubstantiveRetailers": 4,
-        "latestHeartbeatId": "5da596c7-c1b8-4db3-acfe-4ce9bbf3f59c",
-        "latestHeartbeatRunRows": 4,
+        "recentScheduledSubstantiveRetailers": 0,
+        "latestHeartbeatId": null,
+        "latestHeartbeatRunRows": 0,
         "duplicateLatestRetailers": 0,
-        "latestScheduledCollectionCompletedAt": "2026-07-24T15:22:56.203Z",
+        "latestScheduledCollectionCompletedAt": null,
         "contradictoryHeartbeats": 0
       }
     },
@@ -408,7 +368,7 @@
       "id": "file-m1-fixture-inventory",
       "kind": "file",
       "source": "tests/fixtures",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
         "requiredOfflineTestFiles": 11,
         "requiredOfflineTestFilesPresent": 11,
@@ -423,21 +383,21 @@
       "id": "file-m3-active-strategy-validation-receipts",
       "kind": "file",
       "source": "data/validation",
-      "observedAt": "2026-07-25T01:01:24.929Z",
-      "sha256": "1bea70f30b7a0b71b7086791aa2b720b0d8959c3b5c5ad269fed5f23dff23f8e",
+      "observedAt": "2026-07-26T17:25:45.212Z",
+      "sha256": "8bdc84a68d15847e06d470defb7d895bf5871990b190066a95c2427b326e7905",
       "facts": {
         "activeStrategies": 8,
-        "receiptFiles": 56,
-        "validReceipts": 48,
+        "receiptFiles": 64,
+        "validReceipts": 64,
         "preservedReceipts": 22,
-        "missingActiveReceipts": 8,
-        "malformedReceipts": 8,
+        "missingActiveReceipts": 0,
+        "malformedReceipts": 0,
         "untrackedReceipts": 0,
         "configRegistryValid": true,
         "expectedActivePairs": 8,
         "missingActivePairs": 0,
         "unexpectedActivePairs": 0,
-        "preservedFailedAttempts": 12,
+        "preservedFailedAttempts": 19,
         "failedAttemptRegistryInvalid": 0,
         "failedAttemptRegistryError": null,
         "failedAttemptRegistryMissing": 0
@@ -447,10 +407,10 @@
       "id": "file-m3-classification-human-review",
       "kind": "file",
       "source": "data/acceptance/evidence/classification-review-v1.json",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
         "latestClassificationVersion": 1,
-        "activeClassificationRows": 7770,
+        "activeClassificationRows": 6977,
         "artifactPresent": false,
         "artifactValid": false,
         "requiredSampleSize": 200,
@@ -464,7 +424,7 @@
       "id": "file-m5-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -473,10 +433,38 @@
       }
     },
     {
+      "id": "file-m6-current-binding",
+      "kind": "file",
+      "source": "data/exports/latest.json+analysis/output/latest.json",
+      "observedAt": "2026-07-26T17:25:32.617Z",
+      "sha256": "f622cf71cee472ddfdd51e35a3af22725b78432a82109baa33300a50dde0584f",
+      "facts": {
+        "databaseCountsMatch": true,
+        "databaseMaximaMatch": true,
+        "databaseSnapshotMatches": true,
+        "analysisInputManifestMatches": true,
+        "artifactHashesValid": true,
+        "statusAndOverlapConsistent": true,
+        "experimentalSeriesMetadataValid": true,
+        "experimentalSeriesNonempty": true,
+        "productRelativeRows": 83943,
+        "retailerSubitemRows": 4274,
+        "subitemRows": 1248,
+        "aggregateDailyRows": 17,
+        "analysisAggregateDailyRows": 17,
+        "experimentalCsvRowsMatch": true,
+        "exportStatus": "complete",
+        "sidraStatus": "no_overlap",
+        "officialMonthlyRows": 0,
+        "comparisonMonthlyRows": 0,
+        "overlapMonthlyRows": 0
+      }
+    },
+    {
       "id": "file-m6-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -488,7 +476,7 @@
       "id": "file-m7-review-findings",
       "kind": "file",
       "source": "ops/review-findings.json",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "sha256": "36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7",
       "facts": {
         "registryValid": true,
@@ -500,13 +488,13 @@
       "id": "receipt-m0-fresh-clone",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-25T01:01:24.929Z",
-      "sha256": "bec07e13c2a23d245b647c9fe40ce1a1005189dbc8ba2e2fd9bb8c594c48e376",
+      "observedAt": "2026-07-26T17:25:45.212Z",
+      "sha256": "c0b9b4efa1d324c4df9b9557a6115e5de5a97758216f993099c9cd58f1b89f16",
       "facts": {
         "receiptPresent": true,
-        "receiptMatchesEvaluatedCommit": false,
+        "receiptMatchesEvaluatedCommit": true,
         "declaredRuntimesAndChecksValid": true,
-        "generatedManifestArtifactsValid": false,
+        "generatedManifestArtifactsValid": true,
         "nodeMajor24": true,
         "databaseQuickCheck": "ok",
         "foreignKeyViolations": 0,
@@ -519,20 +507,20 @@
       "id": "receipt-m6-analysis-regenerate",
       "kind": "receipt",
       "source": "data/acceptance/evidence/fresh-clone.json",
-      "observedAt": "2026-07-11T19:36:45.173Z",
-      "sha256": "bec07e13c2a23d245b647c9fe40ce1a1005189dbc8ba2e2fd9bb8c594c48e376",
+      "observedAt": "2026-07-26T17:25:32.617Z",
+      "sha256": "c0b9b4efa1d324c4df9b9557a6115e5de5a97758216f993099c9cd58f1b89f16",
       "facts": {
-        "freshCloneMatchesEvaluatedCommit": false,
-        "analysisCommandSucceeded": false
+        "freshCloneMatchesEvaluatedCommit": true,
+        "analysisCommandSucceeded": true
       }
     },
     {
       "id": "service-m3-classification-automation",
       "kind": "service",
       "source": "precos-classification.service",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
-        "dailyRunObserved": true,
+        "dailyRunObserved": false,
         "classificationUnitInstalled": true,
         "classificationActive": false,
         "classificationResult": "success",
@@ -543,26 +531,26 @@
       "id": "service-m7-publication-operations",
       "kind": "service",
       "source": "m7-publication-and-six-timers",
-      "observedAt": "2026-07-25T01:01:24.929Z",
+      "observedAt": "2026-07-26T17:25:45.212Z",
       "facts": {
-        "publicationStatus": "fail",
-        "publicationFindings": 6,
-        "freshCloneMatches": false,
+        "publicationStatus": "pass",
+        "publicationFindings": 0,
+        "freshCloneMatches": true,
         "sixTimersEnabledAndActive": true,
         "timerDefinitionsValid": true,
         "systemdInstallReceiptValid": true,
-        "installedReleaseMatchesEvaluatedCommit": false,
+        "installedReleaseMatchesEvaluatedCommit": true,
         "systemdInstalledAt": "2026-07-11T04:33:13.125Z",
-        "systemdDeployedAt": "2026-07-16T16:31:18.229Z",
-        "systemdReleaseId": "a7caaaf10c27cdaf7cd72347e85f2f75",
-        "systemdUnitSetSha256": "0a7fdda899eb78d2948daf84453c17e1a6be52a4b905b35c31f20360ff260618",
+        "systemdDeployedAt": "2026-07-26T17:21:40.846Z",
+        "systemdReleaseId": "386f972542c07e68111ae85bc5593669",
+        "systemdUnitSetSha256": "4d6a5fc6b9123b4f23c5e9e859d6fb514848b1faa5079d4b5c62d0e22ff769f1",
         "userLingerEnabled": true,
         "renderedUnitFiles": 13,
         "failedServiceUnits": 0,
-        "alertDrillMatches": false,
-        "backupDrillMatches": false,
-        "backupIntegrityAndAgeValid": false,
-        "backupAgeHours": 321.9338692155626,
+        "alertDrillMatches": true,
+        "backupDrillMatches": true,
+        "backupIntegrityAndAgeValid": true,
+        "backupAgeHours": 0.06349663818359375,
         "latestCollectionHeartbeatFresh": false,
         "latestCollectionHeartbeatAgeHours": null,
         "firstDailyWindowElapsed": false,
@@ -571,8 +559,8 @@
         "currentBackupWindowElapsed": false,
         "newestRealBackupAgeHours": null,
         "newestScheduledBackupIntegrityValid": false,
-        "scheduledBackupReceiptCount": 8,
-        "scheduledBackupCurrentReceiptCount": 0,
+        "scheduledBackupReceiptCount": 10,
+        "scheduledBackupCurrentReceiptCount": 1,
         "scheduledBackupInvalidReceiptCount": 0,
         "scheduledBackupCompletedAt": null,
         "scheduledBackupArtifactSha256": null,
