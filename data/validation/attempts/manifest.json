@@ -92,6 +92,12 @@
       "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
     },
     {
+      "path": "data/validation/attempts/pao-de-acucar-extraction-v12.json",
+      "fileSha256": "a16b1475f537bbff0d0b6f4fb30987eed91508be8cbd7f99f97d4e7e453fdd12",
+      "receiptSha256": "99b81d8ac2ebb42d9fa03db51525a0d320bbaee220fb29260ed67f639b32cc3b",
+      "strategySourceCommit": "de9fd5ef6edeaa7ff6e4b74a27d1ae031f657338"
+    },
+    {
       "path": "data/validation/attempts/st-marche-discovery-v10.json",
       "fileSha256": "8dffb5709effd576c9310e9ca4c3628fb515c0b5531dde8fb853fc8a317f59fa",
       "receiptSha256": "f1924a3be38317211382e043c3443bd4ef197d23407a1afafacee0c0a035c220",

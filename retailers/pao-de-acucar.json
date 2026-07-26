@@ -188,13 +188,13 @@
   "validation": {
     "discovery": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:56:19.354Z",
+      "validatedAt": "2026-07-26T16:09:39.624Z",
       "sampleSize": 30,
-      "successes": 27,
-      "score": 0.9,
+      "successes": 29,
+      "score": 0.9666666666666667,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/pao-de-acucar-discovery-v14.json",
-      "receiptSha256": null
+      "receiptSha256": "8df5d7cddfe9ffa404debecb95b22689ddee033fcc260bdfdcfa1d6e5e020fa8"
     },
     "extraction": {
       "externallyValidated": true,
