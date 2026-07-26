@@ -28,6 +28,7 @@ async function invoke(
   const cli = buildCli({
     ...dependencies,
     lockPath: dependencies.lockPath ?? join(tmpdir(), `explore-cli-${randomUUID()}.lock`),
+    alertSink: dependencies.alertSink ?? { send: async () => undefined },
     stdout: (value) => { stdout += value; },
     stderr: (value) => { stderr += value; },
   });
