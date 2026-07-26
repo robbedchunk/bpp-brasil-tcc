@@ -96,6 +96,48 @@ describe("importCatalogSeeds", () => {
     }
   });
 
+  it("prefers the latest completed discovery cohort over older active seed rows", () => {
+    const database = createDatabase();
+    seedInactiveRetailer(database);
+    runImport(database, { entries: seedEntries(40) });
+    const strategyId = seedStrategy(database, "discovery", discoveryStrategy, "r1");
+    database.prepare(
+      `INSERT INTO runs
+         (id, retailer_id, stage, collection_day, strategy_id, strategy_version,
+          status, attempted, ok, failed, started_at)
+       VALUES
+         ('current-cohort', 'r1', 'discover', '2026-07-17', ?, 1,
+          'running', 0, 0, 0, '2026-07-17T03:00:00.000Z')`,
+    ).run(strategyId);
+    const products = database.prepare(
+      `SELECT id, canonical_url AS canonicalUrl, source_category AS sourceCategory
+       FROM products WHERE retailer_id = 'r1'
+       ORDER BY canonical_url`,
+    ).all() as Array<{ id: string; canonicalUrl: string; sourceCategory: string }>;
+    const insertDecision = database.prepare(
+      `INSERT INTO product_scope_decisions
+         (id, product_id, run_id, in_scope, source_category, reason,
+          evidence_json, rule_version, decided_at)
+       VALUES (?, ?, 'current-cohort', 1, ?, 'included_category', '{}',
+               'food-at-home-category-v1', '2026-07-17T03:01:00.000Z')`,
+    );
+    for (const [index, product] of products.slice(10).entries()) {
+      insertDecision.run(`current-decision-${index}`, product.id, product.sourceCategory);
+    }
+    database.prepare(
+      `UPDATE runs
+       SET status = 'completed', attempted = 30, ok = 30, failed = 0,
+           finished_at = '2026-07-17T03:02:00.000Z'
+       WHERE id = 'current-cohort'`,
+    ).run();
+
+    const challenge = selectStrategyValidationChallenge(database, "r1", 30);
+
+    expect(challenge).toHaveLength(30);
+    expect(challenge.map(({ canonicalUrl }) => canonicalUrl).sort())
+      .toEqual(products.slice(10).map(({ canonicalUrl }) => canonicalUrl).sort());
+  });
+
   it("marks seed provenance distinguishably from discovery evidence", () => {
     const database = createDatabase();
     seedInactiveRetailer(database);
