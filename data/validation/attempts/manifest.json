@@ -8,6 +8,12 @@
       "strategySourceCommit": "2b550c2bb130589251c5a5a3f657ef7fb7cfc2db"
     },
     {
+      "path": "data/validation/attempts/carrefour-extraction-v14.json",
+      "fileSha256": "67b98b3df9fb3350a021d216571a44fe373336a0bc9549c0027a3efa185c125e",
+      "receiptSha256": "a72836e643cd42a4fd843f4d295700ae6a82935b9f7b5336713631a44cc602a7",
+      "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
+    },
+    {
       "path": "data/validation/attempts/carrefour-extraction-v6.json",
       "fileSha256": "242e544ebafcfd9470e8e03327f0d307563d1f55a89f45372aab1777b8649d40",
       "receiptSha256": "94262cb654a7ce42f0cb51759feace412a667e43c26bafc272e80493d2bb8040",
@@ -26,16 +32,34 @@
       "strategySourceCommit": "efdeeee473b9a5ebdd44e9c695a9124262dbb390"
     },
     {
+      "path": "data/validation/attempts/extra-mercado-discovery-v11.json",
+      "fileSha256": "251d62ec3be671e19367cedf8bf4d70e1caa56b3e707b3d19e1f8f0f4e5b4a8c",
+      "receiptSha256": "8b4a536a584ef82a33cfee2c6a2f703ab57903fd5ffd956b449b57bea6f09b55",
+      "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
+    },
+    {
       "path": "data/validation/attempts/extra-mercado-discovery-v4.json",
       "fileSha256": "063cb9849adfcdc222caa65105fd6c51669898c3aa7e5dc59dad6aebaa116fa7",
       "receiptSha256": "0d96e0f3cd9eb003bfef7fbf8985f586cad5ffeb00349d0d6dfe1e60167178c0",
       "strategySourceCommit": "00278a685724a7452837204bee321705c2bad506"
     },
     {
+      "path": "data/validation/attempts/extra-mercado-extraction-v11.json",
+      "fileSha256": "b7ee445eef26f40c26ede32c21a7a72b73a629f1fed2eff023d21cec54ddde4a",
+      "receiptSha256": "c41900c9cc274669e0d4eb13e74d7781db5744a1035144c74fbfd0706a18f64e",
+      "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
+    },
+    {
       "path": "data/validation/attempts/pao-de-acucar-discovery-v10.json",
       "fileSha256": "a568d0dbc6638ce2f05f1c93287ca08faaec005c3e1357a86ab73f774cbc81fa",
       "receiptSha256": "fcf1eba86e7371944f684b857b9e411cc2a7971cc0c1dfbfb0905a2e9a227dbd",
       "strategySourceCommit": "f9a1b9dd624e8c4fa4261152d02b14879f9913ce"
+    },
+    {
+      "path": "data/validation/attempts/pao-de-acucar-discovery-v13.json",
+      "fileSha256": "063a2a9a257f0163f9e83158ee66b004ceb133fb35466c8c06d60244d1e42a24",
+      "receiptSha256": "92577457e51482442992e783eb036986056319e8f039631cf1c3cc7aea873f94",
+      "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
     },
     {
       "path": "data/validation/attempts/pao-de-acucar-discovery-v2.json",
@@ -60,6 +84,18 @@
       "fileSha256": "f3675e60fc0eddd6b46cb1b22916a7ea9999a7a00a2145c0358eb78ceb990560",
       "receiptSha256": "40f709cb4594882830b3d9a817db491dfebcddf392c4ba6266d4417e82624835",
       "strategySourceCommit": "b3bbff116534800fdfd8d8d63b6ab6dc80231e42"
+    },
+    {
+      "path": "data/validation/attempts/pao-de-acucar-extraction-v11.json",
+      "fileSha256": "747682d5f8ac78ef029a0842a41a240811c82e69d61b2f9f242ef83e884f8268",
+      "receiptSha256": "5432deed4a4265127e83d7d7b4428befe8664318d381a18293a5268754a099a5",
+      "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
+    },
+    {
+      "path": "data/validation/attempts/st-marche-discovery-v10.json",
+      "fileSha256": "8dffb5709effd576c9310e9ca4c3628fb515c0b5531dde8fb853fc8a317f59fa",
+      "receiptSha256": "f1924a3be38317211382e043c3443bd4ef197d23407a1afafacee0c0a035c220",
+      "strategySourceCommit": "4db60174e90e83ecc3f467aa3b7c885f6de3e21a"
     },
     {
       "path": "data/validation/attempts/st-marche-discovery-v7.json",
