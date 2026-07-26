@@ -478,7 +478,7 @@ describe("incremental classification", () => {
     try {
       vi.stubEnv("PRECOS_MONTHLY_MODEL_USD", "100");
       expect(await run()).toMatchObject({ status: "completed", classified: 1 });
-      vi.stubEnv("PRECOS_MONTHLY_MODEL_USD", "");
+      vi.stubEnv("PRECOS_MONTHLY_MODEL_USD", "50");
       expect(await run()).toMatchObject({ status: "budget_denied", pending: 1 });
     } finally {
       vi.unstubAllEnvs();
