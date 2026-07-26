@@ -568,12 +568,19 @@ export async function runDiscovery(
       && counters.ok === boundedPanelTarget
       && counters.failed === 0
       && finalError === undefined;
-    snapshotComplete = boundedPanelComplete || (limit > 0
+    const boundedSegmentPanelComplete = iteratorCompleted
+      && completionState.evidence?.reason === "product_cap_reached"
+      && counters.ok > 0
+      && counters.failed === 0
+      && finalError === undefined;
+    snapshotComplete = boundedPanelComplete
+      || boundedSegmentPanelComplete
+      || (limit > 0
       && iteratorCompleted
       && completionState.evidence?.complete === true
       && counters.failed === 0
       && finalError === undefined);
-    let completionReason = boundedPanelComplete
+    let completionReason = boundedPanelComplete || boundedSegmentPanelComplete
       ? "bounded_panel_complete"
       : completionState.evidence?.reason === "request_cap_reached"
       || completionState.evidence?.reason === "product_cap_reached"
