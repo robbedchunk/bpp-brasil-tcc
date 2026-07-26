@@ -1,7 +1,7 @@
 # Full Charter Acceptance Report
 
-Generated: 2026-07-26T18:06:28.560Z
-Evaluated implementation commit: `8a878ec159e1159855cfee5dd2f4025c17623e68`
+Generated: 2026-07-26T18:55:24.254Z
+Evaluated implementation commit: `5667e621a0e99459a47271e9f21cbf2282277fe7`
 Overall status: **PENDING**
 
 This report records evidence without converting external time, credential, site, or author gates into success.
@@ -32,10 +32,10 @@ This report records evidence without converting external time, credential, site,
 
 ## Evidence index
 
-- `command-m1-offline` — command, source `m1-offline`, SHA-256 `cc683a38756eb3e08a14ac24570cc77adf06b454e8da6f76986e6a7f4c58b1eb`.
-- `command-m4-agent-capability` — command, source `m4-agent-capability`, SHA-256 `bac479063d03622b313f2f5792878a75b2c87b4182688d5ab66c5751e9786632`.
-- `command-m5-healing` — command, source `m5-healing`, SHA-256 `a791f37ff3f19b9bd5d4e012553e053ccc6020d1a4a1f56bb27af33a96aed170`.
-- `command-m6-index-analysis` — command, source `m6-index-analysis`, SHA-256 `1dab0d8ab0a55c643e9299b3395f4aa6ec3724bdf11e7df2181c12c8ef898941`.
+- `command-m1-offline` — command, source `m1-offline`, SHA-256 `7ac62df6249791c30dd20d7aaee9b8cc0a26f35b25617a0d7f8080bcc776dde5`.
+- `command-m4-agent-capability` — command, source `m4-agent-capability`, SHA-256 `63cbee4ee13a8578699623f3e98ed82c1f1980ffccd5c305a0575924a3542506`.
+- `command-m5-healing` — command, source `m5-healing`, SHA-256 `6ac00a5c9aa9557b9dbb1930d571be16a4f05cd4783697582b7f2730a7d4e6c3`.
+- `command-m6-index-analysis` — command, source `m6-index-analysis`, SHA-256 `9adbf9fb22e569f3207573361f3bd9d8067927300cb68efbc1705ac0aa0d99bc`.
 - `db-m2-heartbeat-linked-collection-runs` — database-query, source `m2-heartbeat-linked-collection-runs`.
 - `db-m3-latest-classification-coverage` — database-query, source `m3-latest-classification-coverage`.
 - `db-m3-live-panel` — database-query, source `m3-live-panel`.
@@ -46,8 +46,8 @@ This report records evidence without converting external time, credential, site,
 - `file-m6-current-binding` — file, source `data/exports/latest.json+analysis/output/latest.json`, SHA-256 `f622cf71cee472ddfdd51e35a3af22725b78432a82109baa33300a50dde0584f`.
 - `file-m6-review-findings` — file, source `ops/review-findings.json`, SHA-256 `36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7`.
 - `file-m7-review-findings` — file, source `ops/review-findings.json`, SHA-256 `36a91770b3706258ea4d017f275e34f45f6bbd4e6aed86c325ceb316162f01a7`.
-- `receipt-m0-fresh-clone` — receipt, source `data/acceptance/evidence/fresh-clone.json`, SHA-256 `0c107e0e037c7871a19d148d1a0a8507562a8109c7c3713c380b708f7a3a030c`.
-- `receipt-m6-analysis-regenerate` — receipt, source `data/acceptance/evidence/fresh-clone.json`, SHA-256 `0c107e0e037c7871a19d148d1a0a8507562a8109c7c3713c380b708f7a3a030c`.
+- `receipt-m0-fresh-clone` — receipt, source `data/acceptance/evidence/fresh-clone.json`, SHA-256 `8f304fbba17b131c74457a4e68e6636e8d344cd996c1e12772dbce7a2100ae2b`.
+- `receipt-m6-analysis-regenerate` — receipt, source `data/acceptance/evidence/fresh-clone.json`, SHA-256 `8f304fbba17b131c74457a4e68e6636e8d344cd996c1e12772dbce7a2100ae2b`.
 - `service-m3-classification-automation` — service, source `precos-classification.service`.
 - `service-m7-publication-operations` — service, source `m7-publication-and-six-timers`.
 
