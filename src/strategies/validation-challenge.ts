@@ -43,6 +43,8 @@ export function selectStrategyValidationChallenge(
         AND (
           (
             EXISTS (SELECT 1 FROM latest_cohort)
+            AND products.last_observed_at IS NOT NULL
+            AND products.last_collection_attempt_at IS products.last_observed_at
             AND EXISTS (
               SELECT 1
               FROM product_scope_decisions

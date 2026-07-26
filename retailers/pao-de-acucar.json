@@ -34,7 +34,7 @@
   },
   "strategyVersions": {
     "discovery": 14,
-    "extraction": 12
+    "extraction": 13
   },
   "discovery": {
     "schemaVersion": 1,
@@ -203,7 +203,7 @@
       "successes": 29,
       "score": 0.9666666666666667,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
-      "receiptPath": "data/validation/pao-de-acucar-extraction-v12.json",
+      "receiptPath": "data/validation/pao-de-acucar-extraction-v13.json",
       "receiptSha256": null
     }
   }

@@ -13,7 +13,6 @@ import {
   type DiscoveryStrategy,
   type ExtractionStrategy,
 } from "../strategies/schema.js";
-import type { ProductRef } from "../strategies/types.js";
 import { selectStrategyValidationChallenge } from "../strategies/validation-challenge.js";
 import {
   canonicalEvidenceJson,
@@ -353,28 +352,6 @@ export function stageRetailerConfigStrategy(
   return { id, retailerId: config.id, purpose, version, strategy };
 }
 
-function authoritativeValidationRefs(
-  database: Database.Database,
-  retailerId: string,
-  includeHistorical = false,
-): ProductRef[] {
-  return (database.prepare(
-    `SELECT canonical_url, retailer_product_id, source_category
-     FROM products
-     WHERE retailer_id = ?
-       AND (? = 1 OR (active = 1 AND in_scope = 1))
-     ORDER BY canonical_url`,
-  ).all(retailerId, includeHistorical ? 1 : 0) as Array<{
-    canonical_url: string;
-    retailer_product_id: string | null;
-    source_category: string | null;
-  }>).map((row) => ({
-    canonicalUrl: row.canonical_url,
-    externalId: row.retailer_product_id,
-    sourceCategory: row.source_category,
-  }));
-}
-
 function validatedActivationEvidence(
   database: Database.Database,
   config: RetailerConfig,
@@ -418,14 +395,14 @@ function validatedActivationEvidence(
     "SELECT 1 FROM strategy_validation_evidence WHERE strategy_id = ?",
   ).get(strategyId) !== undefined;
   const authoritativeRefs = alreadyBound
-    ? authoritativeValidationRefs(database, config.id, true)
+    ? []
     : selectStrategyValidationChallenge(database, config.id, 30);
-  if (authoritativeRefs.length < 30 && !allowEmptyTestCatalog) {
+  if (!alreadyBound && authoritativeRefs.length < 30 && !allowEmptyTestCatalog) {
     throw new Error(
       `Active ${config.id}/${purpose} requires at least 30 active in-scope catalog references`,
     );
   }
-  const evidence = authoritativeRefs.length === 0 && allowEmptyTestCatalog
+  const evidence = alreadyBound || (authoritativeRefs.length === 0 && allowEmptyTestCatalog)
     ? identityEvidence
     : validateStrategyEvidence(input, {
         ...expected,

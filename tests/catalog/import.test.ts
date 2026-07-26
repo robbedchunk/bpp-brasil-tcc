@@ -99,7 +99,7 @@ describe("importCatalogSeeds", () => {
   it("prefers the latest completed discovery cohort over older active seed rows", () => {
     const database = createDatabase();
     seedInactiveRetailer(database);
-    runImport(database, { entries: seedEntries(40) });
+    runImport(database, { entries: seedEntries(41) });
     const strategyId = seedStrategy(database, "discovery", discoveryStrategy, "r1");
     database.prepare(
       `INSERT INTO runs
@@ -124,9 +124,24 @@ describe("importCatalogSeeds", () => {
     for (const [index, product] of products.slice(10).entries()) {
       insertDecision.run(`current-decision-${index}`, product.id, product.sourceCategory);
     }
+    const markSuccessfulCollection = database.prepare(
+      `UPDATE products
+       SET last_observed_at = '2026-07-17T02:00:00.000Z',
+           last_collection_attempt_at = '2026-07-17T02:00:00.000Z'
+       WHERE id = ?`,
+    );
+    for (const product of products.slice(10, 40)) {
+      markSuccessfulCollection.run(product.id);
+    }
+    database.prepare(
+      `UPDATE products
+       SET last_observed_at = '2026-07-16T02:00:00.000Z',
+           last_collection_attempt_at = '2026-07-17T02:00:00.000Z'
+       WHERE id = ?`,
+    ).run(products[40]?.id);
     database.prepare(
       `UPDATE runs
-       SET status = 'completed', attempted = 30, ok = 30, failed = 0,
+       SET status = 'completed', attempted = 31, ok = 31, failed = 0,
            finished_at = '2026-07-17T03:02:00.000Z'
        WHERE id = 'current-cohort'`,
     ).run();
@@ -135,7 +150,7 @@ describe("importCatalogSeeds", () => {
 
     expect(challenge).toHaveLength(30);
     expect(challenge.map(({ canonicalUrl }) => canonicalUrl).sort())
-      .toEqual(products.slice(10).map(({ canonicalUrl }) => canonicalUrl).sort());
+      .toEqual(products.slice(10, 40).map(({ canonicalUrl }) => canonicalUrl).sort());
   });
 
   it("marks seed provenance distinguishably from discovery evidence", () => {

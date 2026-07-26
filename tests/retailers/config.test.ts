@@ -627,7 +627,7 @@ describe("live retailer configuration", () => {
     })).toThrow(/immutable validation evidence|successor version/iu);
   });
 
-  it("keeps a receipt re-registerable after a sampled product becomes inactive and out of scope", () => {
+  it("keeps a bound receipt re-registerable after mutable catalog fields change", () => {
     const database = openDatabase(":memory:");
     databases.push(database);
     const current = loadRetailerConfigs("retailers")
@@ -645,7 +645,8 @@ describe("live retailer configuration", () => {
       );
     }
     database.prepare(
-      `UPDATE products SET active = 0, in_scope = 0
+      `UPDATE products
+       SET active = 0, in_scope = 0, source_category = 'Categoria atualizada'
        WHERE retailer_id = ? AND canonical_url = ?`,
     ).run(current.id, receipt.samples[0]?.ref.canonicalUrl);
 
