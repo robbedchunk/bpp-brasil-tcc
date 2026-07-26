@@ -178,12 +178,9 @@ The pilot was implemented with coding-agent assistance (Claude), applied under
 the same discipline the thesis studies: agent-produced changes entered the tree
 only through the deterministic gates — typecheck, the offline suites, the
 acceptance harness, and the publication audit. Agent-assisted commits carry
-`Co-Authored-By` trailers in the Git history. The curated design specification
-is preserved at
-[docs/superpowers/specs](docs/superpowers/specs/2026-07-10-self-healing-extraction-design.md);
-internal task-report scaffolding is not part of the published artifact. This
-development tooling is unrelated to the system's runtime agent (the Codex SDK
-explorer), which remains governed by the trusted validation gate.
+`Co-Authored-By` trailers in the Git history. This development tooling is
+unrelated to the system's runtime agent (the Codex SDK explorer), which
+remains governed by the trusted validation gate.
 
 ## Sources and citation
 
