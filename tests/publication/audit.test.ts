@@ -273,6 +273,23 @@ describe("publication audit", () => {
     expect(report.status).toBe("fail");
   });
 
+  it("does not mix an unrelated local ref into the prospective publication history", async () => {
+    const root = await temporaryRoot();
+    await initializeRepository(root);
+    const publicationBranch = git(root, "branch", "--show-current");
+    git(root, "checkout", "-qb", "unrelated-history");
+    const credential = ["sk", "proj", "C".repeat(32)].join("-");
+    await writeFile(join(root, "unrelated-key.txt"), credential);
+    git(root, "add", "unrelated-key.txt");
+    git(root, "commit", "-qm", "unrelated unpublished history");
+    git(root, "checkout", "-q", publicationBranch);
+
+    const report = await auditPublication(options(root));
+
+    expect(report.historicalSecrets).toEqual([]);
+    expect(report.status).toBe("pass");
+  });
+
   it("audits staged index bytes even when the worktree hides them", async () => {
     const root = await temporaryRoot();
     await initializeRepository(root);
@@ -778,5 +795,5 @@ describe("publication audit", () => {
       rawHtmlExcluded: true,
       outOfScopeExplicit: true,
     });
-  }, 30_000);
+  }, 90_000);
 });

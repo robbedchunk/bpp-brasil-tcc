@@ -287,36 +287,72 @@ function privatePathKind(path: string): "raw" | "private" | null {
   return PRIVATE_PATH_PATTERNS.some((pattern) => pattern.test(path)) ? "private" : null;
 }
 
-function historicalEntries(root: string): Map<string, Set<string>> {
-  const entries = new Map<string, Set<string>>();
-  const revisions = safeGit(root, ["rev-list", "--all"]);
-  if (revisions === "") return entries;
-  for (const revision of revisions.split("\n")) {
-    const tree = git(root, ["ls-tree", "-r", "-z", revision], "buffer").toString("utf8");
-    for (const item of tree.split("\0").filter(Boolean)) {
-      const match = /^(\d+) blob ([a-f0-9]+)\t([\s\S]+)$/u.exec(item);
-      if (match?.[2] === undefined || match[3] === undefined) continue;
-      const paths = entries.get(match[2]) ?? new Set<string>();
-      paths.add(normalizePath(match[3]));
-      entries.set(match[2], paths);
+interface HistoricalChange {
+  mode: string;
+  objectId: string;
+  path: string;
+}
+
+function historicalChanges(
+  root: string,
+  evaluatedRevision: string,
+): HistoricalChange[] {
+  const output = safeGit(root, [
+    "log",
+    "--format=",
+    "--raw",
+    "--root",
+    "--no-abbrev",
+    "-z",
+    "--diff-filter=ACMRT",
+    evaluatedRevision,
+  ]);
+  if (output === "") return [];
+  const tokens = output.split("\0");
+  const changes: HistoricalChange[] = [];
+  for (let index = 0; index < tokens.length;) {
+    const header = tokens[index]?.trimStart() ?? "";
+    const match = /^:\d{6} (\d{6}) [a-f0-9]+ ([a-f0-9]+) ([ACMRT])\d*$/u.exec(header);
+    if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
+      index += 1;
+      continue;
     }
+    const pathOffset = match[3] === "C" || match[3] === "R" ? 2 : 1;
+    const path = tokens[index + pathOffset];
+    if (path !== undefined && path.length > 0) {
+      changes.push({
+        mode: match[1],
+        objectId: match[2],
+        path: normalizePath(path),
+      });
+    }
+    index += pathOffset + 1;
+  }
+  return changes;
+}
+
+function historicalEntries(
+  changes: readonly HistoricalChange[],
+): Map<string, Set<string>> {
+  const entries = new Map<string, Set<string>>();
+  for (const change of changes) {
+    if (change.mode === "160000") continue;
+    const paths = entries.get(change.objectId) ?? new Set<string>();
+    paths.add(change.path);
+    entries.set(change.objectId, paths);
   }
   return entries;
 }
 
-function historicalUnsafeShapes(root: string): PublicationFinding[] {
+function historicalUnsafeShapes(
+  changes: readonly HistoricalChange[],
+): PublicationFinding[] {
   const findings: PublicationFinding[] = [];
-  const revisions = safeGit(root, ["rev-list", "--all"]);
-  if (revisions === "") return findings;
-  for (const revision of revisions.split("\n")) {
-    const tree = git(root, ["ls-tree", "-r", "-z", revision], "buffer").toString("utf8");
-    for (const item of tree.split("\0").filter(Boolean)) {
-      const match = /^(\d+) (?:blob|commit) ([a-f0-9]+)\t([\s\S]+)$/u.exec(item);
-      if (match?.[1] === "120000" && match[2] !== undefined && match[3] !== undefined) {
-        findings.push(finding("HISTORICAL_SYMLINK", "git-history", match[3], "A tracked symbolic link remains in reachable Git history", match[2]));
-      } else if (match?.[1] === "160000" && match[2] !== undefined && match[3] !== undefined) {
-        findings.push(finding("HISTORICAL_SUBMODULE", "git-history", match[3], "A Git submodule remains in reachable Git history", match[2]));
-      }
+  for (const change of changes) {
+    if (change.mode === "120000") {
+      findings.push(finding("HISTORICAL_SYMLINK", "git-history", change.path, "A tracked symbolic link remains in reachable Git history", change.objectId));
+    } else if (change.mode === "160000") {
+      findings.push(finding("HISTORICAL_SUBMODULE", "git-history", change.path, "A Git submodule remains in reachable Git history", change.objectId));
     }
   }
   return deduplicate(findings);
@@ -972,6 +1008,7 @@ export async function auditPublication(
   if (options.evaluatedCommit !== undefined && !COMMIT_PATTERN.test(options.evaluatedCommit)) {
     throw new TypeError("Publication evaluated commit must be a full Git object ID");
   }
+  const evaluatedRevision = options.evaluatedCommit ?? "HEAD";
   const paths = currentPaths(root);
   const modes = currentModes(root);
   const trackedSecrets: PublicationFinding[] = [];
@@ -981,6 +1018,7 @@ export async function auditPublication(
   const publicDataFindings: PublicationFinding[] = [];
   const prospectiveFiles = new Map<string, Buffer>();
   const worktreeFiles = new Map<string, Buffer>();
+  const history = historicalChanges(root, evaluatedRevision);
 
   for (const path of paths) {
     const absolute = resolve(root, path);
@@ -1075,7 +1113,7 @@ export async function auditPublication(
   }
 
   const historicalSecrets: PublicationFinding[] = [];
-  for (const [objectId, objectPaths] of historicalEntries(root)) {
+  for (const [objectId, objectPaths] of historicalEntries(history)) {
     const content = git(root, ["cat-file", "blob", objectId], "buffer");
     for (const path of objectPaths) {
       historicalSecrets.push(...secretFindings(content, path, "git-history", objectId));
@@ -1087,7 +1125,7 @@ export async function auditPublication(
       }
     }
   }
-  unsafeLinksOrSubmodules.push(...historicalUnsafeShapes(root));
+  unsafeLinksOrSubmodules.push(...historicalUnsafeShapes(history));
 
   const temporaryDatabases = mkdtempSync(join(tmpdir(), "publication-sqlite-"));
   try {
