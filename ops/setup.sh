@@ -14,6 +14,16 @@ if [[ "$(npm --version | cut -d. -f1)" != "11" ]]; then
   exit 1
 fi
 
+if [[ -f data/precos.sqlite ]] \
+  && grep -q '^version https://git-lfs.github.com/spec/v1$' data/precos.sqlite; then
+  git lfs install --local
+  git lfs pull --include='data/precos.sqlite' --exclude=''
+  if grep -q '^version https://git-lfs.github.com/spec/v1$' data/precos.sqlite; then
+    printf 'setup: Git LFS did not materialize data/precos.sqlite.\n' >&2
+    exit 1
+  fi
+fi
+
 npm ci
 "$PROJECT_ROOT/ops/setup-analysis.sh"
 

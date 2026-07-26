@@ -5,7 +5,7 @@
 
 bootstrap_apt_dependencies() {
   local missing=0 command
-  for command in curl git python3 sqlite3 xz; do
+  for command in curl git git-lfs python3 sqlite3 xz; do
     command -v "$command" >/dev/null 2>&1 || missing=1
   done
   if [[ "$missing" == "0" ]] \
@@ -18,7 +18,7 @@ bootstrap_apt_dependencies() {
   fi
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update
   sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl git python3 python3-venv sqlite3 tzdata xz-utils
+    build-essential ca-certificates curl git git-lfs python3 python3-venv sqlite3 tzdata xz-utils
   python3 -c 'import sys, venv; raise SystemExit(sys.version_info < (3, 11))'
 }
 

@@ -245,9 +245,18 @@ exec "\${REAL_SQLITE3:?}" "\$@"
     const setup = await readFile(resolve("ops/setup.sh"), "utf8");
     const bootstrap = await readFile(resolve("ops/bootstrap-runtime.sh"), "utf8");
     expect(setup).toContain("bootstrap_runtime");
-    for (const dependency of ["python3-venv", "sqlite3", "tzdata", "build-essential", "ca-certificates"]) {
+    for (const dependency of [
+      "python3-venv",
+      "sqlite3",
+      "tzdata",
+      "build-essential",
+      "ca-certificates",
+      "git-lfs",
+    ]) {
       expect(bootstrap).toContain(dependency);
     }
+    expect(setup).toContain("git lfs install --local");
+    expect(setup).toContain("git lfs pull --include='data/precos.sqlite'");
     expect(bootstrap).toContain("America/Sao_Paulo");
     expect(bootstrap).toContain("SHASUMS256.txt");
     expect(bootstrap).toContain("sha256sum");
