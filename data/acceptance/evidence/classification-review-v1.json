@@ -1,0 +1,1627 @@
+{
+  "schemaVersion": 1,
+  "status": "complete",
+  "classificationVersion": 1,
+  "sampledAt": "2026-07-26T17:27:31.842Z",
+  "reviewedAt": "2026-07-26T18:06:16.143Z",
+  "reviewerRefSha256": "bd29307bc439c7390e943d06844107248a1e1907d8bd1265a9c3e24074f8c66d",
+  "populationSize": 12217,
+  "sampleSize": 200,
+  "samplingFrameSha256": "b641b40b0c857c5fb54ac0148d7c33d80201a598a5f100b2800ead47bf6e7504",
+  "sampleSha256": "9fc7633652a22b96aa3ba62da628d8e022ebd9883c90c131e423a74af6cc9848",
+  "templateSha256": "b1d7ac08835eda78eef2025803b528a4c9af8827649ae2185b27778cba0e81dc",
+  "reviewedLabelsSha256": "82572a85e5bb8aa12fc7bbbf7b0b356af25dbb5fdcb2afd1ca2bc59080b96f03",
+  "overall": {
+    "reviewed": 200,
+    "assigned": 80,
+    "correctAssigned": 60,
+    "precision": 0.75,
+    "agreementCorrect": 63,
+    "agreementRate": 0.315,
+    "outOfScope": 69
+  },
+  "strata": [
+    {
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 1,
+      "agreementRate": 0.1,
+      "outOfScope": 1
+    },
+    {
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 9
+    },
+    {
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 5
+    },
+    {
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 5,
+      "precision": 0.5,
+      "agreementCorrect": 5,
+      "agreementRate": 0.5,
+      "outOfScope": 4
+    },
+    {
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 8,
+      "precision": 0.8,
+      "agreementCorrect": 8,
+      "agreementRate": 0.8,
+      "outOfScope": 2
+    },
+    {
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 1
+    },
+    {
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 9
+    },
+    {
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 1
+    },
+    {
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 6,
+      "precision": 0.6,
+      "agreementCorrect": 6,
+      "agreementRate": 0.6,
+      "outOfScope": 4
+    },
+    {
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 9,
+      "precision": 0.9,
+      "agreementCorrect": 9,
+      "agreementRate": 0.9,
+      "outOfScope": 1
+    },
+    {
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 1,
+      "agreementRate": 0.1,
+      "outOfScope": 4
+    },
+    {
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 1,
+      "agreementRate": 0.1,
+      "outOfScope": 6
+    },
+    {
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 2
+    },
+    {
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 7,
+      "precision": 0.7,
+      "agreementCorrect": 7,
+      "agreementRate": 0.7,
+      "outOfScope": 2
+    },
+    {
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 7,
+      "precision": 0.7,
+      "agreementCorrect": 7,
+      "agreementRate": 0.7,
+      "outOfScope": 3
+    },
+    {
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 5
+    },
+    {
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 6
+    },
+    {
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "reviewed": 10,
+      "assigned": 0,
+      "correctAssigned": 0,
+      "precision": null,
+      "agreementCorrect": 0,
+      "agreementRate": 0,
+      "outOfScope": 2
+    },
+    {
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 8,
+      "precision": 0.8,
+      "agreementCorrect": 8,
+      "agreementRate": 0.8,
+      "outOfScope": 2
+    },
+    {
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "reviewed": 10,
+      "assigned": 10,
+      "correctAssigned": 10,
+      "precision": 1,
+      "agreementCorrect": 10,
+      "agreementRate": 1,
+      "outOfScope": 0
+    }
+  ],
+  "reviews": [
+    {
+      "classificationRefSha256": "e7089496477ec64709f5679cd8b3d85500a64fb23d18a6d5d14fbf22863f0c73",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111011",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "ff00ef09795fa9354db4b6e2ff6ef94af6385da215e24f57bd148b4dcbecfb5c",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "be1717abd1d7c235e86f714c4f8feb9e72c226fbebcfd29a520289a711ec32a6",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "227652d9096e4047dfee0b905e9c2c69e702e2c4406ca0b55b94dd771450dd79",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102006",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "0e5154cb91deb286fa2e67855d6fd23459056278e62906b8e949ab5909b4fa5d",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101002",
+      "reviewedLabel": "1101002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "f9225dddcb308c2ab99c09a51f8a3749ae94b5c44b7d8ca16ccb6b7135ac322b",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "8c190e3e1424ff3c1d32a3b52a77f2cc37def82d09a7aefbd21549ce812c7a12",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2f84451bbdb9b8ea997af93ed67b5ce3a4d381ebded28558d121206aeb97b610",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112017",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d97fc65888ca0a122234ade3889a636bebfd9ebbbbe8dde2318e570595821b61",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "f89878b44138a65c68e765d8c49ec24c4b51c042a49cde627a99730e5d5bbd67",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101002",
+      "reviewedLabel": "1101002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "0625d5f3657005ce8e1a25d8e86e60919d455b2cc2a734d6e30d9a081acef274",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1107088",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "559186d0bc6c8566df92c80fec2046e515fe42a05ba9b135d2a07217def13a2b",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1116071",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "23a73ce74a511f8e52769ed1381639871d25f8ece569118e3cdfaabe59bbd5c6",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1104032",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "83b7d7d6b9b1567efcbe05ee16d94f27bc220fac8041147221df64cf05f8f857",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "e6fadd0d39a625c22e948e4a1978862037d9d177486cfaac99a5acae74c39c3c",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101002",
+      "reviewedLabel": "1101002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "33aea787d472472da69ffb34755d095b420dc4a10fd5899f1f39c43ef4bd1c7f",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "41e7e16b2197dc5d5248798d5bd390bf99e928de2470f01ef5b730fcba5ef7a0",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "0d3b411c272e1f37bf802e9b741a9cd7c47fbd9005ddafbc2335d8135aa294d1",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "fdac8b644f4881ca0233319baf8eb07ff9e4e3c5f7e4e5ac8a772b86ec6345b9",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102006",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "264b610d1906375d1884cec74f38c6e4da7ef7825d821abb27f8877ab0beb573",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101002",
+      "reviewedLabel": "1101002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "1a50052844b2e66c33c40c9a896f5a3ccfe64fd2dce4ac950423a42cc012b68b",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "unclassified",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "adfa87a903942eb40a45bcdcf24e634dace8a634be803a39329aafd67536ab77",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b45e79d586e0f374d84a85e5570b4925e67c26fa0fc0f8c119e8e5d65f1b4467",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "23e8f387b6a629f73a4709efccb1bb5e245ef2a98270c5e63d35fa783c9bc076",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102023",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "97a55ae5452ec8d47e84c5db9d0fc4a4559c69f0e8f397b178c73cdae4ff1ca5",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101073",
+      "reviewedLabel": "1101073",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "7333291bd250cc5576295efa52417629cf728e19dc7bc9f995a93a768c2ab114",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "1aa7e1ce55c9f9250989fb9f4aee33891b2339062bec163dd86dd089eeddc1b7",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "ddf3875b3ffdc8caf512c23c8cd7ec3b1ac072445a37f591af32ccc0fd9d20d0",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d2bf1e0e84cb854c0b85f9fbbf7ee291a675ca36fe912f84824fbd24af200ec4",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "a98c37460340eb42373fb60b19c261ae44dbc5e3e184e020554a420885c12e16",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101073",
+      "reviewedLabel": "1101073",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "b3d6c03c717d8df21225e07b449cdff9ebe68420c4d543d34ed2545d7baec0d9",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "562bd4fd5d6f37a82e95abb3dc0d7d68e49f0076fe1d14ca13006781619006a3",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1107088",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "20da30da6dfdb3f69cffea4741a8e745cf7a6e9221d97a23e75bd8ed3c5d7fca",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "f903159048a9c50e759241bc175f75afa63609b1e28d440e15e114154811d3bd",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "997aa830f8ae7fd8130b09bbfcbf3f47cc35b27c67ef76fb9131571d2c601200",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102006",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "2d5987b181224c2612bec3e88331dbcb261d84684352836754a733bfd2ac4b94",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112003",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d59449dfd85bcb7af5a5b8c4b5bea66bdcebeeef5f172d13506a01c60f955add",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "7de90a5ab6776f365a38a7ce49aa5c6e983633ae2ad43e613ab54dd2561514f1",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "155be256e27b2ccdb0dd1bafc25d72ec4e6ca925834b7b10e766cd6358222c84",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "5e641a852fbe5d3d6b4a89d8476ab12666be08fc8f51647bbc01fbbef169aabe",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1101073",
+      "reviewedLabel": "1101073",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "2cd811171874a4d57cd1ae397f44840585baae3abf866012a27bb9a06d0a7dd0",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "23cd63b8e9d98c1cc2cd37fc2086ded79c33bc46d6795a82b5aa0ebedd5f986b",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "563d28cfcb7d069c972b5f31b2433911e5d466f82118e88ac626cbbebe987d3f",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9b0e45b38eb94ac2921c3656617f5ed8cf876d4e0da0232f2ed77eddd27237a1",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "47822358b7c022c776b643997119dd50e736b9c52ec46dec07947c536b7f6101",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102006",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "bc0a833f2e52f0fb24f477806ce4d65d0d842a3b2eb67b37f8daf484662933a1",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1107018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "c2190d048a2473bf39d2ad1783e0d61ae5378829fe9d64156c431179dc106d5b",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "4dd014dc388f598756044e8bd31c110374e7ec76204b67a20ab116e997210219",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "8091bd6efeabcba4318b0cb98908e87af69d89c062cd323dd754bb4aba4f523d",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104023",
+      "reviewedLabel": "1104023",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "83e44b7c5a9d33482142715517d901222a5a189cb03e4162da8933444d1365a8",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102006",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "8156951fdc2955f5fb2659922407391d92b3dd9ae0f5910db0d1eab55f896886",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "bcca9d923883fe7fd1f77d2a466d566f831ba3c04f2196e4ac2c216a897a23a2",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9e061bda28278ee2fe2c58068948728d3dae544a216eee2d5303433ff0dae8d5",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "7cde71ecf6a37df0b321f1a3ec96db955bf0452f2ae1e8f99f5f1f527f303048",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "0781719aa8374d525b53f00a9598ab2225bbd900b93f2a7b494d09150a43a2f0",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102012",
+      "reviewedLabel": "1102012",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "57d57a48e7f336026244a7aa0dbc20080f97dd9dd9889e62054664bc1c17e179",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "e17136c15d29f47beda1730ce96564c453b7978ba3b9b9e6a31216e1eda17a17",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112017",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "ba02fd502f23567f913a2debfea34e27132fe23b890f3f46c0f385d736d57acf",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "331880c409e486d1a2a92fe24a4f99a11ff5d275584d363d0b11ed22334ed2c2",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "dd5ef418b0d24f28cd511d74928b1398c199438436f74a339cda19b620dc0c2c",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102006",
+      "reviewedLabel": "1102006",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "f1946e55800ef8050682623e3f825edafa0a37ac6d8cecc4118f8722ace6c51f",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "a44389e323855a54677f7e9aa506f4fbaab36e2d85b4ee925c4fe2bfbe2a68ac",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "900a3ad1ff449ec366b44de9b414b110a9b711d67b67885e7de116c0d5d193e2",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1107018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9c45562cfe41b54e45a48e856ea9af14fb3a20d5f16da1641a0211e843cd3f0a",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "53c79a1ee31fcdd8ace0b778d1f5798e6857018f1dc32026d36616e42b7c3057",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102012",
+      "reviewedLabel": "1102012",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "4231ace929fea35be528ca86c7ffff7907472f69b7316fc4b313f5c2a13efaa0",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "5156005422b3061e74e48c368fa2c2b36ba7996aec950f33962e73b2e4242d3f",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "f5eddd36a00da77fb4724e1df81130a0bc0d4a4252e3813322dfcaad3ec399ab",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114001",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "e2c085e5c9fedb46a75dfc3f696d15490ea8c5b223dfebdf2b1bcd7cb092d20e",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1105012",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "fbdb8de1f6f92a546b50bf82b99b4b3debd316701831835d7ef8ad1660441a32",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102012",
+      "reviewedLabel": "1102012",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "6220870c9c11fb5610cdda111ba2af884e913fb0a82603a468a76835577bcf91",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "222303d65216ae6623eca1930e2380dcaf807a25a0a75dfd44d4f3fc94c87502",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "1ea50856611c20a680d07785a95976ce16cab69eef16223e1cfed51204395e01",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "3ef93fd133474a53209d6a1892807e8382f579743b93e7d09138ba5ce724b2c1",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104023",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "35bcaa5315ee54b097f711f22bf3a5317db5bfe9de2797081f7a01eb7d853392",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "23c5e408d58e9fcb9e8b96b2b57072e04666487fbe83c21cb0ef8079df3d8c19",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "1d1e77f10b2da3a40737867d33d4949cde9636f052149ddc7e58056687bb36d7",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "150cc4573f63638120f07eac8099fbcb69aea6c29ad8a509e69a566d010eed5d",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "dddd5977245e956a2f6e85ef2e7cee2ae8b75d21e8314e2763b8823758aca7e9",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1103020",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "5a698d172ac7b997c4aa21318cddcc375b19c964a9da997d6faa69094357180f",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102012",
+      "reviewedLabel": "1102012",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "c2f2d3f4166984a45534b5b7bd6bbcaa0da6ffbed22dce37af5af5c895997c25",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9e8db652e02fc83d8b8188ffd26980f545538e487df60aeaa4ef84b786f00d9a",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "54b7de825577272546ade595c901e76f27aefc5f3d94859dca4898747a0af1a9",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "a14bc65f7e5b3f55f1f7588a0a47e4aa53cd9bc86a195ada0b832e9be9cca615",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104023",
+      "reviewedLabel": "1104023",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "c610f48c1ecddfb555d492cce7d2fad60fed340de0f3b19a5f3fce416273ca83",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102023",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2a7c1ca9ff4e8ea27d24d2fdf61197fa0e8776c5d25b6a002d04cc57e6c2dde8",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "819c11cc12f8df991a94ba350dabfd168da9db533e82fb9eaa34abf6cfe80eca",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "65be4f0970b9615e24c8560e199bcab66c42c1787555c673f88c553d2a997dfb",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "de7fef8771e627b3d0bb9998da03bdbaac415307b2751c3b003c545419d901c5",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1106039",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "038e6df84b4bec9c1a4f1929f0a24d49c517928868534a472c22330eba88848c",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102023",
+      "reviewedLabel": "1102023",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "7eb2df10815b603f05d6dab8d6d6e35d48b67c3c94f8774ef06e6eb31bc0ab33",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d829c2d9e38e9b146ba04f6651665642f4f6943016aacb07368ae041056e2f0a",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "c0ff4ed98171e79c547b1d7cd439a13fcc8ac1771c3556de67a131fab5e6881c",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "06ecdb3b60ef99fef53bb8064f8a5d32664914d4f530d1de2ea0f8204c7ac542",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104032",
+      "reviewedLabel": "1104032",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "3453109210e70ca49753e003e83154819f92f0df462ce015382ca79df2d40366",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102061",
+      "reviewedLabel": "1102061",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "83ed40882a51af425fa08f2695ad0dae7cd6790aeb8d9f835306649c99dcbe3b",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "53d3b04843a511097732cfbe9c10d673d03ec145dfea8cb16ef5ed717e6ebaa3",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "634c915448a4aa6db8eb37a840a719dd723b2633b7dbe6348756f1a5ab4c2cdf",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112017",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "26bbb875f7c0dc157beadbcb12c4d97c5b2e03b7e752b6a88deafc34e39167d0",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104023",
+      "reviewedLabel": "1104023",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "3a04f63c93626e2d8795c8a820a348affa68ca7ce1e2ad15a424c694a718218f",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102023",
+      "reviewedLabel": "1102023",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "4d1d4d21679a6aa38925f8224268703f50c4148aad5103a60682df9eed349a46",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b3d0c56731f4d14c32b7c472d8c3b0513174e7380500a55c01af571e0166d8c4",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "0f41d37c234354536c0668a7a39e63a1c330b26cb7628d2fa51208a5c3e226ac",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "e60c7d207e3d974a4c3178ce300ad58401420b99802856ed497f11cf939524df",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104032",
+      "reviewedLabel": "1104032",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "798bfec0f155b9c680a6b80fbff4df69470341ecdf8a28a581158c5f8dddb3f9",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "22223270d2601b41120fbefd722e6fba041438a5ef9b146ac6ebec86837ae2a9",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114001",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "7b4783f5f6c1e118ad4e4b3cf44220bc2974f1a8625d9735eb202dfc265d5ab5",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "61d82d034b1fc60a01b11640de83a883b3847d6df1426375c64f104aa5cef365",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2774fa6956e32a62faba052333d043c6aa79d8aef42315a1c69f5bad6c834dcf",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107018",
+      "reviewedLabel": "1107018",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "5a6f0f4dcece1ee4814a2677836b9af62f09e484b7ef5ac71a35372d4f734529",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "fa4dc5715f7c7d1e9c0c156ee5f23fb33b9d1569dd8ca6c8e6b800d76a741587",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "158d6cce1f8f86f858b0dbff9a84f879744f13ce7a77c93237a63c99b3c27d4e",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "43c2137878a28b3636e40392b4c90835853ec4a06d0759eb3a52b13dd1e5b0e4",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1107089",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2a6d6764d2eb67cf2bfaa0fc0357641c0dc6498282963c134a19a8f462065653",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104052",
+      "reviewedLabel": "1104052",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "7c39b44083c74192dc6948780ff70b92a26ff7cb1ddf162d357eedbfc24244a2",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "c63cfc746d9d237eca21ea84c6418d7ff1776113bcde81e42560d7056f750781",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112003",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b97c5f66ac813d22e0a93f2e075885d05ca24c4ee7a4df89a1de8e7b9e7f2c5b",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "44927f0a6ece9226c6d0bc0ef3d2b8233553520bc3f208ec18181b8611b579a7",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111011",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "3e8ae6eee861c5e9a277961b6d0aad663b19df0987e492276990d1a7758133a5",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104032",
+      "reviewedLabel": "1104032",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "c99a198f8e912f606c46183daac425384b46e69ef5a901906c2c4b14fb8ef52c",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102029",
+      "reviewedLabel": "1102029",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "7a3874a5f1793d0cd3230eae9813ed1ef81bb209f9eb30c743b89efd5b23b839",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112017",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "10cfe40969add4f67477016313a4c1427f0a8b346d0794ad08dcaedb220dd5ee",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "e182f31e7890ffe73c75711600ba34c5b7d3d6fa07261138e76b25129e7fa72c",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d2f91f99b33dad9a178489aa1d3c7e11e49e3e98c73d58a0b54c0b202049b1b0",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1104052",
+      "reviewedLabel": "1111019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2904432d7182044e2ea7020f384afd709deceae752561113e68c367c5d55c416",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102061",
+      "reviewedLabel": "1102061",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "71340f90c53967ef69191498dfc0248647c27e92b81dc4612ff0ef78708250d8",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114083",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9fbfa888f932b344ee07761dd392177dca952a7bb5a09ade537fedc7620d7216",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b54e76b4adbd6a9fd917c12608f50a20a71c087ff33303f9c83ec81e8298388c",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112003",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "25f0afda5ea2ec06a7f20c8ec6ec9b9805fca712c4a55cbb88796cee1e900204",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107089",
+      "reviewedLabel": "1107089",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "f5d2aa8be020893fca56c5eb868998f3432d151ffb012d15f9a8e846521207e0",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102061",
+      "reviewedLabel": "1102061",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "c232e06669bd006fd5a5d069ad9eaafa4ccee26e37912866988c6e683bad4007",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1104032",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9f634fabe4a942594bbd13b5ab83c7d20abf7977317eaf0e76326f7873aff9e3",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114022",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2380390eedb77d3cacdabcaf4f600677d1fc76dc09013309b90bec318a385b7e",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "ed17044d0f2de3699019642776596f099a14158c6136cb5449b23500d3b83683",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107018",
+      "reviewedLabel": "1107018",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "28cf3e02bc1866e5a1e9bb25078bd26bddeb6d8e5428e7eff8d187e898f0cd4d",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103020",
+      "reviewedLabel": "1103020",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "6798397a9fe415b6d79c33c5ab627e4667c8abc8cda04061218aca2eb6e66a86",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "7436ed042cea585227602ec20c39b804ef5d4d8c2e451410761780b4b6cd3258",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "ae3c351364e76f3e14340f09b5bfe494db6de17c3525158e407530f4d2032a77",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1114001",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "5b3ef6600caf858e708ec688af830a62d5be0166f1f3f11a7aa7ded7524b823e",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1106005",
+      "reviewedLabel": "1106005",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "bb60084e92f0b110f703cd8c33ace018c00dbd532375b737ff04fa9b02113a6a",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1102061",
+      "reviewedLabel": "1102061",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "fa968a694f69b392594fc0d8d0661bb50669d5501bc21c6912dafe5801c1aeb6",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "30d943d1bb7006980b74f9be2665d346634de7c661069dcde569699f3e24c43b",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "8946c425a9974201fb72c1fdfdbeb8f40ba8c3b9cb50f490dd050d3fd2046e65",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "a70f4e8ec3735fbbec703a272100947fa0b40aab20097d63d15004cbdb91122c",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107018",
+      "reviewedLabel": "1107018",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "817236efc9542d983bce3cdf01f006ad35b29cf9287b800fd822fe692ddcb636",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103002",
+      "reviewedLabel": "1103002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "0daa3782ad393fa400ecc7e4e05ee56e5e807bc81bfd6930cc48ba9b6d2f6401",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "a88a348ca0df6b5d1c8c4cc5d26f33df504c527239bdf90b9c25ec5b4571b815",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "0af47876950fe8262603356151dd7a34028eb28e5a321156a905e4d58a42811d",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "3ae290750f0923038d8680474bcb474783db2df31f3ecf785801ede4e6ccc0b3",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1109002",
+      "reviewedLabel": "1109002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "db49593f0ea0da2cc9ecbbf31d225ae7b4be56ea991e95a52a1370b0f6075bb8",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103002",
+      "reviewedLabel": "1103002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "b90bd8db7db8a49952e8b3b274a423262b3bb750d50d16c66b739c0f0eddcee1",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "unclassified",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "dc244f9be251902a7784158bff70af9234b5e292e492af05d722478d5e6128c9",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "1d1e3f4c3350d95efa03ed4b524d89b504346b52b9ded6e2ee328ff5b4fc983c",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "aa740fec8d7c65fb01f8c28a1ac917d5b854b6be383b5a4c1bc4ab662b506d91",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107084",
+      "reviewedLabel": "1107084",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "75bc368f25ef601255cfa0cee5467fe750dde915785b14151e8928910f644563",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103026",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b8f5e2dd60282ce480626006ef8ce5e74197e2de6c54308be7acbb2139ff7319",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d21f04892c278124a6cb8edff08872381ceb66ed24afae0a7913bc36f862458c",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "facfc7b9a6b9e2649ff51bfc1132de2eb2c0be6b69a6ab5678911f2cce60e8b3",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "1737131eeaa8aaddbfc7d1a5046a15b4870aff7932abbb4cc48116e04674974b",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1106027",
+      "reviewedLabel": "1106027",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "5ca831344ad82eb114ff6665dc9086d795e9219b79928a186190b9945f40e0e8",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103002",
+      "reviewedLabel": "1103002",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "896e1663ffc373a920523de142a3f7b9d6aecf65afaa9abf6f9f21f5a43279ba",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "bb87fce1a9e30838896fb1d4a211e5d54809c056efd39fcc9b7f8215c89cc90b",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "353d1c2dc38961c3095a174ce3255ac7ba852fb138730ec8f16368d5bdf63b21",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "1e3a86028154012a48e6073b0fa389f3c67ba44a539afa92a9671f44fa859d15",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107094",
+      "reviewedLabel": "1107094",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "7d5f907a84ba2587f51d88964a92df2bd6ab41f80db7b5bbe9b378f7018cefcd",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "5bec665da1de8f87426ba1a00d6283bcf2569bfd926da5a675e77aa6520cf509",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "0afbf252e9c0c30d2b510020f1290b6312433f0be85660b341b2141ae3e3dc7c",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112019",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d1c6c1251cb1e58093d98068c2f88e3132a31ad1341269328ca3edda02a34f16",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1111011",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "cf03d826af2373e89029e8eed24d96bee3aca46789cc742993e8d536181c3125",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1109007",
+      "reviewedLabel": "1109007",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "47da2d94b258ee846ac1468463cf369f01070f28ad66c0bb7c864e2c6b0f2c51",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "4e7e94e10ec4b296e86582bec4b2e12dacfdec357fcffda354c5feaaaed09669",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1107088",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b5bffe8b7f90f4d2ccbe748839fe27c29b2ffb0cc34de73ae20d78e33098faa8",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "aebee7bdce38d5d9f423c8db7a009a9931b8685a9a1170d363dee8b9676892b1",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1104023",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "d4dca665c460888a7866f72e95861cb5351867acfd30a0616f59dc3d1dbba32a",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107094",
+      "reviewedLabel": "1107094",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "5b0ed6d19e1c7621e35e517d2d68a7febe50f7995727b1ee680b7fedf78a59dd",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103028",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "f60a36db46e548a790393e3f33dc4c54f7c71efb92a62ce6996bbf13b81ec02f",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "ab55eff3fd77f98e745647f0f39a5740155dc25f838dd0b39dffdf6f208bc554",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "3f67420ac74f5f231693c7b0da261e64a96bf72f61cd09d19b44cc7d8f318a8a",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112017",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "dd98f013ae84d5301e0f7fa8f4e5c64f940b789fb125d66543ebfec5de199643",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107018",
+      "reviewedLabel": "1107018",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "389d8a183a00b3e8589eb0c9bb207ce5f288e26ceec70f66b11c1a3c0cbb0a0e",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103003",
+      "reviewedLabel": "1103003",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "dc3091e268b71aff66473b394cd23b57f8ab6895eaa2013f3db362aab9dd825b",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "52459312651fd8bf6b1064f8e82f5288bbafa1caaed61af9af52d773fdf3903a",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "4247ff23e1642cc3f9c5ea2fd53cb659b920901a2bd07e6182b51b349e2fda8e",
+      "stratum": "retailer:carrefour|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "7958d3401015dfa34a413e0956c5e9d71d46d8bf7c348b5cb6623763fa20f3c7",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1110010",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "27e164c5e00b981895fb2a8fc0238a0fed7756fd7364ade2a3ffc43250f27e8f",
+      "stratum": "retailer:carrefour|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103020",
+      "reviewedLabel": "1103020",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "e2b641d9ce20ac0090aacfca38f46e7d41bc5ea319a4165ac86a75c3672c1c69",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "5ba48f4fd0180cda51a30f84c3d5bb22735078dcb3247c4bd0762cf0c91bb263",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "213014e69369454e074ec8ac3ce237508e0b26091292e47ac7723e0150a4d6cd",
+      "stratum": "retailer:extra-mercado|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "9908dd5d2b515d8f8b931e157d65e62ffab7f9319160784e5919a4db3674c5fa",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1109008",
+      "reviewedLabel": "out_of_scope",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "b12444a4fa571217b9ea10327bbf5fd9ab5b4b7f9a2d3994534e7f667f4c0143",
+      "stratum": "retailer:extra-mercado|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103020",
+      "reviewedLabel": "1103020",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "a0cfcdbe9d1520031fc05c032dbc1114c77bdaf26e7e5633be670539c5065c9e",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112018",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "303840f689bf51fead998fba6aa96585287339910615257cd5b2aec90764dcf6",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "unclassified",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "b7bd343c1e480021b35accd503c527cc71e633e4b6604a06e16143989babdf66",
+      "stratum": "retailer:pao-de-acucar|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1102029",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "2d26b83bf33c5e3b04278cfe7a19a6b2a920a86637b84cab888e1568cbacc63e",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107099",
+      "reviewedLabel": "1107099",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "50ed8ff76c74f2dc36b50110df32e1e8fc46b4f142d7d2f8cd78c6d37a43182e",
+      "stratum": "retailer:pao-de-acucar|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103043",
+      "reviewedLabel": "1103043",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "220afc211afc8b83d344029e32bb9b925f14cbe177d514e47c8c7dc72ff53427",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.80-to-0.89",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112003",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "e81ee25ae40512be9d9fa6c9776ef8ba777daf3ee4f20f5b0bc00a6b56f0bbb0",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:0.90-plus",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1104032",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "7102ab0f7d13001da3eec2c7f83f9f8e842c25a940f6448b40a094460ccc7505",
+      "stratum": "retailer:st-marche|decision:abstained|confidence:below-0.80",
+      "predictedLabel": "unclassified",
+      "reviewedLabel": "1112017",
+      "correct": false
+    },
+    {
+      "classificationRefSha256": "248e49f921889c2a150f3c0483a88ad6280d90c7792ea3beb4ddd68badda07e4",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.80-to-0.89",
+      "predictedLabel": "1107084",
+      "reviewedLabel": "1107084",
+      "correct": true
+    },
+    {
+      "classificationRefSha256": "ee7cc72ca64e3961202debb7426388cfc253125174f0ef015ff3e6d87f03698c",
+      "stratum": "retailer:st-marche|decision:assigned|confidence:0.90-plus",
+      "predictedLabel": "1103020",
+      "reviewedLabel": "1103020",
+      "correct": true
+    }
+  ]
+}
