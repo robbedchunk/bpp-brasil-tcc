@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 11,
-    "extraction": 11
+    "discovery": 12,
+    "extraction": 12
   },
   "discovery": {
     "schemaVersion": 1,
@@ -157,7 +157,7 @@
       "successes": 27,
       "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
-      "receiptPath": "data/validation/extra-mercado-discovery-v11.json",
+      "receiptPath": "data/validation/extra-mercado-discovery-v12.json",
       "receiptSha256": null
     },
     "extraction": {
@@ -167,7 +167,7 @@
       "successes": 29,
       "score": 0.9666666666666667,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
-      "receiptPath": "data/validation/extra-mercado-extraction-v11.json",
+      "receiptPath": "data/validation/extra-mercado-extraction-v12.json",
       "receiptSha256": null
     }
   }

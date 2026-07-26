@@ -45,7 +45,7 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 10,
+    "discovery": 11,
     "extraction": 10
   },
   "discovery": {
@@ -156,18 +156,18 @@
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
-      "receiptPath": "data/validation/st-marche-discovery-v10.json",
+      "receiptPath": "data/validation/st-marche-discovery-v11.json",
       "receiptSha256": null
     },
     "extraction": {
       "externallyValidated": true,
-      "validatedAt": "2026-07-24T18:56:54.352Z",
+      "validatedAt": "2026-07-26T15:39:37.684Z",
       "sampleSize": 30,
       "successes": 30,
       "score": 1,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
       "receiptPath": "data/validation/st-marche-extraction-v10.json",
-      "receiptSha256": null
+      "receiptSha256": "1a1465ad5fbac1e595348874c96e7a7a72273ea8a447ea15ddb8e548d601f330"
     }
   }
 }

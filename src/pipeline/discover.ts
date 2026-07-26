@@ -350,6 +350,10 @@ export async function runDiscovery(
     day,
     "discover",
   );
+  const boundedPanelTarget = active.strategy.maxProducts <= requestedProductLimit
+    && active.strategy.maxProducts <= remainingDailyReferences
+    ? active.strategy.maxProducts
+    : null;
   const counters = { attempted: 0, ok: 0, failed: 0 };
   let finalError: { category: string; message: string } | undefined;
   let finishedAt = startedAt;
@@ -571,12 +575,19 @@ export async function runDiscovery(
     status = finalError === undefined
       ? terminalStatus(counters.ok, counters.failed)
       : counters.ok > 0 ? "partial" : "failed";
-    snapshotComplete = limit > 0
+    const boundedPanelComplete = boundedPanelTarget !== null
+      && counters.attempted === boundedPanelTarget
+      && counters.ok === boundedPanelTarget
+      && counters.failed === 0
+      && finalError === undefined;
+    snapshotComplete = boundedPanelComplete || (limit > 0
       && iteratorCompleted
       && completionState.evidence?.complete === true
       && counters.failed === 0
-      && finalError === undefined;
-    let completionReason = completionState.evidence?.reason === "request_cap_reached"
+      && finalError === undefined);
+    let completionReason = boundedPanelComplete
+      ? "bounded_panel_complete"
+      : completionState.evidence?.reason === "request_cap_reached"
       || completionState.evidence?.reason === "product_cap_reached"
       ? completionState.evidence.reason
       : limit === 0

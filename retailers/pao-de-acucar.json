@@ -33,8 +33,8 @@
     "max": 300
   },
   "strategyVersions": {
-    "discovery": 13,
-    "extraction": 11
+    "discovery": 14,
+    "extraction": 12
   },
   "discovery": {
     "schemaVersion": 1,
@@ -79,12 +79,12 @@
       {
         "value": "alimentos|alimentos-congelados",
         "sourceCategory": "Alimentos Congelados",
-        "maxProducts": 288
+        "maxProducts": 360
       },
       {
         "value": "alimentos|basico-da-despensa",
         "sourceCategory": "Básico da Despensa",
-        "maxProducts": 252
+        "maxProducts": 360
       },
       {
         "value": "alimentos|acougue",
@@ -94,40 +94,40 @@
       {
         "value": "alimentos|padaria",
         "sourceCategory": "Padaria",
-        "maxProducts": 288
+        "maxProducts": 300
       },
       {
         "value": "alimentos|alimentos-refrigerados",
         "sourceCategory": "Alimentos Refrigerados",
-        "maxProducts": 288
+        "maxProducts": 360
       },
       {
         "value": "alimentos|hortifruti",
         "sourceCategory": "Hortifruti",
-        "maxProducts": 36
+        "maxProducts": 360
       },
       {
         "value": "alimentos|mercearia-salgada",
         "sourceCategory": "Mercearia Salgada",
-        "maxProducts": 72
+        "maxProducts": 300
       },
       {
         "value": "bebidas|vinhos",
         "sourceCategory": "Vinhos",
-        "maxProducts": 144
+        "maxProducts": 240
       },
       {
         "value": "bebidas|cervejas",
         "sourceCategory": "Cervejas",
-        "maxProducts": 180
+        "maxProducts": 240
       },
       {
         "value": "bebidas|nao-alcoolicas",
         "sourceCategory": "Bebidas Não Alcoólicas",
-        "maxProducts": 36
+        "maxProducts": 120
       }
     ],
-    "maxProducts": 1944
+    "maxProducts": 3000
   },
   "extraction": {
     "schemaVersion": 1,
@@ -193,7 +193,7 @@
       "successes": 27,
       "score": 0.9,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
-      "receiptPath": "data/validation/pao-de-acucar-discovery-v13.json",
+      "receiptPath": "data/validation/pao-de-acucar-discovery-v14.json",
       "receiptSha256": null
     },
     "extraction": {
@@ -203,7 +203,7 @@
       "successes": 29,
       "score": 0.9666666666666667,
       "evidence": "Pinned trusted-live-host successor validation receipt bound below.",
-      "receiptPath": "data/validation/pao-de-acucar-extraction-v11.json",
+      "receiptPath": "data/validation/pao-de-acucar-extraction-v12.json",
       "receiptSha256": null
     }
   }

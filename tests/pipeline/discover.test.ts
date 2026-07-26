@@ -164,6 +164,42 @@ describe("discovery pipeline", () => {
       .toEqual({ active: 1 });
   });
 
+  it("finalizes a deterministic panel that reaches its declared product ceiling", async () => {
+    const database = openDatabase(":memory:");
+    databases.push(database);
+    seedRetailer(database);
+    const boundedStrategy = { ...discoveryStrategy, maxProducts: 2 };
+    seedStrategy(database, "discovery", boundedStrategy);
+    upsertDiscoveredProduct(
+      database,
+      "retailer-1",
+      { canonicalUrl: "https://shop.test/stale", externalId: "stale", sourceCategory: "food" },
+      "2026-07-09T06:00:00.000Z",
+    );
+
+    const summary = await runDiscovery("retailer-1", {
+      database,
+      execute: async function* () {
+        yield { canonicalUrl: "https://shop.test/a", externalId: "a", sourceCategory: "food" };
+        yield { canonicalUrl: "https://shop.test/b", externalId: "b", sourceCategory: "food" };
+      },
+      now: () => new Date("2026-07-10T06:00:00.000Z"),
+    });
+
+    expect(summary).toMatchObject({
+      attempted: 2,
+      ok: 2,
+      snapshotComplete: true,
+      disappeared: 1,
+    });
+    expect(database.prepare(
+      "SELECT complete, completion_reason AS reason FROM catalog_snapshots WHERE run_id = ?",
+    ).get(summary.id)).toEqual({ complete: 1, reason: "bounded_panel_complete" });
+    expect(database.prepare(
+      "SELECT active FROM products WHERE canonical_url = 'https://shop.test/stale'",
+    ).get()).toEqual({ active: 0 });
+  });
+
   it("applies the durable 3,000-reference cap across same-day discovery runs", async () => {
     const database = openDatabase(":memory:");
     databases.push(database);
